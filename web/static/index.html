@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kanbanodon</title>
+  <link rel="stylesheet" href="/static/styles.css?v=board-swimlanes-parent-lock-20260630">
+  <link rel="stylesheet" href="/static/admin.css?v=all-board-sharing-20260628">
+  <link rel="stylesheet" href="/static/auth.css?v=password-confirm-20260628">
+</head>
+<body>
+  <header class="topbar">
+    <a id="homeLink" class="brand" href="#/board" aria-label="Open main board"><img src="/static/kanbanodon-logo.png" alt=""><div><strong>Kanbanodon</strong><span id="mode">local</span></div></a>
+    <div class="tools">
+      <input id="search" type="search" placeholder="Search">
+      <select id="typeFilter"><option value="">All types</option><option>epic</option><option>story</option><option>task</option><option>bug</option></select>
+      <select id="labelFilter"><option value="">All labels</option></select>
+      <button id="exportBtn" title="Export">Export</button>
+      <label class="importBtn">Import<input id="importFile" type="file" accept="application/json"></label>
+    </div>
+    <div id="me" class="me"></div>
+  </header>
+
+  <main>
+    <section id="login" class="authShell hidden">
+      <section class="authCard">
+        <h1>Team Login</h1>
+        <input id="loginUsername" placeholder="Username">
+        <label class="passwordField"><input id="password" type="password" placeholder="Password"></label>
+        <p id="loginError" class="formError" role="alert"></p>
+        <div><button id="loginBtn">Login</button><button id="forgotPasswordBtn" class="ghost" type="button">Forgot password?</button></div>
+      </section>
+      <section class="authCard">
+        <h1>Sign Up</h1>
+        <input id="signupUsername" placeholder="Username">
+        <label class="passwordField"><input id="signupPassword" type="password" placeholder="Password"></label>
+        <label class="passwordField"><input id="signupConfirmPassword" type="password" placeholder="Repeat password"></label>
+        <p id="signupError" class="formError" role="alert"></p>
+        <div><button id="signupBtn" type="button">Sign up</button></div>
+      </section>
+    </section>
+
+    <section id="passwordPanel" class="login hidden">
+      <h1 id="passwordTitle">Change password</h1>
+      <p id="passwordHint" class="muted">Set a new password for your account.</p>
+      <label id="currentPasswordField" class="passwordField"><input id="currentPassword" type="password" placeholder="Current password"></label>
+      <label class="passwordField"><input id="newPassword" type="password" placeholder="New password"></label>
+      <label class="passwordField"><input id="confirmPassword" type="password" placeholder="Repeat new password"></label>
+      <p id="passwordError" class="formError" role="alert"></p>
+      <div><button id="savePasswordBtn" type="button">Save password</button><button id="cancelPasswordBtn" class="ghost" type="button">Cancel</button></div>
+    </section>
+
+    <section id="app" class="appShell hidden">
+      <aside class="sidebar">
+        <section class="sideSection">
+          <div class="sideLabel">Board</div>
+          <div class="boardPicker">
+            <select id="boardSelect" aria-label="Select board"></select>
+            <button id="newBoardBtn" type="button" title="New board" aria-label="New board">+</button>
+          </div>
+          <div id="newBoardForm" class="newBoardForm hidden">
+            <input id="newBoardName" placeholder="Board name">
+            <div><button id="createBoardBtn" type="button">Create</button><button id="cancelBoardBtn" class="ghost" type="button">Cancel</button></div>
+          </div>
+        </section>
+        <nav class="sideNav" aria-label="Workspaces">
+          <button data-view="board" class="navButton active" type="button">Board</button>
+          <button data-view="overview" class="navButton" type="button">Overview</button>
+          <button data-view="timeline" class="navButton" type="button">Timeline (beta)</button>
+          <button data-view="ideas" class="navButton" type="button">Ideas</button>
+        </nav>
+        <section class="sideSection sideSectionBottom">
+          <div id="accessSectionLabel" class="sideLabel">Access</div>
+          <nav class="sideNav compact" aria-label="Administration">
+            <button data-view="admin" class="navButton" type="button">Admin</button>
+            <button data-view="config" class="navButton" type="button">Configuration</button>
+          </nav>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <section id="workspaceHeader" class="workspaceHeader">
+          <div>
+            <h1 id="viewTitle">Board</h1>
+            <p id="viewSubtitle" class="muted">Plan and move tickets.</p>
+          </div>
+        </section>
+        <section class="composer">
+          <input id="newTitle" placeholder="New ticket">
+          <select id="newType"><option>task</option><option>bug</option><option>story</option><option>epic</option></select>
+          <select id="newParent" aria-label="Parent work item"><option value="0">No parent</option></select>
+          <input id="newDuration" type="number" min="0" max="365" placeholder="Days">
+          <input id="newDue" type="date">
+          <div class="composerDependency">
+            <button id="newDependencyField" class="dependencyField" type="button">No dependencies</button>
+            <div id="newDependencyPicker" class="dependencyPicker hidden">
+              <input id="newDependencySearch" type="search" placeholder="Search tickets">
+              <div id="newDependencyOptions" class="dependencyOptions"></div>
+            </div>
+          </div>
+          <button id="addBtn">Create</button>
+          <p id="formError" class="formError" role="alert"></p>
+        </section>
+        <section id="board" class="board"></section>
+        <section id="overview" class="overview hidden"></section>
+        <section id="list" class="list hidden"></section>
+        <section id="timeline" class="timeline hidden"></section>
+        <section id="admin" class="admin hidden"></section>
+        <section id="config" class="config hidden"></section>
+      </section>
+    </section>
+  </main>
+
+  <aside id="drawer" class="drawer hidden"></aside>
+  <script src="/static/dino-avatar.js"></script>
+  <script src="/static/route.js?v=empty-epic-timeline-fix-20260630"></script>
+  <script src="/static/app.js?v=empty-epic-timeline-fix-20260630"></script>
+</body>
+</html>
