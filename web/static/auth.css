@@ -1,0 +1,94 @@
+.authShell {
+  position: fixed;
+  top: 94px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(980px, calc(100vw - 28px));
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.authCard {
+  background: #101820;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 22px;
+  display: grid;
+  gap: 10px;
+  box-shadow: 0 24px 70px #000b;
+}
+
+.authCard h1 {
+  margin: 0 0 4px;
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.authCard input {
+  width: 100%;
+  background: #0b1219;
+  border: 1px solid #33404d;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 11px 12px;
+}
+
+.authCard > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.passwordField {
+  position: relative;
+  display: block;
+}
+
+.passwordField input {
+  width: 100%;
+  padding-right: 44px;
+}
+
+.passwordReveal {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transform: translateY(-50%);
+  background: transparent;
+  border-color: transparent;
+  color: #9aa7b4;
+}
+
+.passwordReveal:hover,
+.passwordReveal.active {
+  color: var(--text);
+  border-color: #33404d;
+  background: #101820;
+}
+
+.passwordReveal svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (max-width: 820px) {
+  .authShell {
+    position: static;
+    transform: none;
+    width: auto;
+    margin: 24px 14px;
+    grid-template-columns: 1fr;
+  }
+}

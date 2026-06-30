@@ -1,0 +1,166 @@
+.adminPanel {
+  display: grid;
+  gap: 10px;
+}
+
+.adminCreateForm {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(170px, 1fr) minmax(170px, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.adminCreateForm input {
+  min-width: 0;
+  background: #0b1219;
+  border: 1px solid #33404d;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+
+.adminCreateForm button,
+.createUserAccess {
+  white-space: nowrap;
+}
+
+.adminCreateForm .passwordField {
+  min-width: 0;
+}
+
+.createUserAccess {
+  grid-column: 1 / -1;
+}
+
+#createUserBtn {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+.adminControls {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+}
+
+.userAdminControls {
+  grid-template-columns: auto minmax(230px, 1fr) auto;
+}
+
+.passwordReset {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  align-items: center;
+}
+
+.adminPasswordField {
+  min-width: 0;
+}
+
+.passwordReset .passwordField input {
+  width: 100%;
+}
+
+.boardAccessControls {
+  grid-template-columns: auto;
+  justify-content: end;
+}
+
+.boardSharingHint {
+  margin: -4px 0 0;
+}
+
+.boardSharingList {
+  display: grid;
+  gap: 4px;
+}
+
+.boardSharingBoard {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #202b36;
+}
+
+.boardSharingBoard:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.boardSharingBoardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.boardSharingBoardHeader h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.boardSharingActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.boardAccessSaveState {
+  min-width: 58px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.danger {
+  color: #fecaca;
+  border-color: #7f1d1d;
+}
+
+.danger:hover {
+  border-color: #ef4444;
+  background: #301216;
+}
+
+.deleteUserBtn {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .adminCreateForm {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .adminCreateForm .passwordField,
+  .createUserAccess,
+  #createUserBtn {
+    grid-column: 1 / -1;
+  }
+
+  #createUserBtn {
+    justify-self: stretch;
+  }
+
+  .userAdminControls {
+    grid-template-columns: 1fr;
+  }
+
+  .passwordReset {
+    grid-template-columns: 1fr;
+  }
+
+  .boardSharingBoardHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .boardSharingActions {
+    justify-content: space-between;
+  }
+
+  .deleteUserBtn {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+  }
+}

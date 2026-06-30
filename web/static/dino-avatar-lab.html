@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="de">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Kanbanodon Dino Vorlagen</title>
+	<link rel="stylesheet" href="/static/dino-avatar-lab.css">
+</head>
+<body>
+	<main class="avatar-lab">
+		<header class="lab-header">
+			<div>
+				<p class="eyebrow">Kanbanodon</p>
+				<h1>Dino Vorlagen</h1>
+				<p class="intro">Gerenderte Dino-Grundvorlagen im Kanbanodon-Stil: erst Silhouette und Farbe, keine Accessoires.</p>
+			</div>
+			<a class="back-link" href="/">Zum Board</a>
+		</header>
+
+		<section class="generator-shell" aria-label="Dino Vorlagen Generator">
+			<div class="preview-panel">
+				<div id="preview" class="big-avatar"></div>
+				<div>
+					<strong id="previewTitle">Dino Vorlage</strong>
+					<p id="previewMeta"></p>
+				</div>
+			</div>
+			<form id="avatarForm" class="controls">
+				<label>Seed<input id="seedInput" value="template-01-trex-stride" autocomplete="off"></label>
+				<label>Vorlage<select id="templateSelect"></select></label>
+				<label>Farbwelt<select id="paletteSelect"></select></label>
+				<div class="actions">
+					<button id="randomBtn" type="button">Zufall</button>
+					<button id="downloadBtn" type="button">PNG laden</button>
+				</div>
+			</form>
+		</section>
+
+		<section>
+			<div class="section-title">
+				<h2>20 Grundvorlagen</h2>
+				<p>Ohne Accessoires, damit die Dino-Formen zuerst stimmen.</p>
+			</div>
+			<div id="exampleGrid" class="example-grid"></div>
+		</section>
+	</main>
+	<script src="/static/dino-avatar.js"></script>
+	<script src="/static/dino-avatar-lab.js"></script>
+</body>
+</html>

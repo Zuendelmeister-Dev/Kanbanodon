@@ -1,0 +1,1961 @@
+const router = window.KanbanodonRoute;
+const initialRoute = router?.parseRoute() || { view: 'board', boardId: 0, ticketId: 0 };
+
+let state = { boards: [], board: null, columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
+let view = initialRoute.view;
+let editing = null;
+let selectedBoardId = initialRoute.boardId || +(localStorage.getItem('kanbanodon.boardId') || 0) || 0;
+let pendingTicketId = initialRoute.ticketId || 0;
+let newTicketLinks = [];
+let overviewSort = { key: 'dueDate', dir: 'asc' };
+let overviewFilters = { type: '', status: '', q: '' };
+let boardAccessSaveStatus = {};
+let timelineZoom = 1;
+let timelineEpicFilter = 'all';
+let timelineHighlightId = 0;
+
+// Finds the first DOM element matching a CSS selector.
+const $ = s => document.querySelector(s);
+// Finds all DOM elements matching a CSS selector as a real array.
+const $$ = s => [...document.querySelectorAll(s)];
+// Calls the JSON API and turns non-2xx responses into thrown errors.
+const api = (url, opts = {}) => fetch(url, { headers: { 'content-type': 'application/json' }, ...opts }).then(async r => {
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+});
+
+// Returns the currently selected board id, falling back to the first accessible board.
+function currentBoardId() {
+  const active = +(state.board?.id || state.board?.ID || 0);
+  if (active) return active;
+  const first = state.boards?.[0];
+  return +(first?.id || first?.ID || 0);
+}
+
+// Builds the board query string used by board-scoped API calls.
+function boardQuery() {
+  return '?boardId=' + encodeURIComponent(currentBoardId());
+}
+
+// Normalizes legacy or invalid ticket types to supported work item types.
+function normalizeTicketType(type) {
+  const value = String(type || 'task').trim().toLowerCase();
+  if (value === 'problem') return 'bug';
+  return ['epic', 'story', 'task', 'bug', 'idea'].includes(value) ? value : 'task';
+}
+
+// Converts API ticket payloads into the client-side ticket shape.
+function normTicket(t) {
+  return {
+    id: t.ID ?? t.id,
+    boardId: t.BoardID ?? t.boardId,
+    columnId: t.ColumnID ?? t.columnId,
+    title: t.Title ?? t.title,
+    ref: t.Ref ?? t.ref ?? '',
+    body: t.Body ?? t.body ?? '',
+    type: normalizeTicketType(t.Type ?? t.type ?? 'task'),
+    points: t.Points ?? t.points ?? 0,
+    duration: t.Duration ?? t.duration ?? t.Points ?? t.points ?? 0,
+    startDate: t.StartDate ?? t.startDate ?? '',
+    dueDate: t.DueDate ?? t.dueDate ?? '',
+    completedAt: t.CompletedAt ?? t.completedAt ?? '',
+    milestoneId: t.MilestoneID ?? t.milestoneId ?? 0,
+    assigneeId: t.AssigneeID ?? t.assigneeId ?? 0,
+    parentId: t.ParentID ?? t.parentId ?? 0,
+    position: t.Position ?? t.position ?? 0,
+    labels: t.Labels ?? t.labels ?? [],
+    links: t.Links ?? t.links ?? [],
+    createdAt: t.CreatedAt ?? t.createdAt,
+    updatedAt: t.UpdatedAt ?? t.updatedAt,
+  };
+}
+
+// Loads application state from the server and refreshes the visible UI.
+async function load() {
+  try {
+    const url = '/api/state' + (selectedBoardId ? ('?boardId=' + encodeURIComponent(selectedBoardId)) : '');
+    const s = await api(url);
+    state = { ...s, tickets: (s.tickets || []).map(normTicket), boards: s.boards || [], boardAccess: s.boardAccess || [], allBoardAccess: s.allBoardAccess || [] };
+    selectedBoardId = currentBoardId();
+    if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
+    hideLogin();
+    $('#app').classList.remove('hidden');
+    $('.tools').classList.remove('hidden');
+    render();
+    if (currentUserMustChangePassword()) showPasswordChange(true);
+    else hidePasswordChange();
+  } catch (e) {
+    showLoggedOut();
+  }
+}
+
+// Renders global chrome, filters, navigation, and the active view.
+function render() {
+  $('#mode').textContent = state.authMode;
+  renderAccount();
+  renderBoardSelect();
+  renderFilters();
+  renderNewParentSelect();
+  renderNav();
+  setupNewDependencyPicker();
+  renderView();
+  syncRoute('replace', pendingTicketId || editing?.id || 0);
+  if (pendingTicketId) {
+    const id = pendingTicketId;
+    pendingTicketId = 0;
+    openTicket(id, false);
+  }
+}
+
+// The visible route mirrors the current view, selected board, and optional open drawer.
+function syncRoute(mode = 'push', ticketId = editing?.id || 0) {
+  if (!router || !state.me) return;
+  router.writeRoute(mode, view, currentBoardId(), ticketId);
+}
+
+// Applies a parsed URL hash route to the in-memory UI state.
+function applyRoute(route) {
+  view = route.view || 'board';
+  pendingTicketId = route.ticketId || 0;
+  if (route.boardId && route.boardId !== currentBoardId()) {
+    selectedBoardId = route.boardId;
+    localStorage.setItem('kanbanodon.boardId', selectedBoardId);
+    closeDrawer(false);
+    load();
+    return;
+  }
+  closeDrawer(false);
+  render();
+}
+
+// Returns whether the signed-in user has global admin rights.
+function currentUserIsAdmin() {
+  const u = state.me || {};
+  return !!(u.isAdmin ?? u.is_admin ?? u.IsAdmin);
+}
+
+// Returns the owner id for the active board.
+function currentBoardOwnerId() {
+  return boardOwnerId(state.board || {});
+}
+
+// Returns whether the current user can manage access to at least one board.
+function currentUserCanManageBoardAccess() {
+  return manageableBoards().length > 0;
+}
+
+// Reads a board id from either API or client-side casing.
+function boardId(board) {
+  return +(board?.id ?? board?.ID ?? 0);
+}
+
+// Reads a board name from either API or client-side casing.
+function boardName(board) {
+  return board?.name ?? board?.Name ?? 'Board';
+}
+
+// Reads a board owner id from either API or client-side casing.
+function boardOwnerId(board) {
+  return +(board?.ownerId ?? board?.owner_id ?? board?.OwnerID ?? 0);
+}
+
+// Returns whether the current user can manage a specific board.
+function canManageBoard(board) {
+  const me = state.me || {};
+  return currentUserIsAdmin() || (!!me.id && +me.id === boardOwnerId(board));
+}
+
+// Lists boards whose sharing settings the current user can edit.
+function manageableBoards() {
+  return (state.boards || []).filter(b => boardId(b) && canManageBoard(b));
+}
+
+// Returns whether a user object represents an admin.
+function userIsAdmin(u) {
+  return !!(u.isAdmin ?? u.is_admin ?? u.IsAdmin);
+}
+
+// Returns whether the current user must change their password before continuing.
+function currentUserMustChangePassword() {
+  const u = state.me || {};
+  return !!(u.mustChangePassword ?? u.must_change_password ?? u.MustChangePassword);
+}
+
+// Formats the visible ticket reference such as #8 or #E1.
+function ticketRef(t) {
+  return '#' + (t?.ref || t?.id || '');
+}
+
+// Combines the ticket reference and title for labels and pickers.
+function ticketLabel(t) {
+  return ticketRef(t) + ' ' + (t?.title || '');
+}
+
+// Returns whether a ticket is an idea rather than delivery work.
+function isIdea(t) {
+  return normalizeTicketType(t?.type) === 'idea';
+}
+
+// Ideas are stored as tickets for reuse, but product-wise they live outside delivery flow.
+function workTickets() {
+  return state.tickets.filter(t => !isIdea(t));
+}
+
+// Lists idea tickets for the standalone Ideas view.
+function ideaTickets() {
+  return state.tickets.filter(isIdea);
+}
+
+// Returns direct children for a parent work item.
+function childTickets(id) {
+  return workTickets().filter(t => +t.parentId === +id).sort(ticketOrder);
+}
+
+// Returns all nested descendants for a parent work item.
+function descendantTickets(parentId, seen = new Set()) {
+  if (!parentId || seen.has(+parentId)) return [];
+  seen.add(+parentId);
+  return childTickets(parentId).flatMap(child => [child, ...descendantTickets(child.id, seen)]);
+}
+
+// Lists safe parent choices while excluding cycles and descendants.
+function parentCandidates(currentId = 0) {
+  const blocked = new Set([+currentId, ...descendantTickets(currentId).map(t => +t.id)].filter(Boolean));
+  return workTickets().filter(t => !blocked.has(+t.id)).sort(ticketOrder);
+}
+
+// Finds a ticket by id for parent lookups.
+function parentTicket(id) {
+  return state.tickets.find(t => t.id == id);
+}
+
+// Counts direct child items for a ticket.
+function childCount(id) {
+  return state.tickets.filter(t => +t.parentId === +id).length;
+}
+
+// Sorts tickets by manual position and then stable ticket reference.
+function ticketOrder(a, b) {
+  return (+a.position || 0) - (+b.position || 0) || String(a.ref || a.id).localeCompare(String(b.ref || b.id), undefined, { numeric: true }) || (+a.id || 0) - (+b.id || 0);
+}
+
+// Renders the signed-in user account menu.
+function renderAccount() {
+  const name = state.me?.name || state.me?.username || 'Local User';
+  const username = state.me?.username || '';
+  $('#me').innerHTML = '<button id="accountBtn" class="accountBtn" type="button" title="Account menu">' + avatar(state.me?.avatar) + '<span>' + esc(name) + '</span></button><div id="accountMenu" class="accountMenu hidden"><strong>' + esc(name) + '</strong><p class="muted">@' + esc(username) + '</p><button id="accountPasswordBtn" class="ghost" type="button">Change password</button><button id="accountLogoutBtn" type="button">Logout</button></div>';
+  $('#accountBtn').onclick = () => $('#accountMenu').classList.toggle('hidden');
+  $('#accountPasswordBtn').onclick = () => {
+    $('#accountMenu').classList.add('hidden');
+    showPasswordChange(false);
+  };
+  $('#accountLogoutBtn').onclick = logout;
+}
+
+// Switches the UI into logged-out mode.
+function showLoggedOut() {
+  state = { boards: [], board: null, columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
+  selectedBoardId = 0;
+  localStorage.removeItem('kanbanodon.boardId');
+  $('#mode').textContent = 'login';
+  $('#me').innerHTML = '';
+  $('.tools').classList.add('hidden');
+  $('#login').classList.remove('hidden');
+  $('#passwordPanel').classList.add('hidden');
+  $('#app').classList.add('hidden');
+  $('#loginError').textContent = '';
+  $('#signupError').textContent = '';
+  $('#loginUsername').focus();
+}
+
+// Hides the login panel and clears login errors.
+function hideLogin() {
+  $('#login').classList.add('hidden');
+  const error = $('#loginError');
+  if (error) error.textContent = '';
+}
+
+// Logs out through the API and resets local UI state.
+async function logout() {
+  try {
+    await api('/api/logout', { method: 'POST', body: '{}' });
+  } finally {
+    showLoggedOut();
+  }
+}
+
+// Shows the password change panel in forced or optional mode.
+function showPasswordChange(forced) {
+  $('#passwordPanel').classList.remove('hidden');
+  $('#passwordTitle').textContent = forced ? 'Change password required' : 'Change password';
+  $('#passwordHint').textContent = forced ? 'Please choose a password before continuing.' : 'Set a new password for your account.';
+  $('#currentPasswordField').classList.toggle('hidden', forced);
+  $('#cancelPasswordBtn').classList.toggle('hidden', forced);
+  $('#passwordError').textContent = '';
+  $('#newPassword').value = '';
+  $('#confirmPassword').value = '';
+  $('#currentPassword').value = '';
+  resetPasswordRevealButtons($('#passwordPanel'));
+  if (forced) {
+    $('#app').classList.add('hidden');
+    $('.tools').classList.add('hidden');
+  }
+  $('#newPassword').focus();
+}
+
+// Hides and resets the password change panel.
+function hidePasswordChange() {
+  $('#passwordPanel').classList.add('hidden');
+  $('#passwordError').textContent = '';
+}
+
+// Resets password reveal controls back to hidden-password mode.
+function resetPasswordRevealButtons(root = document) {
+  root.querySelectorAll('.passwordField input[type="text"]').forEach(input => input.type = 'password');
+  root.querySelectorAll('.passwordReveal').forEach(button => {
+    button.classList.remove('active');
+    button.title = 'Show password';
+    button.setAttribute('aria-label', 'Show password');
+  });
+}
+
+// Toggles a password input between masked and plain text.
+function togglePasswordReveal(e) {
+  const button = e.currentTarget;
+  const input = document.getElementById(button.dataset.passwordTarget);
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  button.classList.toggle('active', show);
+  button.title = show ? 'Hide password' : 'Show password';
+  button.setAttribute('aria-label', button.title);
+}
+
+// Builds the eye button used to reveal a password field.
+function passwordRevealButton(target) {
+  return '<button class="passwordReveal" data-password-target="' + escAttr(target) + '" type="button" title="Show password" aria-label="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>';
+}
+
+// Builds a password input wrapped with a reveal button.
+function passwordFieldHtml(id, placeholder, className = '', attrs = '') {
+  return '<label class="passwordField ' + escAttr(className) + '"><input id="' + escAttr(id) + '" ' + attrs + ' type="password" placeholder="' + escAttr(placeholder) + '"></label>';
+}
+
+// Adds reveal buttons to password fields that do not have one yet.
+function enhancePasswordReveals(root = document) {
+  root.querySelectorAll('.passwordField input').forEach(input => {
+    const field = input.closest('.passwordField');
+    if (!field || field.querySelector('.passwordReveal')) return;
+    field.insertAdjacentHTML('beforeend', passwordRevealButton(input.id));
+  });
+  root.querySelectorAll('.passwordReveal').forEach(button => button.onclick = togglePasswordReveal);
+}
+
+// Reads and validates matching password and confirmation fields.
+function confirmedPassword(passwordSelector, confirmSelector, errorSelector, missingMessage = 'Please enter a password.') {
+  const input = $(passwordSelector);
+  const confirm = $(confirmSelector);
+  const password = input?.value || '';
+  // Shows one validation error and returns null so callers can stop early.
+  const fail = (message, focus) => {
+    if (errorSelector) $(errorSelector).textContent = message;
+    else alert(message);
+    focus?.focus();
+    return null;
+  };
+  if (!password) return fail(missingMessage, input);
+  if (password !== (confirm?.value || '')) return fail('The passwords do not match.', confirm);
+  return password;
+}
+
+// Clears password inputs selected by CSS selector.
+function clearPasswordInputs(...selectors) {
+  selectors.forEach(selector => {
+    const input = $(selector);
+    if (!input) return;
+    input.value = '';
+    input.type = 'password';
+  });
+  resetPasswordRevealButtons();
+}
+
+// Builds the avatar markup for a user or generated dinosaur avatar.
+function avatar(name) {
+  const seed = name || 'dino';
+  if (window.KanbanodonDinoAvatars) {
+    return '<span class="avatar dinoAvatar" title="' + escAttr(seed) + '">' + window.KanbanodonDinoAvatars.createDinoAvatar(seed, { template: seed, size: 48, palette: 'Original' }) + '</span>';
+  }
+  return '<span class="avatar" title="' + escAttr(seed) + '">' + seed.slice(0, 2).toUpperCase() + '</span>';
+}
+
+// Renders board selection and new-board controls.
+function renderBoardSelect() {
+  const select = $('#boardSelect');
+  if (!select) return;
+  const boards = state.boards.length ? state.boards : [state.board].filter(b => b && (b.id || b.ID));
+  select.innerHTML = boards.map(b => '<option value="' + (b.id ?? b.ID) + '">' + esc(b.name ?? b.Name ?? 'Board') + '</option>').join('');
+  select.disabled = boards.length === 0;
+  select.value = String(currentBoardId());
+  select.onchange = () => {
+    selectedBoardId = +select.value;
+    localStorage.setItem('kanbanodon.boardId', selectedBoardId);
+    closeDrawer();
+    if (router) router.writeRoute('push', view, selectedBoardId, 0);
+    load();
+  };
+  $('#newBoardBtn').onclick = showNewBoardForm;
+  $('#createBoardBtn').onclick = createBoard;
+  $('#cancelBoardBtn').onclick = hideNewBoardForm;
+  $('#newBoardName').onkeydown = e => {
+    if (e.key === 'Enter') createBoard();
+    if (e.key === 'Escape') hideNewBoardForm();
+  };
+}
+
+// Shows the inline form for creating a board.
+function showNewBoardForm() {
+  const form = $('#newBoardForm');
+  form.classList.remove('hidden');
+  $('#newBoardName').value = '';
+  $('#newBoardName').focus();
+}
+
+// Hides and clears the new-board form.
+function hideNewBoardForm() {
+  const form = $('#newBoardForm');
+  if (form) form.classList.add('hidden');
+}
+
+// Creates a board through the API and selects it.
+async function createBoard() {
+  const input = $('#newBoardName');
+  const payload = { Name: (input.value || '').trim() || 'New Board' };
+  const res = await api('/api/boards', { method: 'POST', body: JSON.stringify(payload) });
+  selectedBoardId = +(res.id || res.ID);
+  localStorage.setItem('kanbanodon.boardId', selectedBoardId);
+  hideNewBoardForm();
+  closeDrawer();
+  view = 'board';
+  syncRoute('push', 0);
+  await load();
+}
+
+// Renders the global label filter options.
+function renderFilters() {
+  const lf = $('#labelFilter');
+  const cur = lf.value;
+  lf.innerHTML = '<option value="">All labels</option>' + state.labels.map(l => '<option>' + esc(l.name) + '</option>').join('');
+  lf.value = cur;
+}
+
+// Renders the parent selector for the new-ticket composer.
+function renderNewParentSelect() {
+  const select = $('#newParent');
+  if (!select) return;
+  const current = select.value || '0';
+  select.innerHTML = '<option value="0">No parent</option>' + parentCandidates().map(t => '<option value="' + t.id + '">' + esc(ticketLabel(t)) + '</option>').join('');
+  select.value = [...select.options].some(o => o.value === current) ? current : '0';
+}
+
+// Builds the parent selector used inside the ticket drawer.
+function parentSelectHtml(ticket) {
+  if (isIdea(ticket)) return '';
+  const options = parentCandidates(ticket.id).map(t => '<option value="' + t.id + '">' + esc(ticketLabel(t)) + '</option>').join('');
+  return '<label>Parent<select id="dParent"><option value="0">No parent</option>' + options + '</select></label>';
+}
+
+// The global search/type/label filters stay shared, but ideas are split out below
+// so delivery views never accidentally schedule or count raw idea notes.
+function filtered() {
+  const q = $('#search').value.toLowerCase();
+  const typ = $('#typeFilter').value;
+  const lab = $('#labelFilter').value;
+  return state.tickets.filter(t => (!q || (t.title + t.body).toLowerCase().includes(q)) && (!typ || t.type === typ) && (!lab || t.labels.includes(lab)));
+}
+
+// Applies global filters and removes ideas from delivery views.
+function filteredWork() {
+  return filtered().filter(t => !isIdea(t));
+}
+
+// Applies search filtering to idea tickets only.
+function filteredIdeas() {
+  const q = $('#search').value.toLowerCase();
+  return ideaTickets().filter(t => !q || (t.title + t.body).toLowerCase().includes(q));
+}
+
+// Renders navigation state and access labels for the current user.
+function renderNav() {
+  const adminButton = $('[data-view="admin"]');
+  if (adminButton) {
+    adminButton.classList.remove('hidden');
+    adminButton.textContent = currentUserIsAdmin() ? 'Admin' : 'Sharing';
+  }
+  const accessLabel = $('#accessSectionLabel');
+  if (accessLabel) accessLabel.textContent = currentUserIsAdmin() ? 'Administration' : 'Access';
+  $$('.navButton').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+}
+
+// Updates the workspace title and subtitle.
+function setHeader(title, subtitle) {
+  $('#viewTitle').textContent = title;
+  $('#viewSubtitle').textContent = subtitle || '';
+}
+
+// Shows and renders the currently active workspace view.
+function renderView() {
+  $$('#board,#overview,#list,#timeline,#admin,#config').forEach(x => x.classList.add('hidden'));
+  $('.composer').classList.toggle('hidden', view !== 'board');
+  renderNav();
+  if (view === 'board') renderBoard();
+  if (view === 'overview') renderOverview();
+  if (view === 'ideas') renderList('idea');
+  if (view === 'timeline') renderTimeline();
+  if (view === 'admin') renderAdmin();
+  if (view === 'config') renderConfig();
+}
+
+// Renders the kanban board with Epic swimlanes.
+function renderBoard() {
+  setHeader(state.board?.name || 'Board', 'Plan and move tickets.');
+  const root = $('#board');
+  root.classList.remove('hidden');
+  if (!currentBoardId()) {
+    root.innerHTML = '<section class="panel emptyBoard"><h2>No board access yet</h2><p class="muted">Ask someone with full access to assign a board, or create a new board from the sidebar.</p></section>';
+    return;
+  }
+  const tickets = filteredWork();
+  root.innerHTML = boardSwimlanes(tickets);
+  wireDnD();
+}
+
+// Builds the full swimlane board for the filtered tickets.
+function boardSwimlanes(tickets) {
+  const lanes = boardSwimlaneData(tickets);
+  if (!lanes.length) return '<section class="panel emptyBoard"><h2>No matching tickets</h2><p class="muted">Try a different search, type, or label filter.</p></section>';
+  const colClass = 'cols' + Math.max(1, Math.min(8, state.columns.length || 1));
+  const counts = state.columns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
+  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + state.columns.map((c, index) => '<div class="boardLaneColumnHead">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(boardSwimlane).join('') + '</section>';
+}
+
+// Groups filtered tickets into visual Epic swimlanes.
+function boardSwimlaneData(tickets) {
+  const groups = new Map();
+  const standalone = [];
+  tickets.forEach(t => {
+    const epic = topEpicFor(t);
+    if (!epic) {
+      if (t.type !== 'epic') standalone.push(t);
+      return;
+    }
+    const key = String(epic.id);
+    if (!groups.has(key)) groups.set(key, { epic, items: [] });
+    if (+t.id !== +epic.id) groups.get(key).items.push(t);
+  });
+  // Swimlanes are a board view concern; the ticket parent remains the single source of hierarchy.
+  const lanes = [...groups.values()].sort((a, b) => ticketOrder(a.epic, b.epic));
+  if (standalone.length) lanes.push({ epic: null, items: standalone.sort(boardGroupSort) });
+  return lanes;
+}
+
+// Builds one Epic swimlane row across all board columns.
+function boardSwimlane(lane) {
+  const epicId = lane.epic ? lane.epic.id : 0;
+  return '<div class="boardLane">' + boardLaneEpicCell(lane) + state.columns.map(c => {
+    const items = boardLaneColumnItems(lane, c.id);
+    return '<div class="boardLaneCell"><div class="drop boardLaneDrop" data-col="' + c.id + '" data-epic="' + epicId + '">' + items.map(card).join('') + '</div></div>';
+  }).join('') + '</div>';
+}
+
+// Builds the sticky Epic cell at the left of a swimlane.
+function boardLaneEpicCell(lane) {
+  if (!lane.epic) {
+    return '<div class="boardLaneEpic boardLaneStandalone"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
+  }
+  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '"><span>' + esc(ticketRef(lane.epic)) + '</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
+}
+
+// Returns the cards that belong in one swimlane column.
+function boardLaneColumnItems(lane, columnId) {
+  return lane.items.filter(t => t.columnId == columnId).sort(boardGroupSort);
+}
+
+// Sorts cards inside an Epic lane while keeping nested refs stable.
+function boardGroupSort(a, b) {
+  if (a.type === 'epic' && b.type !== 'epic') return -1;
+  if (a.type !== 'epic' && b.type === 'epic') return 1;
+  const ar = timelineRefParts(a);
+  const br = timelineRefParts(b);
+  if (ar[0] !== br[0]) return br[0] - ar[0];
+  for (let i = 1; i < Math.max(ar.length, br.length); i++) {
+    if (ar[i] == null) return -1;
+    if (br[i] == null) return 1;
+    if (ar[i] !== br[i]) return ar[i] - br[i];
+  }
+  return ticketOrder(a, b);
+}
+
+// Finds the Done column by name.
+function doneColumn() {
+  return state.columns.find(c => /done/i.test(c.name));
+}
+
+// Resolves dependency ids into ticket objects.
+function dependencyTickets(t) {
+  return (t.links || []).map(id => state.tickets.find(x => x.id == id)).filter(Boolean);
+}
+
+// Returns dependencies that are not yet in the Done column.
+function unfinishedDependencies(t) {
+  const done = doneColumn();
+  return dependencyTickets(t).filter(dep => !done || dep.columnId != done.id);
+}
+
+// Returns the normalized duration in days for a ticket.
+function ticketDuration(t) {
+  return Math.max(0, +(t.duration ?? t.points ?? 0) || 0);
+}
+
+// Formats a ticket duration for badges and tables.
+function durationLabel(t) {
+  const days = ticketDuration(t);
+  return days ? days + 'd' : 'No duration';
+}
+
+// Builds one draggable board card.
+function card(t) {
+  const blocked = unfinishedDependencies(t);
+  const parent = parentTicket(t.parentId);
+  const children = childCount(t.id);
+  const depthClass = ' depth' + boardCardDepth(t);
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + '" data-id="' + t.id + '"><h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(ticketRef(t)) + '</span><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketRef(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (blocked.length ? '<span class="pill warn">waiting for ' + blocked.map(ticketRef).join(', ') + '</span>' : '') + '</div></article>';
+}
+
+// Calculates card indentation based on nested non-Epic parents.
+function boardCardDepth(ticket) {
+  if (!ticket.parentId || ticket.type === 'epic') return 0;
+  let depth = 0;
+  let current = ticket;
+  const seen = new Set();
+  while (current && current.parentId && !seen.has(+current.id)) {
+    seen.add(+current.id);
+    const parent = parentTicket(current.parentId);
+    if (!parent) break;
+    if (parent.type !== 'epic') depth++;
+    current = parent;
+  }
+  return Math.min(depth, 3);
+}
+
+// Attaches board card drag-and-drop and card click handlers.
+function wireDnD() {
+  $$('.card').forEach(c => {
+    c.ondragstart = e => e.dataTransfer.setData('text/plain', c.dataset.id);
+    c.onclick = () => openTicket(+c.dataset.id);
+  });
+  $$('.boardLaneEpic[data-id],.epicBoardHeader').forEach(header => header.onclick = () => openTicket(+header.dataset.id));
+  $$('.drop').forEach(d => {
+    d.ondragover = e => e.preventDefault();
+    d.ondrop = async e => {
+      e.preventDefault();
+      const t = state.tickets.find(x => x.id == e.dataTransfer.getData('text/plain'));
+      if (t) {
+        const previous = { columnId: t.columnId, position: t.position };
+        t.columnId = +d.dataset.col;
+        // Dragging changes workflow status only; hierarchy changes belong in the Parent field.
+        t.position = d.querySelectorAll('.card').length + 1;
+        try {
+          await saveTicket(t);
+          await load();
+        } catch (err) {
+          t.columnId = previous.columnId;
+          t.position = previous.position;
+          showFormError((err.message || 'Ticket could not be moved.').trim());
+          await load();
+        }
+      }
+    };
+  });
+}
+
+// Renders board metrics, upcoming dates, and the ticket table.
+function renderOverview() {
+  setHeader('Overview', 'Status, open work, and upcoming dates.');
+  const root = $('#overview');
+  root.classList.remove('hidden');
+  const ts = filteredWork();
+  const doneCol = state.columns.find(c => /done/i.test(c.name));
+  const done = ts.filter(t => doneCol && t.columnId == doneCol.id);
+  const open = ts.length - done.length;
+  const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
+  const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
+  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" onclick="openTicket(' + t.id + ')"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
+  wireOverviewControls(ts);
+}
+
+// Builds the filterable overview ticket table.
+function overviewTable(tickets) {
+  const typeOptions = overviewTypeOptions(tickets).map(type => '<option value="' + escAttr(type) + '"' + (overviewFilters.type === type ? ' selected' : '') + '>' + esc(type) + '</option>').join('');
+  const statusOptions = state.columns.map(c => '<option value="' + c.id + '"' + (String(overviewFilters.status) === String(c.id) ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('');
+  const rows = overviewRows(tickets);
+  return '<section class="panel overviewPanel"><div class="overviewTableHeader"><h2>Ticket table</h2><div class="overviewFilters"><input id="overviewSearch" type="search" placeholder="Filter tickets" value="' + escAttr(overviewFilters.q) + '"><select id="overviewTypeFilter"><option value="">All types</option>' + typeOptions + '</select><select id="overviewStatusFilter"><option value="">All statuses</option>' + statusOptions + '</select></div></div><div class="tableScroll"><table class="ticketTable"><thead><tr>' + overviewHeader('id', 'ID') + overviewHeader('title', 'Title') + overviewHeader('type', 'Type') + overviewHeader('status', 'Status') + overviewHeader('duration', 'Duration') + overviewHeader('startDate', 'Start') + overviewHeader('dueDate', 'Due') + overviewHeader('assignee', 'Assignee') + overviewHeader('milestone', 'Milestone') + overviewHeader('dependencies', 'Depends on') + overviewHeader('labels', 'Labels') + overviewHeader('updatedAt', 'Updated') + '</tr></thead><tbody>' + (rows.map(overviewRow).join('') || '<tr><td colspan="12" class="tableEmpty">No matching tickets</td></tr>') + '</tbody></table></div></section>';
+}
+
+// Builds a sortable overview table header cell.
+function overviewHeader(key, label) {
+  const active = overviewSort.key === key;
+  const mark = active ? (overviewSort.dir === 'asc' ? ' ^' : ' v') : '';
+  return '<th><button class="tableSort" type="button" data-sort="' + key + '">' + esc(label + mark) + '</button></th>';
+}
+
+// Applies overview filters and sorting before grouping rows.
+function overviewRows(tickets) {
+  const q = overviewFilters.q.trim().toLowerCase();
+  const rows = tickets
+    .filter(t => !overviewFilters.type || t.type === overviewFilters.type)
+    .filter(t => !overviewFilters.status || String(t.columnId) === String(overviewFilters.status))
+    .filter(t => !q || overviewSearchText(t).includes(q))
+    .sort((a, b) => overviewCompare(a, b));
+  return overviewGroupedRows(rows);
+}
+
+// Groups overview rows under their top-level Epic.
+function overviewGroupedRows(rows) {
+  const groups = new Map();
+  const standalone = [];
+  rows.forEach(t => {
+    const epic = topEpicFor(t);
+    if (!epic) {
+      standalone.push({ kind: 'ticket', ticket: t, depth: 0 });
+      return;
+    }
+    const key = String(epic.id);
+    if (!groups.has(key)) groups.set(key, { epic, items: [] });
+    if (+t.id !== +epic.id) groups.get(key).items.push(t);
+  });
+  const grouped = [...groups.values()].sort((a, b) => ticketOrder(a.epic, b.epic)).flatMap(group => {
+    const childRows = group.items
+      .sort((a, b) => overviewCompare(a, b))
+      .map(ticket => ({ kind: 'ticket', ticket, depth: overviewHierarchyDepth(ticket, group.epic.id) }));
+    return [{ kind: 'epic', ticket: group.epic, count: childRows.length }, ...childRows];
+  });
+  return grouped.concat(standalone.sort((a, b) => overviewCompare(a.ticket, b.ticket)));
+}
+
+// Calculates indentation depth for overview child rows.
+function overviewHierarchyDepth(ticket, epicId) {
+  let depth = 0;
+  let current = ticket;
+  const seen = new Set();
+  while (current && current.parentId && +current.parentId !== +epicId && !seen.has(+current.id)) {
+    seen.add(+current.id);
+    depth++;
+    current = parentTicket(current.parentId);
+  }
+  return Math.min(depth + (ticket.parentId ? 1 : 0), 4);
+}
+
+// Builds one overview table row from a grouped row model.
+function overviewRow(row) {
+  if (row.kind === 'epic') return overviewEpicRow(row.ticket, row.count);
+  const t = row.ticket || row;
+  const deps = dependencyTickets(t).map(ticketRef).join(', ') || 'None';
+  const labels = (t.labels || []).map(l => '<span class="tableTag">' + esc(l) + '</span>').join('') || '<span class="muted">None</span>';
+  const parent = parentTicket(t.parentId);
+  const depthClass = ' overviewDepth' + Math.max(0, Math.min(4, +(row.depth || 0)));
+  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" onclick="openTicket(' + t.id + ')"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+}
+
+// Builds the overview table group header for an Epic.
+function overviewEpicRow(epic, childCount) {
+  return '<tr class="ticketRow epic overviewEpicRow" onclick="openTicket(' + epic.id + ')"><td>' + esc(ticketRef(epic)) + '</td><td colspan="11"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + '</span></div></td></tr>';
+}
+
+// Builds searchable text for an overview row.
+function overviewSearchText(t) {
+  const parent = parentTicket(t.parentId);
+  return [ticketRef(t), t.id, t.title, t.body, t.type, parent ? ticketLabel(parent) : '', columnName(t.columnId), t.startDate, t.dueDate, assigneeName(t.assigneeId), milestoneName(t.milestoneId), dependencySummary(t.links), (t.labels || []).join(' ')].join(' ').toLowerCase();
+}
+
+// Compares tickets according to the active overview sort.
+function overviewCompare(a, b) {
+  const key = overviewSort.key;
+  const dir = overviewSort.dir === 'desc' ? -1 : 1;
+  if (key === 'startDate' || key === 'dueDate' || key === 'updatedAt') {
+    const aMissing = !a[key];
+    const bMissing = !b[key];
+    if (aMissing && !bMissing) return 1;
+    if (!aMissing && bMissing) return -1;
+  }
+  const av = overviewSortValue(a, key);
+  const bv = overviewSortValue(b, key);
+  if (av < bv) return -1 * dir;
+  if (av > bv) return 1 * dir;
+  return (a.id - b.id) * dir;
+}
+
+// Extracts the sortable value for a given overview column.
+function overviewSortValue(t, key) {
+  if (key === 'id') return t.id || 0;
+  if (key === 'duration') return ticketDuration(t);
+  if (key === 'status') return columnName(t.columnId).toLowerCase();
+  if (key === 'assignee') return assigneeName(t.assigneeId).toLowerCase();
+  if (key === 'milestone') return milestoneName(t.milestoneId).toLowerCase();
+  if (key === 'dependencies') return (t.links || []).length;
+  if (key === 'labels') return (t.labels || []).join(', ').toLowerCase();
+  if (key === 'startDate' || key === 'dueDate' || key === 'updatedAt') return t[key] || '9999-99-99';
+  return String(t[key] ?? '').toLowerCase();
+}
+
+// Builds the type filter options for the overview table.
+function overviewTypeOptions(tickets) {
+  return [...new Set(['epic', 'story', 'task', 'bug', ...tickets.map(t => t.type).filter(Boolean)])];
+}
+
+// Attaches overview filter and sorting handlers.
+function wireOverviewControls(tickets) {
+  const search = $('#overviewSearch');
+  const type = $('#overviewTypeFilter');
+  const status = $('#overviewStatusFilter');
+  if (search) search.oninput = () => { overviewFilters.q = search.value; renderOverview(); };
+  if (type) type.onchange = () => { overviewFilters.type = type.value; renderOverview(); };
+  if (status) status.onchange = () => { overviewFilters.status = status.value; renderOverview(); };
+  $$('.tableSort').forEach(btn => btn.onclick = () => {
+    const key = btn.dataset.sort;
+    overviewSort = overviewSort.key === key ? { key, dir: overviewSort.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'dueDate' || key === 'startDate' ? 'asc' : 'asc' };
+    renderOverview();
+  });
+}
+
+// Returns the display name for a column id.
+function columnName(id) {
+  return state.columns.find(c => c.id == id)?.name || '-';
+}
+
+// Returns the display name for a user id.
+function assigneeName(id) {
+  return state.users.find(u => u.id == id)?.name || 'Unassigned';
+}
+
+// Returns the display name for a milestone id.
+function milestoneName(id) {
+  return state.milestones.find(m => m.id == id)?.name || 'None';
+}
+
+// Formats an ISO date-time as a short date string.
+function shortDate(v) {
+  if (!v) return '-';
+  const d = parseDate(v);
+  return d ? fmtIsoDate(d) : String(v).slice(0, 10);
+}
+
+// Renders the standalone Ideas list and composer.
+function renderList(type) {
+  setHeader('Ideas', 'Collect ideas outside the delivery board.');
+  const root = $('#list');
+  root.classList.remove('hidden');
+  const rows = filteredIdeas();
+  // Ideas intentionally use their own tiny composer: no due date, duration, or dependency fields.
+  root.innerHTML = '<section class="panel ideaComposer"><h2>New idea</h2><input id="ideaTitle" placeholder="Idea title"><textarea id="ideaBody" placeholder="Notes"></textarea><button id="ideaCreateBtn" type="button">Create idea</button><p id="ideaError" class="formError" role="alert"></p></section>' + (rows.map(t => '<button class="row rowButton" onclick="openTicket(' + t.id + ')"><strong>' + esc(t.title) + '</strong><p class="muted">' + esc(t.body || '') + '</p><div class="meta"><span class="pill">' + esc(ticketRef(t)) + '</span><span class="pill">idea</span></div></button>').join('') || '<div class="row muted">No ideas yet</div>');
+  $('#ideaCreateBtn').onclick = createIdea;
+}
+
+const GANTT_LEFT_PAD = 28;
+
+// Renders the beta Timeline view or an error message.
+function renderTimeline() {
+  setHeader('Timeline (beta)', 'Gantt chart with scheduled work and dependencies.');
+  const root = $('#timeline');
+  root.classList.remove('hidden');
+  try {
+    renderGantt(root);
+  } catch (err) {
+    root.innerHTML = '<div class="event muted">Timeline could not be calculated: ' + esc(err.message || err) + '</div>';
+  }
+}
+
+// Calculates and renders the Gantt chart for scheduled work.
+function renderGantt(root) {
+  // Only scheduled delivery work reaches the beta timeline; ideas are kept as a separate backlog.
+  const tasks = buildGanttRows();
+  if (!tasks.length) {
+    root.innerHTML = timelineControlsHtml() + '<div class="event muted">No tickets with schedulable dates yet</div>';
+    wireTimelineControls(root);
+    return;
+  }
+  tasks.forEach((task, index) => task.row = index);
+
+  const dates = tasks.flatMap(t => [t.plannedStart, t.start, t.end, t.due, t.actualFinish, t.readyAt, t.overrunEnd]).filter(validDate);
+  const minDate = dates.length ? new Date(Math.min(...dates.map(Number))) : startOfDay(new Date());
+  const maxDate = dates.length ? new Date(Math.max(...dates.map(Number))) : addDays(startOfDay(new Date()), 14);
+  const rangeStart = addDays(minDate, -1);
+  const rangeEnd = addDays(maxDate, 2);
+  const totalDays = Math.max(1, dayDiff(rangeStart, rangeEnd));
+  const rowHeight = 78;
+  const headHeight = 56;
+  const axisHeight = 62;
+  const taskColumnWidth = root.clientWidth < 900 ? 230 : 320;
+  const availableTimelineWidth = Math.max(520, root.clientWidth - taskColumnWidth - 32);
+  const fittedDayWidth = (availableTimelineWidth - GANTT_LEFT_PAD * 2) / totalDays;
+  const dayWidth = Math.max(10, Math.min(90, Math.floor((fittedDayWidth || 24) * timelineZoom)));
+  const timelineWidth = Math.max(availableTimelineWidth, totalDays * dayWidth + GANTT_LEFT_PAD * 2);
+  const bodyHeight = tasks.length * rowHeight;
+  const chartHeight = headHeight + bodyHeight + axisHeight;
+  const highlight = timelineHighlight(tasks);
+  const labels = tasks.map(task => ganttTaskLabel(task, rowHeight, highlight)).join('');
+  const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, highlight);
+
+  root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  wireTimelineControls(root);
+}
+
+// Builds ordered Gantt rows from tickets, Epics, and dependencies.
+function buildGanttRows() {
+  const visibleWork = timelineFilteredWork();
+  const baseById = new Map(visibleWork.map(ganttTask).filter(Boolean).map(task => [task.ticket.id, task]));
+  const rows = [];
+  const used = new Set();
+  visibleWork.filter(t => t.type === 'epic').sort(ticketOrder).forEach(epic => {
+    const topEpic = topEpicFor(epic);
+    if (topEpic && +topEpic.id !== +epic.id) return;
+    const descendants = descendantTickets(epic.id);
+    const childTasks = descendants.map(t => baseById.get(t.id)).filter(Boolean);
+    const ownTask = epicHasOwnTimelineConfig(epic) ? baseById.get(epic.id) : null;
+    if (!ownTask && !childTasks.length) return;
+    const groupRows = [ganttEpicAggregate(epic, childTasks, ownTask)];
+    timelineDescendants(epic.id, baseById).forEach(task => {
+      task.depth = timelineDepth(task.ticket, epic.id);
+      task.groupId = epic.id;
+      groupRows.push(task);
+      used.add(task.ticket.id);
+    });
+    groupRows.forEach((task, index) => {
+      task.groupId = epic.id;
+      task.groupFirst = index === 0;
+      task.groupLast = index === groupRows.length - 1;
+    });
+    rows.push(...groupRows);
+    used.add(epic.id);
+  });
+  const standalone = [...baseById.values()]
+    .filter(task => !used.has(task.ticket.id) && !topEpicFor(task.ticket))
+    .sort(ganttTaskSort);
+  return rows.concat(standalone);
+}
+
+// Returns whether an Epic has explicit planning data of its own.
+function epicHasOwnTimelineConfig(epic) {
+  // Empty epics should not receive a synthetic timeline bar from created_at or duration alone.
+  return !!parseDate(epic.startDate) || !!parseDate(epic.dueDate);
+}
+
+// Filters timeline work by the selected Epic.
+function timelineFilteredWork() {
+  const items = filteredWork();
+  if (timelineEpicFilter === 'all') return items;
+  const epicId = +timelineEpicFilter;
+  return items.filter(t => +t.id === epicId || +(topEpicFor(t)?.id || 0) === epicId);
+}
+
+// Builds timeline filter, zoom, and clear-path controls.
+function timelineControlsHtml() {
+  const epics = workTickets().filter(t => t.type === 'epic').sort(ticketOrder);
+  if (timelineEpicFilter !== 'all' && !epics.some(t => String(t.id) === String(timelineEpicFilter))) timelineEpicFilter = 'all';
+  const options = '<option value="all">All epics</option>' + epics.map(t => '<option value="' + t.id + '"' + (String(timelineEpicFilter) === String(t.id) ? ' selected' : '') + '>' + esc(ticketLabel(t)) + '</option>').join('');
+  return '<div class="ganttControls"><label>Epic<select id="timelineEpicFilter">' + options + '</select></label><label class="zoomControl">Zoom<input id="timelineZoom" type="range" min="0.65" max="3" step="0.05" value="' + escAttr(String(timelineZoom)) + '"><span>' + Math.round(timelineZoom * 100) + '%</span></label>' + (timelineHighlightId ? '<button id="timelineClearPath" class="ghost" type="button">Clear path</button>' : '') + '</div>';
+}
+
+// Attaches timeline filter, zoom, and path selection handlers.
+function wireTimelineControls(root) {
+  const epic = $('#timelineEpicFilter');
+  if (epic) epic.onchange = () => {
+    timelineEpicFilter = epic.value;
+    timelineHighlightId = 0;
+    renderGantt(root);
+  };
+  const zoom = $('#timelineZoom');
+  if (zoom) zoom.oninput = () => {
+    timelineZoom = +zoom.value || 1;
+    renderGantt(root);
+  };
+  const clear = $('#timelineClearPath');
+  if (clear) clear.onclick = () => {
+    timelineHighlightId = 0;
+    renderGantt(root);
+  };
+  $$('.ganttTaskItem,.ganttSvgTask').forEach(el => {
+    el.onclick = () => selectTimelineTask(+el.dataset.timelineId);
+  });
+}
+
+// Toggles dependency-path highlighting for a timeline task.
+function selectTimelineTask(id) {
+  timelineHighlightId = timelineHighlightId === id ? 0 : id;
+  renderTimeline();
+}
+
+// Returns descendant Gantt tasks in tree order for a parent.
+function timelineDescendants(parentId, baseById) {
+  return timelineChildTickets(parentId).flatMap(child => {
+    const task = baseById.get(child.id);
+    return (task ? [task] : []).concat(timelineDescendants(child.id, baseById));
+  });
+}
+
+// Returns direct child tickets sorted for timeline display.
+function timelineChildTickets(parentId) {
+  return workTickets().filter(t => +t.parentId === +parentId).sort(timelineTreeOrder);
+}
+
+// Sorts timeline siblings by numeric ticket reference.
+function timelineTreeOrder(a, b) {
+  const ar = timelineRefParts(a);
+  const br = timelineRefParts(b);
+  if (ar[0] !== br[0]) return br[0] - ar[0];
+  for (let i = 1; i < Math.max(ar.length, br.length); i++) {
+    if (ar[i] == null) return -1;
+    if (br[i] == null) return 1;
+    if (ar[i] !== br[i]) return ar[i] - br[i];
+  }
+  return ticketOrder(a, b);
+}
+
+// Splits a ticket reference into numeric parts for sorting.
+function timelineRefParts(ticket) {
+  return String(ticket?.ref || ticket?.id || '0').split('.').map(part => {
+    const n = parseInt(part.replace(/\D/g, ''), 10);
+    return Number.isFinite(n) ? n : 0;
+  });
+}
+
+// Calculates indentation depth within an Epic timeline group.
+function timelineDepth(ticket, epicId) {
+  let depth = 0;
+  let current = ticket;
+  const seen = new Set();
+  while (current && current.parentId && +current.parentId !== +epicId && !seen.has(+current.id)) {
+    seen.add(+current.id);
+    depth++;
+    current = parentTicket(current.parentId);
+  }
+  return Math.min(depth + 1, 4);
+}
+
+// Finds the top-level Epic for a ticket.
+function topEpicFor(ticket) {
+  let current = ticket;
+  const seen = new Set();
+  while (current && current.parentId && !seen.has(+current.id)) {
+    seen.add(+current.id);
+    const parent = parentTicket(current.parentId);
+    if (!parent) return null;
+    if (parent.type === 'epic') return parent;
+    current = parent;
+  }
+  return ticket?.type === 'epic' ? ticket : null;
+}
+
+// Sorts standalone Gantt tasks by schedule and ticket order.
+function ganttTaskSort(a, b) {
+  return a.start - b.start || a.due - b.due || ticketOrder(a.ticket, b.ticket);
+}
+
+// Builds the aggregate Gantt row for one Epic.
+function ganttEpicAggregate(epic, childTasks, ownTask) {
+  const childDates = childTasks.flatMap(task => [task.start, task.end, task.due, task.readyAt]).filter(validDate);
+  const childStart = childDates.length ? new Date(Math.min(...childDates.map(Number))) : null;
+  const childEnd = childDates.length ? new Date(Math.max(...childDates.map(Number))) : null;
+  const explicitStart = parseDate(epic.startDate);
+  const explicitDue = parseDate(epic.dueDate);
+  const start = childStart || explicitStart || ownTask?.start || startOfDay(new Date());
+  let due = explicitDue || childEnd || ownTask?.due || addDays(start, 1);
+  if (due <= start) due = addDays(start, 1);
+  let end = childEnd || due;
+  if (end <= start) end = due;
+  return {
+    ticket: epic,
+    deps: dependencyTickets(epic),
+    blocked: unfinishedDependencies(epic),
+    plannedStart: start,
+    start,
+    due,
+    end,
+    actualFinish: null,
+    readyAt: end,
+    saved: false,
+    late: false,
+    dependencyReady: null,
+    isAggregate: true,
+    overrun: !!explicitDue && !!childEnd && childEnd > explicitDue,
+    overrunEnd: childEnd,
+    childCount: childTasks.length,
+  };
+}
+
+// Builds the scheduling model for one timeline work item.
+function ganttTask(ticket) {
+  if (ticket.type === 'epic' && !epicHasOwnTimelineConfig(ticket)) return null;
+  const base = ganttBase(ticket);
+  if (!validDate(base.plannedStart) || !validDate(base.due)) return null;
+  const deps = dependencyTickets(ticket);
+  let dependencyReady = null;
+  deps.forEach(dep => {
+    const ready = ganttDependencyReady(dep);
+    if (ready && (!dependencyReady || ready > dependencyReady)) dependencyReady = ready;
+  });
+  const plannedDuration = Math.max(1, dayDiff(base.plannedStart, base.due));
+  const start = dependencyReady || base.plannedStart;
+  let due = base.due;
+  if (due <= start) due = addDays(start, plannedDuration || 1);
+  const actualFinish = base.actualFinish && base.actualFinish >= start ? base.actualFinish : null;
+  const end = actualFinish && actualFinish < due ? actualFinish : due;
+  const readyAt = actualFinish || due;
+  return { ticket, deps, blocked: unfinishedDependencies(ticket), plannedStart: base.plannedStart, start, due, end, actualFinish, readyAt, saved: actualFinish && actualFinish < due, late: actualFinish && actualFinish > due, dependencyReady };
+}
+
+// Calculates the planned start and due date for a ticket.
+function ganttBase(ticket) {
+  const explicitDue = parseDate(ticket.dueDate);
+  const explicitStart = parseDate(ticket.startDate);
+  const fallbackDuration = ticket.type === 'epic' ? 1 : 3;
+  const duration = Math.max(1, ticketDuration(ticket) || fallbackDuration);
+  const plannedStart = explicitStart || (explicitDue ? addDays(explicitDue, -duration) : dateFromCreated(ticket.createdAt) || startOfDay(new Date()));
+  let due = explicitDue || addDays(plannedStart, duration);
+  if (due <= plannedStart) due = addDays(plannedStart, 1);
+  return { plannedStart, due, actualFinish: ganttActualFinish(ticket) };
+}
+
+// Returns the actual finish date for tickets in the Done column.
+function ganttActualFinish(ticket) {
+  const done = doneColumn();
+  if (!done || ticket.columnId != done.id) return null;
+  return parseDate(ticket.completedAt) || parseDate(ticket.updatedAt) || null;
+}
+
+// Returns the date when a dependency can unblock dependents.
+function ganttDependencyReady(ticket) {
+  const base = ganttBase(ticket);
+  return base.actualFinish || base.due;
+}
+
+// Builds the dependency-path highlight model for the timeline.
+function timelineHighlight(tasks) {
+  if (!timelineHighlightId) return { selected: 0, ids: new Set(), direct: new Set(), ancestors: new Set(), active: false };
+  const byId = new Map(workTickets().map(t => [t.id, t]));
+  const ids = new Set();
+  const direct = new Set();
+  const ancestors = new Set();
+  // Walks from the selected task through dependencies and epic children.
+  const visit = id => {
+    const ticket = byId.get(+id);
+    if (!ticket || ids.has(+ticket.id)) return;
+    ids.add(+ticket.id);
+    if (ticket.type === 'epic') descendantTickets(ticket.id).forEach(child => visit(child.id));
+    (ticket.links || []).forEach(depId => {
+      direct.add(+depId + '>' + +ticket.id);
+      visit(depId);
+    });
+  };
+  visit(timelineHighlightId);
+  ids.forEach(id => {
+    let current = byId.get(+id);
+    const seen = new Set();
+    while (current && current.parentId && !seen.has(+current.id)) {
+      seen.add(+current.id);
+      ancestors.add(+current.parentId);
+      current = byId.get(+current.parentId);
+    }
+  });
+  tasks.filter(task => task.isAggregate).forEach(task => {
+    if (descendantTickets(task.ticket.id).some(child => ids.has(+child.id))) ancestors.add(+task.ticket.id);
+  });
+  return { selected: +timelineHighlightId, ids, direct, ancestors, active: true };
+}
+
+// Returns CSS classes for a task in the active highlight path.
+function timelineTaskHighlightClass(task, highlight) {
+  if (!highlight?.active) return '';
+  const id = +task.ticket.id;
+  if (id === highlight.selected) return ' selectedPath';
+  if (highlight.ids.has(id)) return ' dependencyPath';
+  if (highlight.ancestors.has(id)) return ' contextPath';
+  return ' pathDimmed';
+}
+
+// Builds the left-side text label for a Gantt row.
+function ganttTaskLabel(task, rowHeight, highlight) {
+  const depIds = task.deps.map(ticketRef).join(', ');
+  const doneText = task.deps.length > 1 ? ' are done' : ' is done';
+  const depText = task.isAggregate ? (task.childCount + ' child item' + (task.childCount === 1 ? '' : 's')) : (task.deps.length ? (task.blocked.length ? 'Can start when ' + depIds + doneText : 'Starts after ' + depIds + doneText) : 'No dependency');
+  const classes = ['ganttTaskItem'];
+  if (task.isAggregate) classes.push('epicSummary');
+  if (task.groupId && !task.isAggregate) classes.push('epicChild');
+  if (task.groupLast) classes.push('groupLast');
+  classes.push(...timelineTaskHighlightClass(task, highlight).trim().split(/\s+/).filter(Boolean));
+  classes.push('indent' + Math.max(0, Math.min(4, +(task.depth || 0))));
+  const typeLabel = task.isAggregate ? 'epic total' : task.ticket.type;
+  return '<button class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '"><strong>' + esc(ticketLabel(task.ticket)) + '</strong><span>' + esc(typeLabel) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span><em class="' + (task.blocked.length ? 'waiting' : '') + '">' + esc(depText) + '</em></button>';
+}
+
+// Builds the full SVG markup for the Gantt chart.
+function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, rowHeight, bodyHeight, axisHeight, highlight) {
+  const bodyTop = headHeight;
+  const axisTop = headHeight + bodyHeight;
+  const defs = '<defs><marker id="ganttArrowHead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" class="ganttSvgArrowHead"></path></marker><pattern id="ganttSavedPattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgSavedBase"></rect><rect width="5" height="12" class="ganttSvgSavedStripe"></rect></pattern><pattern id="ganttLatePattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgLateBase"></rect><rect width="5" height="12" class="ganttSvgLateStripe"></rect></pattern></defs>';
+  return defs +
+    '<rect class="ganttSvgPanel" x="0" y="0" width="' + width + '" height="' + (headHeight + bodyHeight + axisHeight) + '"></rect>' +
+    '<rect class="ganttSvgHead" x="0" y="0" width="' + width + '" height="' + headHeight + '"></rect>' +
+    '<text class="ganttSvgHeadText" x="' + GANTT_LEFT_PAD + '" y="34">Date range</text>' +
+    ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks, highlight) +
+    ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, highlight) +
+    tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlight)).join('') +
+    ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width);
+}
+
+// Builds SVG background rows, grid lines, and weekend shading.
+function ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks, highlight) {
+  const parts = [];
+  parts.push('<rect class="ganttSvgBody" x="0" y="' + bodyTop + '" width="' + width + '" height="' + bodyHeight + '"></rect>');
+  for (let row = 0; row < tasks.length; row++) {
+    const task = tasks[row];
+    const y = bodyTop + row * rowHeight;
+    const cls = (row % 2 ? 'even' : 'odd') + (task.isAggregate ? ' epicSummary' : task.groupId ? ' epicChild' : '') + timelineTaskHighlightClass(task, highlight);
+    parts.push('<rect class="ganttSvgRow ' + cls + '" x="0" y="' + y + '" width="' + width + '" height="' + rowHeight + '"></rect>');
+    parts.push('<line class="ganttSvgRowLine" x1="0" x2="' + width + '" y1="' + y + '" y2="' + y + '"></line>');
+    if (task.groupLast) parts.push('<line class="ganttSvgRowLine groupLast" x1="0" x2="' + width + '" y1="' + (y + rowHeight) + '" y2="' + (y + rowHeight) + '"></line>');
+  }
+  parts.push('<line class="ganttSvgRowLine strong" x1="0" x2="' + width + '" y1="' + (bodyTop + bodyHeight) + '" y2="' + (bodyTop + bodyHeight) + '"></line>');
+  for (let i = 0; i <= totalDays; i++) {
+    const d = addDays(rangeStart, i);
+    const x = ganttPx(d, rangeStart, dayWidth);
+    if (i < totalDays && (d.getDay() === 0 || d.getDay() === 6)) {
+      parts.push('<rect class="ganttSvgWeekend" x="' + x + '" y="' + bodyTop + '" width="' + dayWidth + '" height="' + bodyHeight + '"></rect>');
+    }
+    parts.push('<line class="ganttSvgGridLine" x1="' + x + '" x2="' + x + '" y1="' + bodyTop + '" y2="' + (bodyTop + bodyHeight) + '"></line>');
+  }
+  parts.push('<rect class="ganttSvgAxisBg" x="0" y="' + axisTop + '" width="' + width + '" height="' + axisHeight + '"></rect>');
+  return parts.join('');
+}
+
+// Builds the SVG bar, due marker, and label for one Gantt task.
+function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlight) {
+  const rowTop = headHeight + task.row * rowHeight;
+  const y = rowTop + 21;
+  const h = 34;
+  const left = ganttPx(task.start, rangeStart, dayWidth);
+  const visualEnd = task.overrun ? task.due : task.end;
+  const right = ganttPx(visualEnd, rangeStart, dayWidth);
+  const totalRight = ganttPx(task.overrunEnd || task.end, rangeStart, dayWidth);
+  const width = Math.max(42, right - left);
+  const totalWidth = Math.max(width, totalRight - left);
+  const dueX = ganttPx(task.due, rangeStart, dayWidth);
+  const type = escAttr(task.ticket.type || 'task');
+  const blocked = task.blocked.length ? ' blocked' : '';
+  const aggregate = task.isAggregate ? ' aggregate' : '';
+  const pathClass = timelineTaskHighlightClass(task, highlight);
+  const label = ganttSvgBarLabel(task, totalWidth);
+  const saved = task.saved ? ganttSvgSaved(task, rangeStart, dayWidth, y, h) : '';
+  const late = task.late ? ganttSvgLate(task, rangeStart, dayWidth, y, h) : '';
+  const overrun = task.overrun ? ganttSvgOverrun(task, rangeStart, dayWidth, y, h) : '';
+  return '<g class="ganttSvgTask' + pathClass + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" role="button">' +
+    '<title>' + esc(ticketLabel(task.ticket)) + ' | ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</title>' + saved +
+    '<rect class="ganttSvgBar ' + type + blocked + aggregate + pathClass + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late +
+    '<text class="ganttSvgBarText" x="' + (left + 9) + '" y="' + (y + 21) + '">' + esc(label) + '</text>' +
+    '<line class="ganttSvgDueLine" x1="' + dueX + '" x2="' + dueX + '" y1="' + (rowTop + 10) + '" y2="' + (rowTop + rowHeight - 10) + '"></line>' +
+    '<rect class="ganttSvgDueTagBg" x="' + (dueX + 7) + '" y="' + (rowTop + 10) + '" width="' + Math.max(82, String(task.ticket.dueDate || fmtIsoDate(task.due)).length * 7 + 28) + '" height="20" rx="5"></rect>' +
+    '<text class="ganttSvgDueTag" x="' + (dueX + 13) + '" y="' + (rowTop + 24) + '">Due ' + esc(task.ticket.dueDate || fmtIsoDate(task.due)) + '</text>' +
+    '</g>';
+}
+
+// Chooses a readable label for a Gantt bar width.
+function ganttSvgBarLabel(task, width) {
+  if (width < 120) return ticketRef(task.ticket);
+  const text = width < 260 ? ticketLabel(task.ticket) : ticketLabel(task.ticket) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end);
+  return truncateSvgText(text, Math.max(4, Math.floor((width - 18) / 7)));
+}
+
+// Truncates SVG labels so they stay inside their bars.
+function truncateSvgText(text, limit) {
+  text = String(text || '');
+  if (text.length <= limit) return text;
+  return text.slice(0, Math.max(1, limit - 3)).trimEnd() + '...';
+}
+
+// Builds the saved-time segment for early completion.
+function ganttSvgSaved(task, rangeStart, dayWidth, y, h) {
+  const left = ganttPx(task.actualFinish, rangeStart, dayWidth);
+  const right = ganttPx(task.due, rangeStart, dayWidth);
+  const width = Math.max(0, right - left);
+  return width ? '<rect class="ganttSvgSaved" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' : '';
+}
+
+// Builds the delay segment for late completion.
+function ganttSvgLate(task, rangeStart, dayWidth, y, h) {
+  const left = ganttPx(task.due, rangeStart, dayWidth);
+  const right = ganttPx(task.actualFinish, rangeStart, dayWidth);
+  const width = Math.max(0, right - left);
+  return width ? '<rect class="ganttSvgLate" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' : '';
+}
+
+// Builds the overrun segment for Epics that exceed their due date.
+function ganttSvgOverrun(task, rangeStart, dayWidth, y, h) {
+  const left = ganttPx(task.due, rangeStart, dayWidth);
+  const right = ganttPx(task.overrunEnd, rangeStart, dayWidth);
+  const width = Math.max(0, right - left);
+  return width ? '<rect class="ganttSvgLate epicOverrun" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' : '';
+}
+
+// Builds dependency arrows between visible Gantt tasks.
+function ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, highlight) {
+  const byId = new Map(tasks.map(task => [task.ticket.id, task]));
+  const paths = [];
+  tasks.forEach(target => target.deps.forEach(dep => {
+    const source = byId.get(dep.id);
+    if (!source) return;
+    const edge = +dep.id + '>' + +target.ticket.id;
+    const pathClass = highlight?.active ? (highlight.direct.has(edge) ? ' selectedPath' : ' pathDimmed') : '';
+    const x1 = ganttPx(source.readyAt || ganttDependencyReady(source.ticket), rangeStart, dayWidth);
+    const x2 = ganttPx(target.start, rangeStart, dayWidth);
+    const y1 = headHeight + source.row * rowHeight + rowHeight / 2;
+    const y2 = headHeight + target.row * rowHeight + rowHeight / 2;
+    const bend = Math.max(x1, x2) + 24;
+    const endX = Math.max(0, x2 - 10);
+    paths.push('<path class="ganttSvgArrow' + pathClass + '" d="M ' + x1 + ' ' + y1 + ' H ' + bend + ' V ' + y2 + ' H ' + endX + '"></path>');
+  }));
+  return paths.join('');
+}
+
+// Builds the Gantt date axis.
+function ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) {
+  const parts = ['<line class="ganttSvgAxisLine" x1="0" x2="' + width + '" y1="' + axisTop + '" y2="' + axisTop + '"></line>'];
+  const step = totalDays <= 45 ? 1 : totalDays <= 180 ? 7 : 14;
+  for (let i = 0; i <= totalDays; i += step) {
+    const d = addDays(rangeStart, i);
+    const x = ganttPx(d, rangeStart, dayWidth);
+    parts.push('<line class="ganttSvgAxisTickLine" x1="' + x + '" x2="' + x + '" y1="' + axisTop + '" y2="' + (axisTop + 8) + '"></line>');
+    parts.push('<text class="ganttSvgAxisDay" x="' + x + '" y="' + (axisTop + 27) + '">' + String(d.getDate()).padStart(2, '0') + '</text>');
+  }
+  parts.push(ganttSvgAxisMonths(rangeStart, totalDays, dayWidth, axisTop, axisHeight));
+  return parts.join('');
+}
+
+// Builds month labels and boundaries for the Gantt axis.
+function ganttSvgAxisMonths(rangeStart, totalDays, dayWidth, axisTop, axisHeight) {
+  const parts = [];
+  const rangeEnd = addDays(rangeStart, totalDays);
+  let cursor = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+  while (cursor < rangeEnd) {
+    const next = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    const segmentStart = cursor < rangeStart ? rangeStart : cursor;
+    const segmentEnd = next > rangeEnd ? rangeEnd : next;
+    if (segmentEnd > segmentStart) {
+      const x1 = ganttPx(segmentStart, rangeStart, dayWidth);
+      const x2 = ganttPx(segmentEnd, rangeStart, dayWidth);
+      const label = monthLabel(cursor, rangeStart);
+      parts.push('<line class="ganttSvgAxisMonthBoundary" x1="' + x1 + '" x2="' + x1 + '" y1="' + axisTop + '" y2="' + (axisTop + axisHeight) + '"></line>');
+      parts.push('<text class="ganttSvgAxisMonth" x="' + ((x1 + x2) / 2) + '" y="' + (axisTop + 48) + '">' + esc(label) + '</text>');
+    }
+    cursor = next;
+  }
+  return parts.join('');
+}
+
+// Formats a month label for the timeline axis.
+function monthLabel(monthStart, rangeStart) {
+  const names = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const name = names[monthStart.getMonth()];
+  return monthStart.getFullYear() === rangeStart.getFullYear() ? name : name + ' ' + monthStart.getFullYear();
+}
+
+// Converts a date into an X coordinate on the Gantt chart.
+function ganttPx(date, rangeStart, dayWidth) {
+  const diff = dayDiff(rangeStart, date);
+  if (!Number.isFinite(diff)) return 0;
+  return Math.max(0, GANTT_LEFT_PAD + diff * dayWidth);
+}
+
+// Returns whether a value is a usable Date object.
+function validDate(d) {
+  return d instanceof Date && Number.isFinite(d.getTime()) && d.getFullYear() >= 1970;
+}
+
+// Formats a Date as yyyy-mm-dd.
+function fmtIsoDate(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Returns a date shifted by a number of days.
+function addDays(date, days) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return startOfDay(d);
+}
+
+// Returns a date shifted by a number of months.
+function addMonths(date, months) {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + months);
+  return startOfDay(d);
+}
+
+// Returns the day difference between two dates.
+function dayDiff(start, end) {
+  return Math.round((startOfDay(end) - startOfDay(start)) / 86400000);
+}
+
+// Returns a date normalized to midnight.
+function startOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+// Parses an ISO-like date string into a local Date.
+function parseDate(v) {
+  if (!v) return null;
+  const raw = String(v);
+  const iso = raw.match(/^\d{4}-\d{2}-\d{2}/);
+  const d = iso ? new Date(iso[0] + 'T00:00:00') : new Date(raw);
+  if (!validDate(d)) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// Extracts a date from a created-at timestamp.
+function dateFromCreated(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime()) || d.getFullYear() < 1970) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// Formats a Date for timeline display.
+function fmtDate(d) {
+  return String(d.getMonth() + 1).padStart(2, '0') + '.' + String(d.getDate()).padStart(2, '0') + '.';
+}
+
+// Renders user management and board sharing administration.
+function renderAdmin() {
+  const isAdmin = currentUserIsAdmin();
+  const boards = manageableBoards();
+  setHeader(isAdmin ? 'Admin' : 'Sharing', isAdmin ? 'Manage users and board access.' : 'Share boards you own.');
+  const root = $('#admin');
+  root.classList.remove('hidden');
+  root.innerHTML = (isAdmin ? adminCreateSection() + userManagementSection() : '') + boardSharingSection(boards);
+  enhancePasswordReveals(root);
+  if (isAdmin) $('#createUserBtn').onclick = createUser;
+  $$('.userAdminToggle').forEach(input => input.onchange = updateUserAdmin);
+  $$('.resetPasswordBtn').forEach(button => button.onclick = resetUserPassword);
+  $$('.deleteUserBtn').forEach(button => button.onclick = deleteUser);
+  $$('.boardAccessToggle').forEach(input => input.onchange = markBoardAccessDirty);
+  $$('.boardAccessSaveBtn').forEach(button => button.onclick = saveBoardAccess);
+}
+
+// Builds the admin create-user form.
+function adminCreateSection() {
+  return '<section class="panel adminPanel"><div class="adminHeader"><h2>Create user</h2></div><div class="adminCreateForm"><input id="createUsername" placeholder="Username">' + passwordFieldHtml('createPassword', 'Initial password') + passwordFieldHtml('createConfirmPassword', 'Repeat password') + '<label class="accessToggle createUserAccess"><input id="createUserAccess" type="checkbox" checked><span>Give access to current board</span></label><button id="createUserBtn" type="button">Create user</button></div></section>';
+}
+
+// Builds the user management list.
+function userManagementSection() {
+  return '<section class="panel adminPanel"><div class="adminHeader"><h2>User management</h2></div>' + state.users.map(userManagementRow).join('') + '</section>';
+}
+
+// Builds one user-management row.
+function userManagementRow(u) {
+  const admin = userIsAdmin(u);
+  const owner = currentBoardOwnerId() === +u.id;
+  const self = state.me && +state.me.id === +u.id;
+  const passwordId = 'resetPassword' + u.id;
+  const confirmId = 'resetPasswordConfirm' + u.id;
+  return '<div class="userRow adminUserRow userManagementRow">' + avatar(u.avatar) +
+    '<div><strong>' + esc(u.name) + (self ? ' <span class="pill">You</span>' : '') + (owner ? ' <span class="pill">Owner</span>' : '') + (admin ? ' <span class="pill">Admin</span>' : '') + '</strong><p class="muted">@' + esc(u.username || '') + '</p></div>' +
+    '<div class="adminControls userAdminControls"><label class="accessToggle"><input class="userAdminToggle" type="checkbox" data-user="' + u.id + '"' + (admin ? ' checked' : '') + (self ? ' disabled' : '') + '><span>Admin</span></label><div class="passwordReset">' + passwordFieldHtml(passwordId, 'New password', 'adminPasswordField', 'class="resetPasswordInput" data-user="' + u.id + '"') + passwordFieldHtml(confirmId, 'Repeat password', 'adminPasswordField', 'class="resetPasswordConfirmInput" data-user="' + u.id + '"') + '<button class="resetPasswordBtn ghost" data-user="' + u.id + '" type="button">Set password</button></div><button class="deleteUserBtn ghost danger" data-user="' + u.id + '" type="button"' + (self ? ' disabled' : '') + '>Delete</button></div></div>';
+}
+
+// Builds all manageable board-sharing panels.
+function boardSharingSection(boards) {
+  if (!boards.length) {
+    return '<section class="panel adminPanel"><div class="adminHeader"><h2>Board sharing</h2></div><p class="muted">No boards are available to share yet.</p></section>';
+  }
+  return '<section class="panel adminPanel"><div class="adminHeader"><h2>Board sharing</h2></div><p class="muted boardSharingHint">Grant or remove full access per board. Admins and board owners keep access.</p><div class="boardSharingList">' + boards.map(boardSharingBoard).join('') + '</div></section>';
+}
+
+// Builds the sharing panel for one board.
+function boardSharingBoard(board) {
+  const id = boardId(board);
+  const status = boardAccessSaveStatus[id] || '';
+  return '<div class="boardSharingBoard" data-board="' + id + '"><div class="boardSharingBoardHeader"><div><h3>' + esc(boardName(board)) + '</h3><p class="muted">Owner: ' + esc(assigneeName(boardOwnerId(board))) + '</p></div><div class="boardSharingActions"><span class="boardAccessSaveState" data-board="' + id + '">' + esc(status) + '</span><button class="boardAccessSaveBtn" data-board="' + id + '" type="button">Save</button></div></div>' + state.users.map(u => boardSharingRow(u, board)).join('') + '</div>';
+}
+
+// Builds one board-sharing row for a user.
+function boardSharingRow(u, board) {
+  const admin = userIsAdmin(u);
+  const id = boardId(board);
+  const owner = boardOwnerId(board) === +u.id;
+  const checked = (admin || owner || userHasBoardAccess(u.id, id)) ? ' checked' : '';
+  const self = state.me && +state.me.id === +u.id;
+  return '<div class="userRow adminUserRow boardSharingRow">' + avatar(u.avatar) +
+    '<div><strong>' + esc(u.name) + (self ? ' <span class="pill">You</span>' : '') + (owner ? ' <span class="pill">Owner</span>' : '') + (admin ? ' <span class="pill">Admin</span>' : '') + '</strong><p class="muted">@' + esc(u.username || '') + '</p></div>' +
+    '<div class="adminControls boardAccessControls"><label class="accessToggle"><input class="boardAccessToggle" type="checkbox" data-board="' + id + '" data-user="' + u.id + '" data-initial="' + (checked ? 'true' : 'false') + '"' + checked + ((admin || owner) ? ' disabled' : '') + '><span>Full access</span></label></div></div>';
+}
+
+// Returns whether a user currently has access to a board.
+function userHasBoardAccess(userId, id = currentBoardId()) {
+  const access = (state.allBoardAccess || []).length ? state.allBoardAccess : (state.boardAccess || []);
+  const row = access.find(x => {
+    const rowUser = +(x.userId ?? x.user_id ?? x.UserID);
+    const rowBoard = +(x.boardId ?? x.board_id ?? x.BoardID ?? id);
+    return rowUser === +userId && rowBoard === +id;
+  });
+  return !!(row && +(row.fullAccess ?? row.full_access ?? row.FullAccess));
+}
+
+// Marks a board-sharing panel as having unsaved changes.
+function markBoardAccessDirty(e) {
+  const id = +e.currentTarget.dataset.board;
+  boardAccessSaveStatus[id] = 'Unsaved';
+  const stateEl = $('.boardAccessSaveState[data-board="' + id + '"]');
+  if (stateEl) stateEl.textContent = 'Unsaved';
+}
+
+// Saves changed board access rows for one board.
+async function saveBoardAccess(e) {
+  const button = e.currentTarget;
+  const id = +button.dataset.board;
+  const inputs = $$('.boardAccessToggle[data-board="' + id + '"]');
+  const changed = inputs.filter(input => input.checked !== (input.dataset.initial === 'true'));
+  const stateEl = $('.boardAccessSaveState[data-board="' + id + '"]');
+  button.disabled = true;
+  if (stateEl) stateEl.textContent = 'Saving...';
+  try {
+    for (const input of changed) {
+      await api('/api/board-access', { method: 'POST', body: JSON.stringify({ BoardID: id, UserID: +input.dataset.user, FullAccess: input.checked }) });
+      input.dataset.initial = input.checked ? 'true' : 'false';
+      setBoardAccessState(id, +input.dataset.user, input.checked);
+    }
+    boardAccessSaveStatus[id] = 'Saved';
+    if (stateEl) stateEl.textContent = 'Saved';
+    window.setTimeout(() => {
+      if (boardAccessSaveStatus[id] === 'Saved') {
+        delete boardAccessSaveStatus[id];
+        const freshState = $('.boardAccessSaveState[data-board="' + id + '"]');
+        if (freshState) freshState.textContent = '';
+      }
+    }, 1800);
+  } catch (err) {
+    if (stateEl) stateEl.textContent = 'Error';
+    alert((err.message || 'Board access could not be updated.').trim());
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// Updates local access state after saving board sharing.
+function setBoardAccessState(boardID, userID, fullAccess) {
+  const full = fullAccess ? 1 : 0;
+  // Applies the saved access flag to whichever local access cache is present.
+  const update = rows => {
+    let row = rows.find(x => +(x.boardId ?? x.board_id ?? x.BoardID ?? boardID) === +boardID && +(x.userId ?? x.user_id ?? x.UserID) === +userID);
+    if (!row) {
+      row = { boardId: boardID, userId: userID };
+      rows.push(row);
+    }
+    row.fullAccess = full;
+    row.full_access = full;
+  };
+  update(state.allBoardAccess || (state.allBoardAccess = []));
+  if (+boardID === currentBoardId()) update(state.boardAccess || (state.boardAccess = []));
+}
+
+// Toggles global admin rights for a user.
+async function updateUserAdmin(e) {
+  const input = e.currentTarget;
+  const previous = !input.checked;
+  try {
+    await api('/api/users/admin', { method: 'POST', body: JSON.stringify({ UserID: +input.dataset.user, IsAdmin: input.checked }) });
+    await load();
+  } catch (err) {
+    input.checked = previous;
+    alert((err.message || 'Admin role could not be updated.').trim());
+  }
+}
+
+// Sets a replacement password for a user.
+async function resetUserPassword(e) {
+  const userId = +e.currentTarget.dataset.user;
+  const password = confirmedPassword('#resetPassword' + userId, '#resetPasswordConfirm' + userId, null, 'Please enter a new password.');
+  if (!password) return;
+  try {
+    await api('/api/users/password', { method: 'POST', body: JSON.stringify({ UserID: userId, Password: password }) });
+    clearPasswordInputs('#resetPassword' + userId, '#resetPasswordConfirm' + userId);
+    alert('Password was updated. The user must change it after logging in.');
+  } catch (err) {
+    alert((err.message || 'Password could not be updated.').trim());
+  }
+}
+
+// Creates a user from the admin form.
+async function createUser() {
+  const username = $('#createUsername').value.trim();
+  const password = confirmedPassword('#createPassword', '#createConfirmPassword', null, 'Please enter an initial password.');
+  if (!username) {
+    $('#createUsername').focus();
+    return;
+  }
+  if (!password) return;
+  try {
+    await api('/api/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        Username: username,
+        Password: password,
+        BoardID: currentBoardId(),
+        FullAccess: $('#createUserAccess').checked,
+      }),
+    });
+    await load();
+  } catch (err) {
+    alert((err.message || 'User could not be created.').trim());
+  }
+}
+
+// Deletes a regular user through the admin API.
+async function deleteUser(e) {
+  const userId = +e.currentTarget.dataset.user;
+  const user = state.users.find(u => +u.id === userId);
+  if (!user || (state.me && +state.me.id === userId)) return;
+  if (!confirm('Delete ' + (user.name || user.username || 'this user') + '? This removes their sessions, comments, and board access.')) return;
+  try {
+    await api('/api/users', { method: 'DELETE', body: JSON.stringify({ UserID: userId }) });
+    await load();
+  } catch (err) {
+    alert((err.message || 'User could not be deleted.').trim());
+  }
+}
+
+// Renders the current configuration summary.
+function renderConfig() {
+  setHeader('Configuration', 'Board and system options.');
+  const root = $('#config');
+  root.classList.remove('hidden');
+  root.innerHTML = '<section class="panel"><h2>Current board</h2><div class="configGrid"><span>Name</span><strong>' + esc(state.board?.name || 'Board') + '</strong><span>Owner</span><strong>' + esc(assigneeName(currentBoardOwnerId())) + '</strong><span>Mode</span><strong>' + esc(state.authMode) + '</strong><span>Columns</span><strong>' + state.columns.length + '</strong><span>Labels</span><strong>' + state.labels.length + '</strong><span>Milestones</span><strong>' + state.milestones.length + '</strong><span>Tickets</span><strong>' + state.tickets.length + '</strong></div></section><section class="panel"><h2>Local data</h2><div class="configGrid"><span>Storage</span><strong>SQLite in the data volume</strong><span>Runtime network</span><strong>No outbound app calls</strong><span>Users</span><strong>' + state.users.length + '</strong><span>Export format</span><strong>Kanbanodon JSON</strong></div></section>';
+}
+
+// Closes the ticket drawer and optionally updates the route.
+function closeDrawer(updateRoute = true) {
+  editing = null;
+  $('#drawer').classList.add('hidden');
+  if (updateRoute) syncRoute('replace', 0);
+}
+
+// Opens the ticket drawer for editing one ticket.
+function openTicket(id, updateRoute = true) {
+  editing = state.tickets.find(t => t.id === id);
+  if (!editing) return;
+  if (updateRoute) syncRoute('push', editing.id);
+  const users = state.users.map(u => '<option value="' + u.id + '">' + esc(u.name) + '</option>').join('');
+  const miles = '<option value="0">No milestone</option>' + state.milestones.map(m => '<option value="' + m.id + '">' + esc(m.name) + '</option>').join('');
+  const labelText = editing.labels.join(', ');
+  const blocked = unfinishedDependencies(editing);
+  const idea = isIdea(editing);
+  const typeOptions = ['epic', 'story', 'task', 'bug', 'idea'].map(type => '<option>' + type + '</option>').join('');
+  const planningFields = idea ? '' : '<label>Duration (days)<input id="dDuration" type="number" min="0" max="365" value="' + ticketDuration(editing) + '"></label><label>Start date<input id="dStart" type="date" value="' + (editing.startDate || '') + '"></label><label>Due date<input id="dDue" type="date" value="' + (editing.dueDate || '') + '"></label><label>Assignee<select id="dAssignee"><option value="0">Nobody</option>' + users + '</select></label><label>Milestone<select id="dMilestone">' + miles + '</select></label>' + parentSelectHtml(editing) + dependencyPickerHtml(editing);
+  $('#drawer').classList.remove('hidden');
+  $('#drawer').innerHTML = '<div class="drawerHeader"><h2>' + esc(ticketRef(editing)) + '</h2><button id="drawerCloseBtn" class="iconBtn" type="button" title="Close" aria-label="Close editor">&times;</button></div><p id="drawerError" class="drawerError" role="alert"></p>' + (blocked.length && !idea ? '<p class="dependencyWarning">Can start after these tickets are done: ' + blocked.map(t => esc(ticketLabel(t))).join(', ') + '</p>' : '') + '<label>Title<input id="dTitle" value="' + escAttr(editing.title) + '"></label><label>Description<textarea id="dBody">' + esc(editing.body) + '</textarea></label><label>Type<select id="dType">' + typeOptions + '</select></label>' + planningFields + '<label>Labels<input id="dLabels" value="' + escAttr(labelText) + '"></label><div style="margin-top:12px"><button id="saveBtn">Save</button> <button id="deleteBtn" class="ghost">Delete</button> <button id="closeBtn" class="ghost">Close</button></div><section class="comments"><strong>Comments</strong><div id="commentList"></div><textarea id="commentBody" placeholder="Comment"></textarea><button id="commentBtn">Comment</button></section>';
+  $('#dType').value = editing.type;
+  if (!idea) {
+    $('#dAssignee').value = editing.assigneeId;
+    $('#dMilestone').value = editing.milestoneId;
+    $('#dParent').value = editing.parentId || 0;
+  }
+  $('#drawerCloseBtn').onclick = closeDrawer;
+  $('#saveBtn').onclick = saveDrawer;
+  $('#deleteBtn').onclick = deleteTicket;
+  $('#closeBtn').onclick = closeDrawer;
+  $('#commentBtn').onclick = addComment;
+  setupDependencyPicker();
+  renderComments();
+}
+
+// Renders comments for the currently edited ticket.
+function renderComments() {
+  const list = state.comments.filter(c => (c.ticketId ?? c.ticket_id) == editing.id);
+  $('#commentList').innerHTML = list.map(c => '<p class="row">' + esc(c.body) + '<br><span class="muted">' + (c.createdAt ?? c.created_at) + '</span></p>').join('') || '<p class="muted">No comments yet</p>';
+}
+
+// Displays an error message inside the ticket drawer.
+function showDrawerError(message) {
+  const el = $('#drawerError');
+  if (el) el.textContent = message || '';
+}
+
+// Builds the dependency picker markup for the drawer.
+function dependencyPickerHtml(ticket) {
+  return '<div class="drawerField dependencyFieldWrap"><span class="drawerLabel">Depends on</span><button id="dependencyField" class="dependencyField" type="button">' + esc(dependencySummary(ticket.links)) + '</button><div id="dependencyPicker" class="dependencyPicker hidden"><input id="dependencySearch" type="search" placeholder="Search tickets"><div id="dependencyOptions" class="dependencyOptions"></div></div></div>';
+}
+
+// Formats selected dependency ids for a compact display.
+function dependencySummary(ids) {
+  const deps = (ids || []).map(id => state.tickets.find(t => t.id == id)).filter(Boolean);
+  return deps.length ? deps.map(ticketLabel).join(', ') : 'No dependencies';
+}
+
+// Attaches interactions for the drawer dependency picker.
+function setupDependencyPicker() {
+  const field = $('#dependencyField');
+  const picker = $('#dependencyPicker');
+  const search = $('#dependencySearch');
+  if (!field || !picker || !search) return;
+  field.onclick = () => {
+    picker.classList.toggle('hidden');
+    renderDependencyOptions();
+    if (!picker.classList.contains('hidden')) search.focus();
+  };
+  search.oninput = renderDependencyOptions;
+  renderDependencyOptions();
+}
+
+// Renders available dependency checkboxes in the drawer.
+function renderDependencyOptions() {
+  const root = $('#dependencyOptions');
+  if (!root || !editing) return;
+  const q = ($('#dependencySearch')?.value || '').toLowerCase();
+  const selected = new Set((editing.links || []).map(Number));
+  const options = workTickets().filter(t => t.id !== editing.id).filter(t => !q || (ticketLabel(t) + ' ' + t.type).toLowerCase().includes(q));
+  root.innerHTML = options.map(t => '<label class="dependencyOption"><input type="checkbox" value="' + t.id + '" ' + (selected.has(t.id) ? 'checked' : '') + '><span><strong>' + esc(ticketLabel(t)) + '</strong><small>' + esc(t.type) + (t.dueDate ? ' - ' + esc(t.dueDate) : '') + '</small></span></label>').join('') || '<p class="muted">No matching tickets</p>';
+  $$('#dependencyOptions input[type="checkbox"]').forEach(input => input.onchange = () => {
+    const set = new Set((editing.links || []).map(Number));
+    const id = +input.value;
+    if (input.checked) set.add(id);
+    else set.delete(id);
+    editing.links = [...set];
+    $('#dependencyField').textContent = dependencySummary(editing.links);
+  });
+}
+
+// Attaches interactions for the new-ticket dependency picker.
+function setupNewDependencyPicker() {
+  const field = $('#newDependencyField');
+  const picker = $('#newDependencyPicker');
+  const search = $('#newDependencySearch');
+  if (!field || !picker || !search) return;
+  field.textContent = dependencySummary(newTicketLinks);
+  field.onclick = () => {
+    picker.classList.toggle('hidden');
+    renderNewDependencyOptions();
+    if (!picker.classList.contains('hidden')) search.focus();
+  };
+  search.oninput = renderNewDependencyOptions;
+  renderNewDependencyOptions();
+}
+
+// Renders dependency checkboxes for the new-ticket composer.
+function renderNewDependencyOptions() {
+  const root = $('#newDependencyOptions');
+  if (!root) return;
+  const q = ($('#newDependencySearch')?.value || '').toLowerCase();
+  const selected = new Set(newTicketLinks.map(Number));
+  const options = workTickets().filter(t => !q || (ticketLabel(t) + ' ' + t.type).toLowerCase().includes(q));
+  root.innerHTML = options.map(t => '<label class="dependencyOption"><input type="checkbox" value="' + t.id + '" ' + (selected.has(t.id) ? 'checked' : '') + '><span><strong>' + esc(ticketLabel(t)) + '</strong><small>' + esc(t.type) + (t.dueDate ? ' - ' + esc(t.dueDate) : '') + '</small></span></label>').join('') || '<p class="muted">No matching tickets</p>';
+  $$('#newDependencyOptions input[type="checkbox"]').forEach(input => input.onchange = () => {
+    const set = new Set(newTicketLinks.map(Number));
+    const id = +input.value;
+    if (input.checked) set.add(id);
+    else set.delete(id);
+    newTicketLinks = [...set];
+    $('#newDependencyField').textContent = dependencySummary(newTicketLinks);
+  });
+}
+
+// Persists changes from the ticket drawer.
+async function saveDrawer() {
+  const nextType = normalizeTicketType($('#dType').value);
+  const idea = nextType === 'idea';
+  Object.assign(editing, {
+    title: $('#dTitle').value,
+    body: $('#dBody').value,
+    type: nextType,
+    duration: idea ? 0 : (+($('#dDuration')?.value || 0)),
+    startDate: idea ? '' : ($('#dStart')?.value || ''),
+    dueDate: idea ? '' : ($('#dDue')?.value || ''),
+    assigneeId: idea ? 0 : (+($('#dAssignee')?.value || 0)),
+    milestoneId: idea ? 0 : (+($('#dMilestone')?.value || 0)),
+    parentId: idea ? 0 : (+($('#dParent')?.value || 0)),
+    labels: $('#dLabels').value.split(',').map(x => x.trim()).filter(Boolean),
+    links: idea ? [] : (editing.links || []).map(Number).filter(Boolean),
+  });
+  try {
+    await saveTicket(editing);
+    closeDrawer();
+  } catch (e) {
+    showDrawerError((e.message || 'Ticket could not be saved.').trim());
+  }
+}
+
+// Saves a ticket through the API.
+async function saveTicket(t) {
+  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body, Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate, DueDate: t.dueDate, MilestoneID: t.milestoneId, AssigneeID: t.assigneeId, Position: t.position, Labels: t.labels, Links: t.links }) });
+  await load();
+}
+
+// Deletes the currently edited ticket through the API.
+async function deleteTicket() {
+  if (!editing) return;
+  await api('/api/tickets/' + editing.id, { method: 'DELETE', body: '{}' });
+  closeDrawer();
+  await load();
+}
+
+// Adds a comment to the currently edited ticket.
+async function addComment() {
+  const body = $('#commentBody').value.trim();
+  if (!body) return;
+  await api('/api/tickets/' + editing.id + '/comments', { method: 'POST', body: JSON.stringify({ Body: body }) });
+  await load();
+  openTicket(editing.id);
+}
+
+// Shows a board composer error message.
+function showFormError(message) {
+  $('#formError').textContent = message || '';
+}
+
+$('#addBtn').onclick = async () => {
+  const title = $('#newTitle').value.trim();
+  showFormError('');
+  if (!title) {
+    showFormError('Please enter a ticket title.');
+    $('#newTitle').focus();
+    return;
+  }
+  if (!currentBoardId()) {
+    showFormError('No board is available for your account yet.');
+    return;
+  }
+  try {
+    await api('/api/tickets' + boardQuery(), { method: 'POST', body: JSON.stringify({ BoardID: currentBoardId(), Title: title, Type: $('#newType').value, ParentID: +$('#newParent').value || 0, Duration: +$('#newDuration').value || 0, DueDate: $('#newDue').value, ColumnID: state.columns[0]?.id, Links: newTicketLinks }) });
+    $('#newTitle').value = '';
+    $('#newParent').value = '0';
+    $('#newDuration').value = '';
+    newTicketLinks = [];
+    $('#newDependencyPicker').classList.add('hidden');
+    $('#newDependencySearch').value = '';
+    await load();
+  } catch (e) {
+    showFormError((e.message || 'Ticket could not be created.').trim());
+  }
+};
+
+// Creates a standalone idea ticket.
+async function createIdea() {
+  const title = $('#ideaTitle').value.trim();
+  const body = $('#ideaBody').value.trim();
+  if (!title) {
+    $('#ideaError').textContent = 'Please enter an idea title.';
+    $('#ideaTitle').focus();
+    return;
+  }
+  if (!currentBoardId()) {
+    $('#ideaError').textContent = 'No board is available for your account yet.';
+    return;
+  }
+  try {
+    $('#ideaError').textContent = '';
+    await api('/api/tickets' + boardQuery(), { method: 'POST', body: JSON.stringify({ BoardID: currentBoardId(), Title: title, Body: body, Type: 'idea', ColumnID: state.columns[0]?.id }) });
+    await load();
+  } catch (err) {
+    $('#ideaError').textContent = (err.message || 'Idea could not be created.').trim();
+  }
+}
+
+$$('.navButton').forEach(b => b.onclick = () => {
+  view = b.dataset.view;
+  closeDrawer();
+  renderView();
+  syncRoute('push', 0);
+});
+
+$('#homeLink').onclick = e => {
+  e.preventDefault();
+  view = 'board';
+  closeDrawer();
+  renderView();
+  syncRoute('push', 0);
+};
+
+['search', 'typeFilter', 'labelFilter'].forEach(id => $('#' + id).oninput = renderView);
+$('#exportBtn').onclick = () => location.href = '/api/export' + boardQuery();
+$('#importFile').onchange = async e => {
+  const f = e.target.files[0];
+  if (f) {
+    await fetch('/api/import' + boardQuery(), { method: 'POST', body: await f.text() });
+    await load();
+  }
+};
+$('#loginBtn').onclick = async () => {
+  try {
+    $('#loginError').textContent = '';
+    await api('/api/login', { method: 'POST', body: JSON.stringify({ Login: $('#loginUsername').value, Password: $('#password').value }) });
+    await load();
+  } catch (e) {
+    $('#loginError').textContent = (e.message || 'Login failed.').trim();
+  }
+};
+$('#signupBtn').onclick = async () => {
+  try {
+    $('#signupError').textContent = '';
+    const username = $('#signupUsername').value.trim();
+    const password = confirmedPassword('#signupPassword', '#signupConfirmPassword', '#signupError');
+    if (!username) {
+      $('#signupError').textContent = 'Please enter a username.';
+      $('#signupUsername').focus();
+      return;
+    }
+    if (!password) return;
+    await api('/api/signup', { method: 'POST', body: JSON.stringify({ Username: username, Password: password }) });
+    await load();
+  } catch (e) {
+    $('#signupError').textContent = (e.message || 'Signup failed.').trim();
+  }
+};
+$('#forgotPasswordBtn').onclick = () => {
+  $('#loginError').textContent = 'Please contact an admin to set a new password.';
+};
+$('#savePasswordBtn').onclick = async () => {
+  try {
+    $('#passwordError').textContent = '';
+    const newPassword = confirmedPassword('#newPassword', '#confirmPassword', '#passwordError', 'Please enter a new password.');
+    if (!newPassword) return;
+    await api('/api/password', { method: 'POST', body: JSON.stringify({ CurrentPassword: $('#currentPassword').value, NewPassword: newPassword }) });
+    await load();
+  } catch (e) {
+    $('#passwordError').textContent = (e.message || 'Password could not be changed.').trim();
+  }
+};
+$('#cancelPasswordBtn').onclick = hidePasswordChange;
+enhancePasswordReveals(document);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('#drawer').classList.contains('hidden')) closeDrawer();
+  else if (e.key === 'Escape' && !$('#passwordPanel').classList.contains('hidden') && !currentUserMustChangePassword()) hidePasswordChange();
+});
+document.addEventListener('click', e => {
+  const me = $('#me');
+  if (me && !me.contains(e.target)) $('#accountMenu')?.classList.add('hidden');
+});
+window.addEventListener('hashchange', () => {
+  if (!router || !state.me) return;
+  applyRoute(router.parseRoute());
+});
+
+window.openTicket = openTicket;
+window.selectTimelineTask = selectTimelineTask;
+
+// Escapes text for safe HTML content.
+function esc(s) {
+  return String(s ?? '').replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+}
+
+// Escapes text for safe HTML attribute values.
+function escAttr(s) {
+  return esc(s).replace(/"/g, '&quot;');
+}
+
+load();

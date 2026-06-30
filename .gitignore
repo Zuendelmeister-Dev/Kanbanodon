@@ -1,0 +1,42 @@
+# Local runtime data
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# Local caches and temporary files
+.cache/
+tmp/
+temp/
+*.tmp
+*.log
+*.pid
+
+# Backups and exports
+*.bak
+*.backup
+*.tgz
+*.tar
+*.zip
+
+# Go build and test output
+bin/
+dist/
+*.exe
+*.test
+coverage.out
+
+# JavaScript dependencies and logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

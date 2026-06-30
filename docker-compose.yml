@@ -1,0 +1,18 @@
+services:
+  kanbanodon:
+    build: .
+    container_name: kanbanodon
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KANBANODON_ADDR: ":8080"
+      KANBANODON_DATA_DIR: "/data"
+      KANBANODON_AUTH_MODE: "local"
+      KANBANODON_ALLOW_SIGNUP: "true"
+      KANBANODON_SESSION_SECRET: "change-this-long-random-secret"
+    volumes:
+      - kanbanodon-data:/data
+    restart: unless-stopped
+
+volumes:
+  kanbanodon-data:
