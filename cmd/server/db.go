@@ -109,10 +109,26 @@ func ticketBelongsToBoard(db *sql.DB, ticketID, boardID int64) bool {
 	return db.QueryRow("select count(*) from tickets where id=? and board_id=?", ticketID, boardID).Scan(&n) == nil && n > 0
 }
 
-// ticketCanBeParent verifies that a ticket may be used as a parent item.
-func ticketCanBeParent(db *sql.DB, ticketID, boardID int64) bool {
-	var n int
-	return db.QueryRow("select count(*) from tickets where id=? and board_id=? and type <> 'idea'", ticketID, boardID).Scan(&n) == nil && n > 0
+// ticketCanBeParent verifies that a ticket may parent the requested child type.
+func ticketCanBeParent(db *sql.DB, ticketID, boardID int64, childType string) bool {
+	var parentType string
+	if db.QueryRow("select type from tickets where id=? and board_id=?", ticketID, boardID).Scan(&parentType) != nil {
+		return false
+	}
+	return parentTypeAllowed(parentType, childType)
+}
+
+// parentTypeAllowed keeps hierarchy choices to work item types that make product sense.
+func parentTypeAllowed(parentType, childType string) bool {
+	switch ticketType(childType) {
+	case "story":
+		return ticketType(parentType) == "epic"
+	case "task", "bug":
+		parent := ticketType(parentType)
+		return parent == "epic" || parent == "story"
+	default:
+		return false
+	}
 }
 
 // parentWouldCreateCycle checks whether a parent assignment would loop.

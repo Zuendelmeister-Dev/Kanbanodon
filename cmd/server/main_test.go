@@ -302,6 +302,20 @@ func TestCreateTicketRejectsIdeaParent(t *testing.T) {
 	}
 }
 
+// TestCreateTicketRejectsTaskParentForTask verifies task rows cannot become hierarchy parents.
+func TestCreateTicketRejectsTaskParentForTask(t *testing.T) {
+	s := newTestServer(t)
+	parentID := createTestTicket(t, s, `{"Title":"Parent task","Type":"task"}`)
+
+	childReq := httptest.NewRequest(http.MethodPost, "/api/tickets", bytes.NewBufferString(`{"Title":"Nested task","Type":"task","ParentID":`+strconv.FormatInt(parentID, 10)+`}`))
+	childRec := httptest.NewRecorder()
+	s.withUser(s.createTicket).ServeHTTP(childRec, childReq)
+
+	if childRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected task parent to be rejected, got %d with body %q", childRec.Code, childRec.Body.String())
+	}
+}
+
 // TestDependencyBlocksStartUntilDependencyDone verifies workflow moves respect dependencies.
 func TestDependencyBlocksStartUntilDependencyDone(t *testing.T) {
 	s := newTestServer(t)

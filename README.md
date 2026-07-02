@@ -464,7 +464,6 @@ Check browser JavaScript syntax:
 ```bash
 node --check web/static/app.js
 node --check web/static/dino-avatar.js
-node --check web/static/dino-avatar-lab.js
 ```
 
 Run the avatar asset test:
