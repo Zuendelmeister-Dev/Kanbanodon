@@ -1,7 +1,11 @@
 const router = window.KanbanodonRoute;
 const initialRoute = router?.parseRoute() || { view: 'board', boardId: 0, ticketId: 0 };
 
-let state = { boards: [], board: null, columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
+function emptyState() {
+  return { boards: [], board: null, columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
+}
+
+let state = emptyState();
 let view = initialRoute.view;
 let editing = null;
 let selectedBoardId = initialRoute.boardId || +(localStorage.getItem('kanbanodon.boardId') || 0) || 0;
@@ -20,8 +24,16 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 // Calls the JSON API and turns non-2xx responses into thrown errors.
 const api = (url, opts = {}) => fetch(url, { headers: { 'content-type': 'application/json' }, ...opts }).then(async r => {
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const text = await r.text();
+  if (!r.ok) {
+    const err = new Error((text || r.statusText || 'Request failed').trim());
+    err.status = r.status;
+    err.url = url;
+    if (isLoginRequired(err)) showLoginRequired();
+    throw err;
+  }
+  const body = text.trim();
+  return body ? JSON.parse(body) : {};
 });
 
 // Returns the currently selected board id, falling back to the first accessible board.
@@ -85,8 +97,29 @@ async function load() {
     if (currentUserMustChangePassword()) showPasswordChange(true);
     else hidePasswordChange();
   } catch (e) {
-    showLoggedOut();
+    if (isLoginRequired(e)) {
+      showLoginRequired();
+      return;
+    }
+    showLoadError(e);
   }
+}
+
+// Returns whether an API failure came from an expired or missing login session.
+function isLoginRequired(err) {
+  return err?.status === 401 && /login required/i.test(err.message || '');
+}
+
+// Reports a refresh failure without discarding the last good client state.
+function showLoadError(err) {
+  console.error('Kanbanodon state refresh failed', err);
+  const message = (err.message || 'Data could not be refreshed.').trim();
+  if (!state.me) {
+    showLoggedOut();
+    $('#loginError').textContent = message;
+    return;
+  }
+  $('#viewSubtitle').textContent = 'Could not refresh data: ' + message;
 }
 
 // Renders global chrome, filters, navigation, and the active view.
@@ -186,9 +219,9 @@ function ticketRef(t) {
   return '#' + (t?.ref || t?.id || '');
 }
 
-// Combines the ticket reference and title for labels and pickers.
+// Returns the readable ticket name used in compact UI labels.
 function ticketLabel(t) {
-  return ticketRef(t) + ' ' + (t?.title || '');
+  return t?.title || ticketRef(t);
 }
 
 // Returns whether a ticket is an idea rather than delivery work.
@@ -218,15 +251,34 @@ function descendantTickets(parentId, seen = new Set()) {
   return childTickets(parentId).flatMap(child => [child, ...descendantTickets(child.id, seen)]);
 }
 
-// Lists safe parent choices while excluding cycles and descendants.
-function parentCandidates(currentId = 0) {
+// Returns whether a parent type is valid for a child type.
+function parentTypeAllowed(parentType, childType) {
+  const parent = normalizeTicketType(parentType);
+  switch (normalizeTicketType(childType)) {
+    case 'story':
+      return parent === 'epic';
+    case 'task':
+    case 'bug':
+      return parent === 'epic' || parent === 'story';
+    default:
+      return false;
+  }
+}
+
+// Lists safe parent choices while excluding cycles, descendants, and unsuitable types.
+function parentCandidates(childType = 'task', currentId = 0) {
   const blocked = new Set([+currentId, ...descendantTickets(currentId).map(t => +t.id)].filter(Boolean));
-  return workTickets().filter(t => !blocked.has(+t.id)).sort(ticketOrder);
+  return workTickets().filter(t => !blocked.has(+t.id) && parentTypeAllowed(t.type, childType)).sort(ticketOrder);
 }
 
 // Finds a ticket by id for parent lookups.
 function parentTicket(id) {
   return state.tickets.find(t => t.id == id);
+}
+
+// Finds a user by id for assignee labels and avatars.
+function userById(id) {
+  return state.users.find(u => +u.id === +id);
 }
 
 // Counts direct child items for a ticket.
@@ -252,11 +304,37 @@ function renderAccount() {
   $('#accountLogoutBtn').onclick = logout;
 }
 
-// Switches the UI into logged-out mode.
-function showLoggedOut() {
-  state = { boards: [], board: null, columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
+// Returns whether the client has useful data that should survive a session timeout.
+function hasLoadedState() {
+  return !!(state.me || state.board || state.boards.length || state.tickets.length);
+}
+
+// Resets in-memory data and optionally forgets the selected board.
+function resetClientState(clearBoardSelection) {
+  state = emptyState();
+  if (!clearBoardSelection) return;
   selectedBoardId = 0;
   localStorage.removeItem('kanbanodon.boardId');
+}
+
+// Shows the login panel after the server reports an expired or missing session.
+function showLoginRequired() {
+  const hadState = hasLoadedState();
+  state = { ...state, me: null };
+  $('#mode').textContent = 'login';
+  $('#me').innerHTML = '';
+  $('.tools').classList.add('hidden');
+  $('#login').classList.remove('hidden');
+  $('#passwordPanel').classList.add('hidden');
+  $('#app').classList.add('hidden');
+  $('#loginError').textContent = hadState ? 'Session expired. Please log in again.' : '';
+  $('#signupError').textContent = '';
+  $('#loginUsername').focus();
+}
+
+// Switches the UI into explicit logged-out mode.
+function showLoggedOut() {
+  resetClientState(true);
   $('#mode').textContent = 'login';
   $('#me').innerHTML = '';
   $('.tools').classList.add('hidden');
@@ -380,12 +458,13 @@ function clearPasswordInputs(...selectors) {
 }
 
 // Builds the avatar markup for a user or generated dinosaur avatar.
-function avatar(name) {
+function avatar(name, title = '') {
   const seed = name || 'dino';
+  const tooltip = title || seed;
   if (window.KanbanodonDinoAvatars) {
-    return '<span class="avatar dinoAvatar" title="' + escAttr(seed) + '">' + window.KanbanodonDinoAvatars.createDinoAvatar(seed, { template: seed, size: 48, palette: 'Original' }) + '</span>';
+    return '<span class="avatar dinoAvatar" title="' + escAttr(tooltip) + '">' + window.KanbanodonDinoAvatars.createDinoAvatar(seed, { template: seed, size: 48, palette: 'Original' }) + '</span>';
   }
-  return '<span class="avatar" title="' + escAttr(seed) + '">' + seed.slice(0, 2).toUpperCase() + '</span>';
+  return '<span class="avatar" title="' + escAttr(tooltip) + '">' + seed.slice(0, 2).toUpperCase() + '</span>';
 }
 
 // Renders board selection and new-board controls.
@@ -446,6 +525,12 @@ function renderFilters() {
   const cur = lf.value;
   lf.innerHTML = '<option value="">All labels</option>' + state.labels.map(l => '<option>' + esc(l.name) + '</option>').join('');
   lf.value = cur;
+  const af = $('#assigneeFilter');
+  if (af) {
+    const assignee = af.value;
+    af.innerHTML = '<option value="">All assignees</option>' + state.users.map(u => '<option value="' + u.id + '">' + esc(u.name || u.username || 'User') + '</option>').join('');
+    af.value = [...af.options].some(o => o.value === assignee) ? assignee : '';
+  }
 }
 
 // Renders the parent selector for the new-ticket composer.
@@ -453,15 +538,48 @@ function renderNewParentSelect() {
   const select = $('#newParent');
   if (!select) return;
   const current = select.value || '0';
-  select.innerHTML = '<option value="0">No parent</option>' + parentCandidates().map(t => '<option value="' + t.id + '">' + esc(ticketLabel(t)) + '</option>').join('');
+  const candidates = parentCandidates($('#newType')?.value || 'task');
+  select.innerHTML = '<option value="0">No parent</option>' + candidates.map(t => '<option value="' + t.id + '">' + esc(parentOptionLabel(t)) + '</option>').join('');
   select.value = [...select.options].some(o => o.value === current) ? current : '0';
+  select.disabled = candidates.length === 0;
 }
 
 // Builds the parent selector used inside the ticket drawer.
 function parentSelectHtml(ticket) {
   if (isIdea(ticket)) return '';
-  const options = parentCandidates(ticket.id).map(t => '<option value="' + t.id + '">' + esc(ticketLabel(t)) + '</option>').join('');
+  const options = parentCandidates(ticket.type, ticket.id).map(t => '<option value="' + t.id + '">' + esc(parentOptionLabel(t)) + '</option>').join('');
   return '<label>Parent<select id="dParent"><option value="0">No parent</option>' + options + '</select></label>';
+}
+
+// Formats parent options without exposing ticket numbers.
+function parentOptionLabel(t) {
+  return ticketLabel(t) + ' (' + normalizeTicketType(t.type) + ')';
+}
+
+// Refreshes the drawer parent list after type changes.
+function renderDrawerParentSelect(current = null) {
+  const select = $('#dParent');
+  if (!select || !editing) return;
+  const wanted = String(current ?? select.value ?? editing.parentId ?? 0);
+  const childType = $('#dType')?.value || editing.type;
+  const candidates = parentCandidates(childType, editing.id);
+  select.innerHTML = '<option value="0">No parent</option>' + candidates.map(t => '<option value="' + t.id + '">' + esc(parentOptionLabel(t)) + '</option>').join('');
+  select.value = [...select.options].some(o => o.value === wanted) ? wanted : '0';
+  select.disabled = candidates.length === 0;
+}
+
+// Returns ids for tickets that other work items depend on.
+function blockingTicketIds() {
+  const ids = new Set();
+  workTickets().forEach(t => (t.links || []).forEach(id => ids.add(+id)));
+  return ids;
+}
+
+// Returns whether a ticket matches the dependency quick filter.
+function matchesDependencyFilter(t, value, blockers = null) {
+  if (value === 'blocking') return (blockers || blockingTicketIds()).has(+t.id);
+  if (value === 'blocked') return unfinishedDependencies(t).length > 0;
+  return true;
 }
 
 // The global search/type/label filters stay shared, but ideas are split out below
@@ -470,7 +588,16 @@ function filtered() {
   const q = $('#search').value.toLowerCase();
   const typ = $('#typeFilter').value;
   const lab = $('#labelFilter').value;
-  return state.tickets.filter(t => (!q || (t.title + t.body).toLowerCase().includes(q)) && (!typ || t.type === typ) && (!lab || t.labels.includes(lab)));
+  const assignee = $('#assigneeFilter')?.value || '';
+  const dep = $('#dependencyFilter')?.value || '';
+  const blockers = dep === 'blocking' ? blockingTicketIds() : null;
+  return state.tickets.filter(t =>
+    (!q || (t.title + t.body).toLowerCase().includes(q)) &&
+    (!typ || t.type === typ) &&
+    (!lab || t.labels.includes(lab)) &&
+    (!assignee || String(t.assigneeId || 0) === String(assignee)) &&
+    matchesDependencyFilter(t, dep, blockers)
+  );
 }
 
 // Applies global filters and removes ideas from delivery views.
@@ -572,7 +699,7 @@ function boardLaneEpicCell(lane) {
   if (!lane.epic) {
     return '<div class="boardLaneEpic boardLaneStandalone"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
   }
-  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '"><span>' + esc(ticketRef(lane.epic)) + '</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
+  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
 }
 
 // Returns the cards that belong in one swimlane column.
@@ -628,7 +755,10 @@ function card(t) {
   const parent = parentTicket(t.parentId);
   const children = childCount(t.id);
   const depthClass = ' depth' + boardCardDepth(t);
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + '" data-id="' + t.id + '"><h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(ticketRef(t)) + '</span><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketRef(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (blocked.length ? '<span class="pill warn">waiting for ' + blocked.map(ticketRef).join(', ') + '</span>' : '') + '</div></article>';
+  const assignee = userById(t.assigneeId);
+  const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
+  const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (blocked.length ? '<span class="pill warn">waiting for ' + blocked.map(ticketLabel).join(', ') + '</span>' : '') + '</div></article>';
 }
 
 // Calculates card indentation based on nested non-Epic parents.
@@ -854,10 +984,17 @@ function renderList(type) {
   setHeader('Ideas', 'Collect ideas outside the delivery board.');
   const root = $('#list');
   root.classList.remove('hidden');
+  root.classList.add('ideasView');
   const rows = filteredIdeas();
-  // Ideas intentionally use their own tiny composer: no due date, duration, or dependency fields.
-  root.innerHTML = '<section class="panel ideaComposer"><h2>New idea</h2><input id="ideaTitle" placeholder="Idea title"><textarea id="ideaBody" placeholder="Notes"></textarea><button id="ideaCreateBtn" type="button">Create idea</button><p id="ideaError" class="formError" role="alert"></p></section>' + (rows.map(t => '<button class="row rowButton" onclick="openTicket(' + t.id + ')"><strong>' + esc(t.title) + '</strong><p class="muted">' + esc(t.body || '') + '</p><div class="meta"><span class="pill">' + esc(ticketRef(t)) + '</span><span class="pill">idea</span></div></button>').join('') || '<div class="row muted">No ideas yet</div>');
+  const count = rows.length + ' idea' + (rows.length === 1 ? '' : 's');
+  root.innerHTML = '<section class="panel ideaComposer"><div class="ideaComposerHeader"><h2>New idea</h2><span>' + esc(state.board?.name || 'Board') + '</span></div><div class="ideaComposerGrid"><label>Title<input id="ideaTitle" placeholder="Idea title"></label><label class="ideaNotes">Notes<textarea id="ideaBody" placeholder="Notes"></textarea></label><button id="ideaCreateBtn" type="button">Create idea</button></div><p id="ideaError" class="formError" role="alert"></p></section><section class="ideaList"><div class="ideaListHeader"><h2>Idea backlog</h2><span>' + count + '</span></div>' + (rows.length ? '<div class="ideaGrid">' + rows.map(ideaCard).join('') + '</div>' : '<div class="ideaEmpty">No ideas yet</div>') + '</section>';
   $('#ideaCreateBtn').onclick = createIdea;
+}
+
+// Builds a compact card for one idea in the standalone Ideas view.
+function ideaCard(t) {
+  const labels = (t.labels || []).map(l => '<span class="pill">' + esc(l) + '</span>').join('');
+  return '<button class="ideaCard" type="button" onclick="openTicket(' + t.id + ')"><div class="ideaCardTop"><span class="typeBadge idea">idea</span></div><h3>' + esc(t.title) + '</h3><p>' + esc(t.body || 'No notes') + '</p><div class="ideaCardMeta">' + (labels || '<span class="pill">unlabeled</span>') + '<span class="pill">' + esc(shortDate(t.updatedAt)) + '</span></div></button>';
 }
 
 const GANTT_LEFT_PAD = 28;
@@ -915,9 +1052,12 @@ function buildGanttRows() {
   const baseById = new Map(visibleWork.map(ganttTask).filter(Boolean).map(task => [task.ticket.id, task]));
   const rows = [];
   const used = new Set();
-  visibleWork.filter(t => t.type === 'epic').sort(ticketOrder).forEach(epic => {
-    const topEpic = topEpicFor(epic);
-    if (topEpic && +topEpic.id !== +epic.id) return;
+  const visibleEpicMap = new Map();
+  visibleWork.forEach(t => {
+    const epic = topEpicFor(t);
+    if (epic) visibleEpicMap.set(+epic.id, epic);
+  });
+  [...visibleEpicMap.values()].sort(ticketOrder).forEach(epic => {
     const descendants = descendantTickets(epic.id);
     const childTasks = descendants.map(t => baseById.get(t.id)).filter(Boolean);
     const ownTask = epicHasOwnTimelineConfig(epic) ? baseById.get(epic.id) : null;
@@ -1269,7 +1409,7 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlig
 
 // Chooses a readable label for a Gantt bar width.
 function ganttSvgBarLabel(task, width) {
-  if (width < 120) return ticketRef(task.ticket);
+  if (width < 120) return ticketLabel(task.ticket);
   const text = width < 260 ? ticketLabel(task.ticket) : ticketLabel(task.ticket) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end);
   return truncateSvgText(text, Math.max(4, Math.floor((width - 18) / 7)));
 }
@@ -1664,7 +1804,8 @@ function openTicket(id, updateRoute = true) {
   if (!idea) {
     $('#dAssignee').value = editing.assigneeId;
     $('#dMilestone').value = editing.milestoneId;
-    $('#dParent').value = editing.parentId || 0;
+    renderDrawerParentSelect(editing.parentId || 0);
+    $('#dType').onchange = () => renderDrawerParentSelect();
   }
   $('#drawerCloseBtn').onclick = closeDrawer;
   $('#saveBtn').onclick = saveDrawer;
@@ -1881,7 +2022,14 @@ $('#homeLink').onclick = e => {
   syncRoute('push', 0);
 };
 
-['search', 'typeFilter', 'labelFilter'].forEach(id => $('#' + id).oninput = renderView);
+['search', 'typeFilter', 'labelFilter', 'assigneeFilter', 'dependencyFilter'].forEach(id => {
+  const el = $('#' + id);
+  if (el) {
+    el.oninput = renderView;
+    el.onchange = renderView;
+  }
+});
+$('#newType').onchange = renderNewParentSelect;
 $('#exportBtn').onclick = () => location.href = '/api/export' + boardQuery();
 $('#importFile').onchange = async e => {
   const f = e.target.files[0];

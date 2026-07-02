@@ -57,10 +57,5 @@
   var opts=options||{},template=findTemplate(opts.template||opts.species||seed);
   return assetPath(template);
  }
- // Builds example avatar data for the avatar lab.
- function createDinoAvatarExamples(count){
-  var total=count||20;
-  return templates.slice(0,total).map(function(t,index){return{seed:'template-'+String(index+1).padStart(2,'0')+'-'+t.id,template:t.id,name:t.name,species:t.species,palette:t.palette,src:assetPath(t),svg:createDinoAvatar(t.id,{template:t.id,size:180,palette:'Original'})};});
- }
- return{palettes:palettes,templates:templates,species:templates.map(function(t){return t.species;}),createDinoAvatar:createDinoAvatar,createDinoAvatarDataURI:createDinoAvatarDataURI,createDinoAvatarExamples:createDinoAvatarExamples};
+ return{palettes:palettes,templates:templates,species:templates.map(function(t){return t.species;}),createDinoAvatar:createDinoAvatar,createDinoAvatarDataURI:createDinoAvatarDataURI};
 });

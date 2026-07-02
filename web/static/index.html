@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kanbanodon</title>
-  <link rel="stylesheet" href="/static/styles.css?v=board-swimlanes-parent-lock-20260630">
+  <link rel="stylesheet" href="/static/styles.css?v=hierarchy-quick-filters-20260702">
   <link rel="stylesheet" href="/static/admin.css?v=all-board-sharing-20260628">
   <link rel="stylesheet" href="/static/auth.css?v=password-confirm-20260628">
 </head>
@@ -14,6 +14,8 @@
     <div class="tools">
       <input id="search" type="search" placeholder="Search">
       <select id="typeFilter"><option value="">All types</option><option>epic</option><option>story</option><option>task</option><option>bug</option></select>
+      <select id="assigneeFilter"><option value="">All assignees</option></select>
+      <select id="dependencyFilter"><option value="">All dependencies</option><option value="blocking">Blocking others</option><option value="blocked">Blocked</option></select>
       <select id="labelFilter"><option value="">All labels</option></select>
       <button id="exportBtn" title="Export">Export</button>
       <label class="importBtn">Import<input id="importFile" type="file" accept="application/json"></label>
@@ -113,7 +115,7 @@
 
   <aside id="drawer" class="drawer hidden"></aside>
   <script src="/static/dino-avatar.js"></script>
-  <script src="/static/route.js?v=empty-epic-timeline-fix-20260630"></script>
-  <script src="/static/app.js?v=empty-epic-timeline-fix-20260630"></script>
+  <script src="/static/route.js?v=hierarchy-quick-filters-20260702"></script>
+  <script src="/static/app.js?v=hierarchy-quick-filters-20260702"></script>
 </body>
 </html>

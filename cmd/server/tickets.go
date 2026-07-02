@@ -46,8 +46,8 @@ func (s *server) createTicket(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "parent does not belong to board", 400)
 		return
 	}
-	if t.ParentID != 0 && !ticketCanBeParent(s.db, t.ParentID, bid) {
-		http.Error(w, "parent must be a work item", 400)
+	if t.ParentID != 0 && !ticketCanBeParent(s.db, t.ParentID, bid, t.Type) {
+		http.Error(w, "parent type is not valid for this ticket type", 400)
 		return
 	}
 	ts := now()
@@ -143,8 +143,8 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "parent does not belong to board", 400)
 		return
 	}
-	if t.ParentID != 0 && !ticketCanBeParent(s.db, t.ParentID, bid) {
-		http.Error(w, "parent must be a work item", 400)
+	if t.ParentID != 0 && !ticketCanBeParent(s.db, t.ParentID, bid, t.Type) {
+		http.Error(w, "parent type is not valid for this ticket type", 400)
 		return
 	}
 	if cycle, err := parentWouldCreateCycle(s.db, id, t.ParentID); err != nil {
