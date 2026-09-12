@@ -57,7 +57,8 @@ function loadApp() {
   let source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
   source = source.replace(/\nload\(\);\s*$/, '\n');
   source += `\nwindow.__appTest = {
-    normalizeTicketType, normTicket, ticketRef, ticketLabel, isIdea, workTickets, ideaTickets,
+    normalizeTicketType, normTicket, ticketRef, ticketLabel, isIdea, isBacklogTicket, workTickets, backlogTickets, ideaTickets,
+    normalizePromotionType, backlogDescendants,
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
@@ -66,8 +67,10 @@ function loadApp() {
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
     timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds, timelineEpicHoverRelatedIds,
     ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
-    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttArrowMidPoints,
+    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttArrowMidPoints, ganttSvgSprintBands,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
+    boardSprintStartValue, boardSprintWeeks, validSprintWeeks, sprintRange, sprintForDate, ticketPlannedFinish, ticketSprint,
+    calculatedSprints, sprintName, sprintPreviewHtml, shortRange,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
     setOverviewSort(value) { overviewSort = value; },
@@ -79,9 +82,9 @@ function loadApp() {
 
 function stateWithHierarchy() {
   return {
-    board: { id: 1, name: 'Board' },
+    board: { id: 1, name: 'Board', sprint_start_date: '2026-01-01', sprint_weeks: 2 },
     boards: [{ id: 1, name: 'Board' }],
-    columns: [{ id: 1, name: 'Backlog' }, { id: 5, name: 'Done' }],
+    columns: [{ id: 1, name: 'To Do' }, { id: 5, name: 'Done' }],
     labels: [],
     milestones: [{ id: 8, name: 'Launch' }],
     users: [{ id: 3, name: 'Ada', username: 'ada' }],
@@ -106,6 +109,7 @@ test('ticket normalization supports API casing and legacy types', () => {
   assert.equal(ticket.boardId, 2);
   assert.equal(ticket.type, 'bug');
   assert.equal(ticket.duration, 5);
+  assert.equal(app.normTicket({ ID: 5, Type: 'task', IsBacklog: true }).isBacklog, true);
 });
 
 test('hierarchy helpers stay cycle-safe and enforce allowed parent types', () => {
@@ -125,6 +129,20 @@ test('hierarchy helpers stay cycle-safe and enforce allowed parent types', () =>
   state.tickets[0].parentId = 12;
   assert.doesNotThrow(() => app.descendantTickets(10));
   assert.equal(app.topEpicFor(state.tickets[2]).id, 10);
+});
+
+test('backlog state is independent from work type and keeps valid Epic choices', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  state.tickets[0].isBacklog = true;
+  state.tickets[1].isBacklog = true;
+  app.setState(state);
+
+  assert.deepEqual(app.backlogTickets().map(ticket => ticket.id), [10, 11, 14]);
+  assert.deepEqual(app.workTickets().map(ticket => ticket.id), [12, 13]);
+  assert.deepEqual(app.parentCandidates('story', 11).map(ticket => ticket.id), [10]);
+  assert.equal(app.normalizePromotionType(state.tickets[4]), 'task');
+  assert.deepEqual(app.backlogDescendants(10).map(ticket => ticket.id), [11]);
 });
 
 test('dependency and duration helpers reflect workflow state', () => {
@@ -175,6 +193,56 @@ test('date helpers reject rollover dates and calculate stable local days', () =>
   assert.equal(app.fmtIsoDate(app.addDays(app.parseDate('2026-12-31'), 1)), '2027-01-01');
   assert.equal(app.shortDate('2026-06-07T12:00:00Z'), '2026-06-07');
   assert.equal(app.fmtDate(app.parseDate('2026-06-07')), '06.07.');
+});
+
+test('sprint helpers assign planned finishes and stop after the last scheduled ticket', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  state.tickets[1].startDate = '2026-01-02';
+  state.tickets[1].dueDate = '2026-01-08';
+  state.tickets[2].startDate = '2026-01-10';
+  state.tickets[2].dueDate = '2026-01-15';
+  app.setState(state);
+
+  assert.equal(app.ticketSprint(state.tickets[1]).number, 1);
+  assert.equal(app.ticketSprint(state.tickets[2]).number, 2);
+  assert.equal(app.fmtIsoDate(app.ticketSprint(state.tickets[2]).start), '2026-01-15');
+  assert.equal(app.calculatedSprints(app.workTickets()).length, 2);
+  assert.equal(app.ticketSprint({ startDate: '', dueDate: '' }), null);
+  const bands = app.ganttSvgSprintBands(app.parseDate('2026-01-01'), 28, 10, 50, 200, 250, 60);
+  assert.equal((bands.match(/ganttSvgSprintBand/g) || []).length, 2);
+  assert.equal((bands.match(/ganttSvgSprintBoundary/g) || []).length, 2);
+});
+
+test('sprint planning explains work before the cadence without hiding a valid saved plan', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  state.board.sprint_start_date = '2026-09-15';
+  state.tickets[1].dueDate = '2026-07-01';
+  state.tickets[2].dueDate = '2026-07-15';
+  app.setState(state);
+
+  const before = app.ticketSprint(state.tickets[2]);
+  assert.equal(before.before, true);
+  assert.equal(before.number, 0);
+  assert.equal(app.sprintName(before), 'Before Sprint 1');
+  assert.equal(app.calculatedSprints(app.workTickets()).length, 0);
+
+  const preview = app.sprintPreviewHtml(app.workTickets(), '2026-09-15', 2);
+  assert.match(preview, /Sprint 1/);
+  assert.match(preview, /before Sprint 1/);
+  assert.doesNotMatch(preview, /Choose the first Sprint start date/);
+});
+
+test('sprint preview validates editable cadence values independently from stored state', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  app.setState(state);
+
+  assert.equal(app.validSprintWeeks(2), 2);
+  assert.equal(app.validSprintWeeks(1.5), 0);
+  assert.match(app.sprintPreviewHtml(app.workTickets(), '', 2), /Choose the first Sprint start date/);
+  assert.match(app.sprintPreviewHtml(app.workTickets(), '2026-01-01', 0), /whole number from 1 to 52 weeks/);
 });
 
 test('timeline scheduling waits for dependencies and builds highlight paths', () => {

@@ -1,6 +1,6 @@
 // Wraps route helpers in a small module and exposes them on window.KanbanodonRoute.
 (function () {
-  const views = new Set(['board', 'overview', 'timeline', 'ideas', 'admin', 'config']);
+  const views = new Set(['board', 'overview', 'timeline', 'backlog', 'admin', 'config']);
 
   function positiveId(value) {
     const id = Number(value);
@@ -11,7 +11,8 @@
   function parseRoute(hash) {
     const raw = (hash || window.location.hash || '').replace(/^#\/?/, '');
     const parts = raw.split('/').filter(Boolean);
-    const view = views.has(parts[0]) ? parts[0] : 'board';
+    const requestedView = parts[0] === 'ideas' ? 'backlog' : parts[0];
+    const view = views.has(requestedView) ? requestedView : 'board';
     let boardId = 0;
     let ticketId = 0;
     for (let i = 1; i < parts.length; i++) {

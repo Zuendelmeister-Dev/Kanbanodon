@@ -46,9 +46,10 @@ You must change this password after login. Also change `KANBANODON_SESSION_SECRE
 - Board access management per user
 - Work items with epics, stories, tasks, bugs, visible references, one optional parent, labels, dates, assignees, milestones, and dependencies
 - Comments per ticket
-- Overview table with sorting and filters
-- Independent ideas list without delivery dates
-- Timeline/Gantt view with live delays, best-case finish estimates, and interactive dependency paths
+- Product backlog grouped by Epics, with typed work promotion into the Board
+- Board-level Sprint cadence with automatic Sprint calculation
+- Overview table with sorting, filters, and planned Sprint assignment
+- Timeline/Gantt view with live delays, best-case finish estimates, Sprint bands, and interactive dependency paths
 - JSON export and import
 - Local SQLite storage
 - One-container deployment
@@ -388,10 +389,10 @@ Top bar:
 
 Sidebar:
 
-- `Board`: shows columns and draggable ticket cards. Cards identify what they depend on and what they enable; hovering keeps the complete dependency context visible, connects it with directional arrows, and fades unrelated work. Hovering `No epic` isolates standalone work.
-- `Overview`: shows a sortable table for scanning and comparing work, with the same dependency-focused hover behavior and directional connectors as the Board.
-- `Timeline`: shows a Gantt-style view from start dates, due dates, and durations. Overdue work extends to today in red, its duration continues as a dashed best-case estimate, and hovering a task or dependency arrow fades unrelated work. Hovering an Epic keeps its complete group visible. Dependency lines include a direction marker, while the mouse cursor snaps a labeled date line to the daily grid.
-- `Ideas`: collects independent ideas that do not need due dates and do not appear in the board timeline.
+- `Board`: shows `To Do`, active workflow columns, and draggable ticket cards. Cards identify what they depend on and what they enable; hovering keeps the complete dependency context visible, connects it with directional arrows, and fades unrelated work. Hovering `No epic` isolates standalone work. The planning panels define the Sprint cadence and promote selected Backlog work into an Epic lane.
+- `Backlog`: holds Epics, stories, tasks, and bugs outside the delivery board. Work is grouped by Epic and can be promoted individually or as a complete Epic package.
+- `Overview`: shows a sortable table for scanning and comparing work, including its calculated Sprint, with the same dependency-focused hover behavior and directional connectors as the Board.
+- `Timeline`: shows a Gantt-style view from start dates, due dates, and durations. Overdue work extends to today in red, its duration continues as a dashed best-case estimate, and subtle alternating Sprint bands show cadence boundaries. Hovering a task or dependency arrow fades unrelated work. Hovering an Epic keeps its complete group visible. Dependency lines include a direction marker, while the mouse cursor snaps a labeled date line to the daily grid.
 - `Sharing`: shown to regular users under `Access`; board owners can grant or remove access to their own boards.
 - `Admin`: shown to admins under `Administration`; contains separate sections for creating users, managing users, and sharing boards.
 - `Configuration`: shows current board/system facts.
@@ -399,7 +400,7 @@ Sidebar:
 Ticket drawer:
 
 - Edit title, description, type, one optional parent, duration, dates, assignee, milestone, labels, and dependencies.
-- Ideas use a smaller editor with title, notes, type, and labels only.
+- Backlog tickets keep their regular work-item fields while staying out of Board, Overview, and Timeline until promotion.
 - Add comments.
 - Delete the ticket.
 

@@ -31,6 +31,7 @@ type ticket struct {
 	Points, Duration, Position                                                    int
 	Labels                                                                        []string
 	Links                                                                         []int64
+	IsBacklog                                                                     bool
 }
 
 type accountInput struct {

@@ -21,7 +21,8 @@ test('route parsing accepts known views and positive ids', () => {
   const { router } = loadRouter('#/timeline/42/ticket/7');
   assert.deepEqual({ ...router.parseRoute() }, { view: 'timeline', boardId: 42, ticketId: 7 });
   assert.deepEqual({ ...router.parseRoute('#/unknown/-2/ticket/nope') }, { view: 'board', boardId: 0, ticketId: 0 });
-  assert.deepEqual({ ...router.parseRoute('#/ideas/3') }, { view: 'ideas', boardId: 3, ticketId: 0 });
+  assert.deepEqual({ ...router.parseRoute('#/backlog/3') }, { view: 'backlog', boardId: 3, ticketId: 0 });
+  assert.deepEqual({ ...router.parseRoute('#/ideas/3') }, { view: 'backlog', boardId: 3, ticketId: 0 });
 });
 
 test('route building normalizes invalid route values', () => {
