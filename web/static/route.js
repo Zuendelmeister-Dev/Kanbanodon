@@ -2,6 +2,11 @@
 (function () {
   const views = new Set(['board', 'overview', 'timeline', 'ideas', 'admin', 'config']);
 
+  function positiveId(value) {
+    const id = Number(value);
+    return Number.isSafeInteger(id) && id > 0 ? id : 0;
+  }
+
   // Hash routes keep deep links working without requiring server-side URL rewrites.
   function parseRoute(hash) {
     const raw = (hash || window.location.hash || '').replace(/^#\/?/, '');
@@ -11,10 +16,10 @@
     let ticketId = 0;
     for (let i = 1; i < parts.length; i++) {
       if (parts[i] === 'ticket') {
-        ticketId = +(parts[i + 1] || 0);
+        ticketId = positiveId(parts[i + 1]);
         i++;
       } else if (!boardId) {
-        boardId = +(parts[i] || 0);
+        boardId = positiveId(parts[i]);
       }
     }
     return { view, boardId, ticketId };
@@ -23,6 +28,8 @@
   // Builds a hash route from view, board, and ticket ids.
   function buildRoute(view, boardId, ticketId) {
     const parts = [views.has(view) ? view : 'board'];
+    boardId = positiveId(boardId);
+    ticketId = positiveId(ticketId);
     if (boardId) parts.push(String(boardId));
     if (ticketId) parts.push('ticket', String(ticketId));
     return '#/' + parts.join('/');

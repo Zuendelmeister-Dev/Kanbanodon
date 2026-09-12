@@ -9,6 +9,10 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // scanUser maps a database row into the API user model.
 func scanUser(row rowScanner, u *user) error {
 	var admin, mustChange int
@@ -107,6 +111,24 @@ func columnBelongsToBoard(db *sql.DB, columnID, boardID int64) bool {
 func ticketBelongsToBoard(db *sql.DB, ticketID, boardID int64) bool {
 	var n int
 	return db.QueryRow("select count(*) from tickets where id=? and board_id=?", ticketID, boardID).Scan(&n) == nil && n > 0
+}
+
+// milestoneBelongsToBoard checks that an optional milestone belongs to the ticket board.
+func milestoneBelongsToBoard(db rowQuerier, milestoneID, boardID int64) bool {
+	if milestoneID == 0 {
+		return true
+	}
+	var n int
+	return db.QueryRow("select count(*) from milestones where id=? and board_id=?", milestoneID, boardID).Scan(&n) == nil && n > 0
+}
+
+// userExists checks that an optional assignee references a real user.
+func userExists(db rowQuerier, userID int64) bool {
+	if userID == 0 {
+		return true
+	}
+	var n int
+	return db.QueryRow("select count(*) from users where id=?", userID).Scan(&n) == nil && n > 0
 }
 
 // ticketCanBeParent verifies that a ticket may parent the requested child type.
