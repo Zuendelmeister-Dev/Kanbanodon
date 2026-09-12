@@ -61,7 +61,8 @@ function loadApp() {
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
-    boardDependencyHtml, workHoverRelatedIds, epicHoverRelatedIds, dependencyComponentIds,
+    boardDependencyHtml, workHoverRelatedIds, epicHoverRelatedIds, standaloneHoverRelatedIds, dependencyComponentIds,
+    workDependencyEdges, workDependencyArrowGeometry,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
     timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds, timelineEpicHoverRelatedIds,
     ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
@@ -149,12 +150,19 @@ test('board dependency hints and shared hover scopes expose useful context', () 
 
   assert.deepEqual([...app.workHoverRelatedIds(work, [12])].sort((a, b) => a - b), [12, 13]);
   assert.deepEqual([...app.epicHoverRelatedIds(work, 10)].sort((a, b) => a - b), [10, 11, 12]);
+  assert.deepEqual([...app.standaloneHoverRelatedIds(work)].sort((a, b) => a - b), [0, 13]);
+  assert.deepEqual([...app.workDependencyEdges(work, new Set([12, 13])).map(edge => edge.from + '>' + edge.to)], ['13>12']);
   assert.match(app.boardDependencyHtml(state.tickets[2]), /Depends on #2/);
   assert.match(app.boardDependencyHtml(state.tickets[3]), /Enables #10\.1\.1/);
   assert.match(app.card(state.tickets[2]), /data-work-id="12"/);
 
   state.tickets[3].columnId = 1;
   assert.match(app.boardDependencyHtml(state.tickets[2]), /Waiting for #2/);
+
+  const from = { left: 10, right: 110, top: 10, bottom: 60, width: 100, height: 50, centerX: 60, centerY: 35, anchorX: 70 };
+  const to = { left: 220, right: 320, top: 90, bottom: 140, width: 100, height: 50, centerX: 270, centerY: 115, anchorX: 70 };
+  assert.match(app.workDependencyArrowGeometry(from, to, 'board').path, /^M 110 35 C /);
+  assert.equal(app.workDependencyArrowGeometry(from, to, 'overview').path, 'M 70 35 H 54 V 115 H 80');
 });
 
 test('date helpers reject rollover dates and calculate stable local days', () => {
