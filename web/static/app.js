@@ -654,6 +654,7 @@ function renderBoard() {
   const tickets = filteredWork();
   root.innerHTML = boardSwimlanes(tickets);
   wireDnD();
+  wireWorkHover(root, tickets);
 }
 
 // Builds the full swimlane board for the filtered tickets.
@@ -699,7 +700,7 @@ function boardLaneEpicCell(lane) {
   if (!lane.epic) {
     return '<div class="boardLaneEpic boardLaneStandalone"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
   }
-  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
+  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '" data-work-id="' + lane.epic.id + '" data-hover-scope="epic"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
 }
 
 // Returns the cards that belong in one swimlane column.
@@ -732,6 +733,11 @@ function dependencyTickets(t) {
   return (t.links || []).map(id => state.tickets.find(x => x.id == id)).filter(Boolean);
 }
 
+// Returns work items that directly depend on the given ticket.
+function dependentTickets(t) {
+  return workTickets().filter(candidate => (candidate.links || []).some(id => +id === +t.id)).sort(ticketOrder);
+}
+
 // Returns dependencies that are not yet in the Done column.
 function unfinishedDependencies(t) {
   const done = doneColumn();
@@ -758,7 +764,22 @@ function card(t) {
   const assignee = userById(t.assigneeId);
   const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
   const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (blocked.length ? '<span class="pill warn">waiting for ' + esc(blocked.map(ticketLabel).join(', ')) + '</span>' : '') + '</div></article>';
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
+}
+
+// Renders compact dependency direction hints on a board card.
+function boardDependencyHtml(ticket, blocked = unfinishedDependencies(ticket)) {
+  const dependencies = dependencyTickets(ticket);
+  const dependents = dependentTickets(ticket);
+  if (!dependencies.length && !dependents.length) return '';
+  const needsText = blocked.length ? 'Waiting for ' : 'Depends on ';
+  const needs = dependencies.length
+    ? '<span class="cardDependency needs' + (blocked.length ? ' pending' : ' resolved') + '" title="' + escAttr(needsText + dependencies.map(ticketLabel).join(', ')) + '"><b aria-hidden="true">&larr;</b> ' + needsText + esc(dependencies.map(ticketRef).join(', ')) + '</span>'
+    : '';
+  const enables = dependents.length
+    ? '<span class="cardDependency enables" title="' + escAttr('Enables ' + dependents.map(ticketLabel).join(', ')) + '"><b aria-hidden="true">&rarr;</b> Enables ' + esc(dependents.map(ticketRef).join(', ')) + '</span>'
+    : '';
+  return '<div class="cardDependencies" aria-label="Dependencies">' + needs + enables + '</div>';
 }
 
 // Calculates card indentation based on nested non-Epic parents.
@@ -819,8 +840,9 @@ function renderOverview() {
   const open = ts.length - done.length;
   const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
-  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" onclick="openTicket(' + t.id + ')"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
+  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-work-id="' + t.id + '"' + (t.type === 'epic' ? ' data-hover-scope="epic"' : '') + ' onclick="openTicket(' + t.id + ')"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
   wireOverviewControls(ts);
+  wireWorkHover(root, ts);
 }
 
 // Builds the filterable overview ticket table.
@@ -893,12 +915,12 @@ function overviewRow(row) {
   const labels = (t.labels || []).map(l => '<span class="tableTag">' + esc(l) + '</span>').join('') || '<span class="muted">None</span>';
   const parent = parentTicket(t.parentId);
   const depthClass = ' overviewDepth' + Math.max(0, Math.min(4, +(row.depth || 0)));
-  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" onclick="openTicket(' + t.id + ')"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" onclick="openTicket(' + t.id + ')"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
 }
 
 // Builds the overview table group header for an Epic.
 function overviewEpicRow(epic, childCount) {
-  return '<tr class="ticketRow epic overviewEpicRow" onclick="openTicket(' + epic.id + ')"><td>' + esc(ticketRef(epic)) + '</td><td colspan="11"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + '</span></div></td></tr>';
+  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-hover-scope="epic" onclick="openTicket(' + epic.id + ')"><td>' + esc(ticketRef(epic)) + '</td><td colspan="11"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + '</span></div></td></tr>';
 }
 
 // Builds searchable text for an overview row.
@@ -955,6 +977,73 @@ function wireOverviewControls(tickets) {
     overviewSort = overviewSort.key === key ? { key, dir: overviewSort.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'dueDate' || key === 'startDate' ? 'asc' : 'asc' };
     renderOverview();
   });
+}
+
+// Fades unrelated work in board and overview while preserving dependency context.
+function wireWorkHover(root, tickets) {
+  const nodes = [...root.querySelectorAll('[data-work-id]')];
+  if (!nodes.length) return;
+  const apply = node => {
+    const id = +node.dataset.workId;
+    const related = node.dataset.hoverScope === 'epic'
+      ? epicHoverRelatedIds(tickets, id)
+      : workHoverRelatedIds(tickets, [id]);
+    root.classList.add('workHoverActive');
+    nodes.forEach(candidate => {
+      const isRelated = related.has(+candidate.dataset.workId);
+      candidate.classList.toggle('workHoverRelated', isRelated);
+      candidate.classList.toggle('workHoverDimmed', !isRelated);
+    });
+  };
+  const clear = () => {
+    root.classList.remove('workHoverActive');
+    nodes.forEach(node => node.classList.remove('workHoverDimmed', 'workHoverRelated'));
+  };
+  nodes.forEach(node => {
+    node.onmouseenter = () => apply(node);
+    node.onmouseleave = clear;
+    node.onfocus = () => apply(node);
+    node.onblur = clear;
+  });
+}
+
+// Returns the visible undirected dependency component for hovered work items.
+function workHoverRelatedIds(tickets, seedIds) {
+  return dependencyComponentIds(tickets.map(ticket => ({ id: +ticket.id, links: (ticket.links || []).map(Number) })), seedIds);
+}
+
+// Returns the hovered Epic and all currently visible work assigned to it.
+function epicHoverRelatedIds(tickets, epicId) {
+  const related = new Set([+epicId]);
+  tickets.forEach(ticket => {
+    const epic = topEpicFor(ticket);
+    if (epic && +epic.id === +epicId) related.add(+ticket.id);
+  });
+  return related;
+}
+
+// Walks dependency links in both directions for a visible set of tickets.
+function dependencyComponentIds(tickets, seedIds) {
+  const visibleIds = new Set(tickets.map(ticket => +ticket.id));
+  const adjacency = new Map([...visibleIds].map(id => [id, new Set()]));
+  tickets.forEach(ticket => (ticket.links || []).forEach(depId => {
+    const from = +depId;
+    const to = +ticket.id;
+    if (!visibleIds.has(from) || !visibleIds.has(to)) return;
+    adjacency.get(from).add(to);
+    adjacency.get(to).add(from);
+  }));
+  const related = new Set(seedIds.map(Number).filter(id => visibleIds.has(id)));
+  const queue = [...related];
+  while (queue.length) {
+    const id = queue.shift();
+    adjacency.get(id)?.forEach(next => {
+      if (related.has(next)) return;
+      related.add(next);
+      queue.push(next);
+    });
+  }
+  return related;
 }
 
 // Returns the display name for a column id.
@@ -1136,8 +1225,7 @@ function wireTimelineHover(root, tasks) {
   if (!flow) return;
   const taskNodes = [...root.querySelectorAll('.ganttTaskItem,.ganttSvgTask')];
   const arrowNodes = [...root.querySelectorAll('.ganttSvgArrowGroup')];
-  const apply = seedIds => {
-    const related = timelineHoverRelatedIds(tasks, seedIds);
+  const apply = related => {
     flow.classList.add('hoverActive');
     taskNodes.forEach(node => {
       const isRelated = related.has(+node.dataset.timelineId);
@@ -1157,42 +1245,31 @@ function wireTimelineHover(root, tasks) {
     [...taskNodes, ...arrowNodes].forEach(node => node.classList.remove('hoverDimmed', 'hoverRelated'));
   };
   taskNodes.forEach(node => {
-    node.onmouseenter = () => apply([+node.dataset.timelineId]);
+    const id = +node.dataset.timelineId;
+    const task = tasks.find(candidate => +candidate.ticket.id === id);
+    const related = () => task?.isAggregate ? timelineEpicHoverRelatedIds(tasks, id) : timelineHoverRelatedIds(tasks, [id]);
+    node.onmouseenter = () => apply(related());
     node.onmouseleave = clear;
-    node.onfocus = () => apply([+node.dataset.timelineId]);
+    node.onfocus = () => apply(related());
     node.onblur = clear;
   });
   arrowNodes.forEach(node => {
     const seedIds = [+node.dataset.fromId, +node.dataset.toId];
-    node.onmouseenter = () => apply(seedIds);
+    node.onmouseenter = () => apply(timelineHoverRelatedIds(tasks, seedIds));
     node.onmouseleave = clear;
-    node.onfocus = () => apply(seedIds);
+    node.onfocus = () => apply(timelineHoverRelatedIds(tasks, seedIds));
     node.onblur = clear;
   });
 }
 
 // Returns the undirected dependency component containing the hovered task or arrow endpoints.
 function timelineHoverRelatedIds(tasks, seedIds) {
-  const visibleIds = new Set(tasks.map(task => +task.ticket.id));
-  const adjacency = new Map([...visibleIds].map(id => [id, new Set()]));
-  tasks.forEach(task => task.deps.forEach(dep => {
-    const from = +dep.id;
-    const to = +task.ticket.id;
-    if (!visibleIds.has(from) || !visibleIds.has(to)) return;
-    adjacency.get(from).add(to);
-    adjacency.get(to).add(from);
-  }));
-  const related = new Set(seedIds.map(Number).filter(id => visibleIds.has(id)));
-  const queue = [...related];
-  while (queue.length) {
-    const id = queue.shift();
-    adjacency.get(id)?.forEach(next => {
-      if (related.has(next)) return;
-      related.add(next);
-      queue.push(next);
-    });
-  }
-  return related;
+  return dependencyComponentIds(tasks.map(task => ({ id: +task.ticket.id, links: task.deps.map(dep => +dep.id) })), seedIds);
+}
+
+// Returns one visible Epic group without pulling unrelated dependency components into it.
+function timelineEpicHoverRelatedIds(tasks, epicId) {
+  return epicHoverRelatedIds(tasks.map(task => task.ticket), epicId);
 }
 
 // Shows a date cursor snapped to the nearest daily grid line inside the chart.
