@@ -62,7 +62,8 @@ function loadApp() {
     blockingTicketIds, dependencyTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    timelineHighlight, timelineTaskHighlightClass, ganttDelayText, ganttSvgLate, truncateSvgText, monthLabel, ganttPx,
+    timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds,
+    ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
@@ -173,23 +174,42 @@ test('timeline shows live delay for overdue work and actual delay for late compl
   const state = stateWithHierarchy();
   app.setState(state);
 
-  const overdue = { ...state.tickets[2], columnId: 1, links: [], startDate: '2000-01-01', dueDate: '2000-01-03' };
+  const overdue = { ...state.tickets[2], columnId: 1, links: [], duration: 5, startDate: '2000-01-01', dueDate: '2000-01-03' };
   const openTask = app.ganttTask(overdue);
   assert.equal(openTask.actualFinish, null);
   assert.equal(openTask.late, true);
   assert.equal(app.dayDiff(openTask.due, openTask.delayEnd) > 0, true);
   assert.match(app.ganttDelayText(openTask), /days overdue$/);
   assert.match(app.ganttSvgLate(openTask, app.parseDate('1999-12-31'), 10, 0, 10), /class="ganttSvgLate"/);
+  assert.equal(openTask.estimateDays, 5);
+  assert.equal(app.dayDiff(openTask.estimateStart, openTask.estimateEnd), 5);
+  assert.match(app.ganttEstimateText(openTask), /^Best case \+5d to /);
+  assert.match(app.ganttSvgEstimate(openTask, app.parseDate('1999-12-31'), 10, 0, 10), /class="ganttSvgEstimate"/);
 
   const completed = { ...overdue, columnId: 5, completedAt: '2000-01-08' };
   const completedTask = app.ganttTask(completed);
   assert.equal(app.fmtIsoDate(completedTask.delayEnd), '2000-01-08');
   assert.equal(app.ganttDelayText(completedTask), 'Finished 5 days late');
+  assert.equal(completedTask.estimateEnd, null);
 
   const aggregate = app.ganttEpicAggregate(state.tickets[0], [openTask], null);
+  assert.equal(app.fmtIsoDate(aggregate.estimateEnd), app.fmtIsoDate(openTask.estimateEnd));
   aggregate.due = app.parseDate('2000-01-04');
   aggregate.overrun = aggregate.overrunEnd > aggregate.due;
   assert.match(app.ganttDelayText(aggregate), /days over target$/);
+});
+
+test('timeline hover keeps dependency components visible in either direction', () => {
+  const app = loadApp();
+  const task1 = { ticket: { id: 1 }, deps: [{ id: 2 }] };
+  const task2 = { ticket: { id: 2 }, deps: [] };
+  const task3 = { ticket: { id: 3 }, deps: [] };
+  const tasks = [task1, task2, task3];
+
+  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [1])].sort(), [1, 2]);
+  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [2])].sort(), [1, 2]);
+  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [1, 2])].sort(), [1, 2]);
+  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [3])], [3]);
 });
 
 test('sorting, grouping, and labels remain deterministic', () => {
