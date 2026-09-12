@@ -698,7 +698,7 @@ function boardSwimlane(lane) {
 // Builds the sticky Epic cell at the left of a swimlane.
 function boardLaneEpicCell(lane) {
   if (!lane.epic) {
-    return '<div class="boardLaneEpic boardLaneStandalone"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
+    return '<div class="boardLaneEpic boardLaneStandalone" data-work-id="0" data-hover-scope="standalone" tabindex="0"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
   }
   return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '" data-work-id="' + lane.epic.id + '" data-hover-scope="epic"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
 }
@@ -985,19 +985,24 @@ function wireWorkHover(root, tickets) {
   if (!nodes.length) return;
   const apply = node => {
     const id = +node.dataset.workId;
-    const related = node.dataset.hoverScope === 'epic'
+    const scope = node.dataset.hoverScope;
+    const related = scope === 'epic'
       ? epicHoverRelatedIds(tickets, id)
-      : workHoverRelatedIds(tickets, [id]);
+      : scope === 'standalone'
+        ? standaloneHoverRelatedIds(tickets)
+        : workHoverRelatedIds(tickets, [id]);
     root.classList.add('workHoverActive');
     nodes.forEach(candidate => {
       const isRelated = related.has(+candidate.dataset.workId);
       candidate.classList.toggle('workHoverRelated', isRelated);
       candidate.classList.toggle('workHoverDimmed', !isRelated);
     });
+    renderWorkDependencyArrows(root, tickets, related);
   };
   const clear = () => {
     root.classList.remove('workHoverActive');
     nodes.forEach(node => node.classList.remove('workHoverDimmed', 'workHoverRelated'));
+    clearWorkDependencyArrows(root);
   };
   nodes.forEach(node => {
     node.onmouseenter = () => apply(node);
@@ -1018,6 +1023,15 @@ function epicHoverRelatedIds(tickets, epicId) {
   tickets.forEach(ticket => {
     const epic = topEpicFor(ticket);
     if (epic && +epic.id === +epicId) related.add(+ticket.id);
+  });
+  return related;
+}
+
+// Returns the visible work items that are not assigned to an Epic swimlane.
+function standaloneHoverRelatedIds(tickets) {
+  const related = new Set([0]);
+  tickets.forEach(ticket => {
+    if (!topEpicFor(ticket)) related.add(+ticket.id);
   });
   return related;
 }
@@ -1044,6 +1058,118 @@ function dependencyComponentIds(tickets, seedIds) {
     });
   }
   return related;
+}
+
+// Returns visible dependency edges directed from prerequisite to dependent work.
+function workDependencyEdges(tickets, relatedIds = null) {
+  const byId = new Map(tickets.map(ticket => [+ticket.id, ticket]));
+  const edges = [];
+  tickets.forEach(target => (target.links || []).forEach(depId => {
+    const from = +depId;
+    const to = +target.id;
+    const source = byId.get(from);
+    if (source && (!relatedIds || (relatedIds.has(from) && relatedIds.has(to)))) edges.push({ from, to, source, target });
+  }));
+  return edges;
+}
+
+// Draws the currently relevant dependency arrows over Board cards or Overview rows.
+function renderWorkDependencyArrows(root, tickets, relatedIds) {
+  clearWorkDependencyArrows(root);
+  const isBoard = root.id === 'board';
+  const host = root.querySelector(isBoard ? '.boardSwimlanes' : '.tableScroll');
+  if (!host) return;
+  const itemSelector = id => isBoard
+    ? '.card[data-work-id="' + id + '"]'
+    : '.ticketRow[data-work-id="' + id + '"]';
+  const markerId = 'workDependencyArrowHead-' + root.id;
+  const arrows = workDependencyEdges(tickets, relatedIds).map(edge => {
+    const sourceNode = root.querySelector(itemSelector(edge.from));
+    const targetNode = root.querySelector(itemSelector(edge.to));
+    if (!sourceNode || !targetNode) return '';
+    const from = workElementBox(sourceNode, host, !isBoard);
+    const to = workElementBox(targetNode, host, !isBoard);
+    const geometry = workDependencyArrowGeometry(from, to, isBoard ? 'board' : 'overview');
+    const title = ticketRef(edge.source) + ' enables ' + ticketRef(edge.target);
+    return '<g class="workDependencyArrowGroup" data-from-id="' + edge.from + '" data-to-id="' + edge.to + '"><title>' + esc(title) + '</title><path class="workDependencyArrowOutline" d="' + geometry.path + '"></path><path class="workDependencyArrow" d="' + geometry.path + '" marker-end="url(#' + markerId + ')"></path><circle class="workDependencyArrowSource" cx="' + geometry.startX + '" cy="' + geometry.startY + '" r="4"></circle></g>';
+  }).filter(Boolean);
+  if (!arrows.length) return;
+  host.classList.add('dependencyOverlayHost');
+  const width = Math.max(host.scrollWidth, host.clientWidth);
+  const height = Math.max(host.scrollHeight, host.clientHeight);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'workDependencyOverlay ' + (isBoard ? 'boardDependencyOverlay' : 'overviewDependencyOverlay'));
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = '<defs><marker id="' + markerId + '" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path class="workDependencyArrowHead" d="M0,0 L12,6 L0,12 Z"></path></marker></defs>' + arrows.join('');
+  host.appendChild(svg);
+}
+
+// Removes a dependency overlay after the pointer leaves its active work item.
+function clearWorkDependencyArrows(root) {
+  root.querySelectorAll('.workDependencyOverlay').forEach(overlay => overlay.remove());
+  root.querySelectorAll('.dependencyOverlayHost').forEach(host => host.classList.remove('dependencyOverlayHost'));
+}
+
+// Converts an element rectangle into coordinates within its overlay host.
+function workElementBox(element, host, useFirstCell = false) {
+  const rect = element.getBoundingClientRect();
+  const hostRect = host.getBoundingClientRect();
+  const firstCellRect = useFirstCell ? element.querySelector('td')?.getBoundingClientRect() : null;
+  const left = rect.left - hostRect.left + host.scrollLeft;
+  const top = rect.top - hostRect.top + host.scrollTop;
+  return {
+    left,
+    top,
+    right: left + rect.width,
+    bottom: top + rect.height,
+    width: rect.width,
+    height: rect.height,
+    centerX: left + rect.width / 2,
+    centerY: top + rect.height / 2,
+    anchorX: firstCellRect ? firstCellRect.right - hostRect.left + host.scrollLeft - 8 : left + 18,
+  };
+}
+
+// Builds a readable arrow route for cards or table rows.
+function workDependencyArrowGeometry(from, to, surface) {
+  const n = value => Math.round(value * 10) / 10;
+  if (surface === 'overview') {
+    const laneX = Math.min(from.anchorX, to.anchorX) - 16;
+    const endX = to.anchorX + 10;
+    return {
+      path: 'M ' + n(from.anchorX) + ' ' + n(from.centerY) + ' H ' + n(laneX) + ' V ' + n(to.centerY) + ' H ' + n(endX),
+      startX: n(from.anchorX),
+      startY: n(from.centerY),
+    };
+  }
+  const mostlyVertical = Math.abs(to.centerX - from.centerX) < Math.max(from.width, to.width) * 0.65;
+  if (mostlyVertical) {
+    const direction = to.centerY >= from.centerY ? 1 : -1;
+    const startX = from.centerX;
+    const startY = direction > 0 ? from.bottom : from.top;
+    const endX = to.centerX;
+    const endY = direction > 0 ? to.top : to.bottom;
+    const curve = Math.max(36, Math.abs(endY - startY) * 0.45);
+    return {
+      path: 'M ' + n(startX) + ' ' + n(startY) + ' C ' + n(startX) + ' ' + n(startY + direction * curve) + ', ' + n(endX) + ' ' + n(endY - direction * curve) + ', ' + n(endX) + ' ' + n(endY),
+      startX: n(startX),
+      startY: n(startY),
+    };
+  }
+  const direction = to.centerX >= from.centerX ? 1 : -1;
+  const startX = direction > 0 ? from.right : from.left;
+  const startY = from.centerY;
+  const endX = direction > 0 ? to.left : to.right;
+  const endY = to.centerY;
+  const curve = Math.max(48, Math.abs(endX - startX) * 0.45);
+  return {
+    path: 'M ' + n(startX) + ' ' + n(startY) + ' C ' + n(startX + direction * curve) + ' ' + n(startY) + ', ' + n(endX - direction * curve) + ' ' + n(endY) + ', ' + n(endX) + ' ' + n(endY),
+    startX: n(startX),
+    startY: n(startY),
+  };
 }
 
 // Returns the display name for a column id.

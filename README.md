@@ -388,8 +388,8 @@ Top bar:
 
 Sidebar:
 
-- `Board`: shows columns and draggable ticket cards. Cards identify what they depend on and what they enable; hovering keeps the complete dependency context visible and fades unrelated work.
-- `Overview`: shows a sortable table for scanning and comparing work, with the same dependency-focused hover behavior as the Board.
+- `Board`: shows columns and draggable ticket cards. Cards identify what they depend on and what they enable; hovering keeps the complete dependency context visible, connects it with directional arrows, and fades unrelated work. Hovering `No epic` isolates standalone work.
+- `Overview`: shows a sortable table for scanning and comparing work, with the same dependency-focused hover behavior and directional connectors as the Board.
 - `Timeline`: shows a Gantt-style view from start dates, due dates, and durations. Overdue work extends to today in red, its duration continues as a dashed best-case estimate, and hovering a task or dependency arrow fades unrelated work. Hovering an Epic keeps its complete group visible. Dependency lines include a direction marker, while the mouse cursor snaps a labeled date line to the daily grid.
 - `Ideas`: collects independent ideas that do not need due dates and do not appear in the board timeline.
 - `Sharing`: shown to regular users under `Access`; board owners can grant or remove access to their own boards.
