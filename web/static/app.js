@@ -14,6 +14,7 @@ let newTicketLinks = [];
 let overviewSort = { key: 'dueDate', dir: 'asc' };
 let overviewFilters = { type: '', status: '', q: '' };
 let boardAccessSaveStatus = {};
+let sprintSettingsStatus = '';
 let timelineZoom = 1;
 let timelineEpicFilter = 'all';
 let timelineHighlightId = 0;
@@ -77,6 +78,7 @@ function normTicket(t) {
     position: t.Position ?? t.position ?? 0,
     labels: t.Labels ?? t.labels ?? [],
     links: t.Links ?? t.links ?? [],
+    isBacklog: !!(t.IsBacklog ?? t.isBacklog ?? t.is_backlog ?? false),
     createdAt: t.CreatedAt ?? t.createdAt,
     updatedAt: t.UpdatedAt ?? t.updatedAt,
   };
@@ -224,31 +226,41 @@ function ticketLabel(t) {
   return t?.title || ticketRef(t);
 }
 
-// Returns whether a ticket is an idea rather than delivery work.
+// Returns whether a ticket is a legacy idea note.
 function isIdea(t) {
   return normalizeTicketType(t?.type) === 'idea';
 }
 
-// Ideas are stored as tickets for reuse, but product-wise they live outside delivery flow.
-function workTickets() {
-  return state.tickets.filter(t => !isIdea(t));
+// Returns whether a ticket is waiting in the product backlog.
+function isBacklogTicket(t) {
+  return !!t?.isBacklog || isIdea(t);
 }
 
-// Lists idea tickets for the standalone Ideas view.
+// Delivery views contain only tickets that have been promoted onto the board.
+function workTickets() {
+  return state.tickets.filter(t => !isBacklogTicket(t));
+}
+
+// Lists all tickets waiting in the product backlog.
+function backlogTickets() {
+  return state.tickets.filter(isBacklogTicket);
+}
+
+// Keeps the legacy helper available for old exports and focused unit tests.
 function ideaTickets() {
-  return state.tickets.filter(isIdea);
+  return backlogTickets().filter(isIdea);
 }
 
 // Returns direct children for a parent work item.
-function childTickets(id) {
-  return workTickets().filter(t => +t.parentId === +id).sort(ticketOrder);
+function childTickets(id, tickets = workTickets()) {
+  return tickets.filter(t => +t.parentId === +id).sort(ticketOrder);
 }
 
 // Returns all nested descendants for a parent work item.
-function descendantTickets(parentId, seen = new Set()) {
+function descendantTickets(parentId, seen = new Set(), tickets = workTickets()) {
   if (!parentId || seen.has(+parentId)) return [];
   seen.add(+parentId);
-  return childTickets(parentId).flatMap(child => [child, ...descendantTickets(child.id, seen)]);
+  return childTickets(parentId, tickets).flatMap(child => [child, ...descendantTickets(child.id, seen, tickets)]);
 }
 
 // Returns whether a parent type is valid for a child type.
@@ -267,8 +279,10 @@ function parentTypeAllowed(parentType, childType) {
 
 // Lists safe parent choices while excluding cycles, descendants, and unsuitable types.
 function parentCandidates(childType = 'task', currentId = 0) {
-  const blocked = new Set([+currentId, ...descendantTickets(currentId).map(t => +t.id)].filter(Boolean));
-  return workTickets().filter(t => !blocked.has(+t.id) && parentTypeAllowed(t.type, childType)).sort(ticketOrder);
+  const current = parentTicket(currentId);
+  const candidates = current && isBacklogTicket(current) ? state.tickets : workTickets();
+  const blocked = new Set([+currentId, ...descendantTickets(currentId, new Set(), candidates).map(t => +t.id)].filter(Boolean));
+  return candidates.filter(t => !blocked.has(+t.id) && parentTypeAllowed(t.type, childType)).sort(ticketOrder);
 }
 
 // Finds a ticket by id for parent lookups.
@@ -477,6 +491,7 @@ function renderBoardSelect() {
   select.value = String(currentBoardId());
   select.onchange = () => {
     selectedBoardId = +select.value;
+    sprintSettingsStatus = '';
     localStorage.setItem('kanbanodon.boardId', selectedBoardId);
     closeDrawer();
     if (router) router.writeRoute('push', view, selectedBoardId, 0);
@@ -582,8 +597,7 @@ function matchesDependencyFilter(t, value, blockers = null) {
   return true;
 }
 
-// The global search/type/label filters stay shared, but ideas are split out below
-// so delivery views never accidentally schedule or count raw idea notes.
+// The global filters operate on the full state; each workspace narrows it further.
 function filtered() {
   const q = $('#search').value.toLowerCase();
   const typ = $('#typeFilter').value;
@@ -600,15 +614,14 @@ function filtered() {
   );
 }
 
-// Applies global filters and removes ideas from delivery views.
+// Applies global filters and removes backlog tickets from delivery views.
 function filteredWork() {
-  return filtered().filter(t => !isIdea(t));
+  return filtered().filter(t => !isBacklogTicket(t));
 }
 
-// Applies search filtering to idea tickets only.
-function filteredIdeas() {
-  const q = $('#search').value.toLowerCase();
-  return ideaTickets().filter(t => !q || (t.title + t.body).toLowerCase().includes(q));
+// Applies search filtering to backlog tickets only.
+function filteredBacklog() {
+  return filtered().filter(isBacklogTicket);
 }
 
 // Renders navigation state and access labels for the current user.
@@ -636,7 +649,7 @@ function renderView() {
   renderNav();
   if (view === 'board') renderBoard();
   if (view === 'overview') renderOverview();
-  if (view === 'ideas') renderList('idea');
+  if (view === 'backlog') renderBacklog();
   if (view === 'timeline') renderTimeline();
   if (view === 'admin') renderAdmin();
   if (view === 'config') renderConfig();
@@ -652,9 +665,124 @@ function renderBoard() {
     return;
   }
   const tickets = filteredWork();
-  root.innerHTML = boardSwimlanes(tickets);
+  root.innerHTML = sprintPlannerHtml(workTickets()) + boardBacklogPickerHtml() + boardSwimlanes(tickets);
+  wireSprintPlanner();
+  wireBoardBacklogPicker();
   wireDnD();
   wireWorkHover(root, tickets);
+}
+
+// Builds the board-level sprint cadence editor and its calculated sprint preview.
+function sprintPlannerHtml(tickets) {
+  const start = boardSprintStartValue();
+  const weeks = boardSprintWeeks();
+  const status = sprintSettingsStatus || (start ? 'Cadence saved' : '');
+  return '<section class="panel sprintPlanner"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>Set the first Sprint once. Every following Sprint continues automatically.</p></div><div class="sprintSettings"><label><span>First Sprint starts</span><input id="sprintStartDate" type="date" value="' + escAttr(start) + '"></label><label><span>Duration</span><span class="sprintDurationField"><input id="sprintWeeks" type="number" min="1" max="52" step="1" value="' + weeks + '"><em>weeks</em></span></label><button id="saveSprintSettings" type="button">Save Sprint plan</button></div></div><div class="sprintPreview">' + sprintPreviewHtml(tickets, start, weeks) + '</div><div class="sprintPlannerFeedback"><p id="sprintSettingsError" class="formError" role="alert"></p><span id="sprintSettingsStatus" class="sprintSettingsStatus">' + esc(status) + '</span></div></section>';
+}
+
+// Builds a preview that also explains dates before Sprint 1 or missing schedules.
+function sprintPreviewHtml(tickets, startValue, weeksValue) {
+  const start = parseDate(startValue);
+  if (!start) return '<span class="sprintPreviewNote">Choose the first Sprint start date.</span>';
+  const weeks = validSprintWeeks(weeksValue);
+  if (!weeks) return '<span class="sprintPreviewNote">Use a whole number from 1 to 52 weeks.</span>';
+  const planned = tickets.map(ticketPlannedFinish).filter(validDate);
+  const calculated = calculatedSprints(tickets, startValue, weeks);
+  const first = sprintRange(0, start, weeks);
+  const sprints = calculated.length ? calculated : [first];
+  const before = planned.filter(date => date < start).length;
+  const unscheduled = tickets.length - planned.length;
+  const notes = [];
+  if (before) notes.push(before + ' scheduled item' + (before === 1 ? ' is' : 's are') + ' before Sprint 1');
+  if (unscheduled) notes.push(unscheduled + ' item' + (unscheduled === 1 ? ' has' : 's have') + ' no planned date');
+  if (!planned.length) notes.push('Sprints will extend when dated work is added');
+  const chips = sprints.map(s => '<span class="sprintChip"><b>Sprint ' + s.number + '</b>' + esc(shortRange(s.start, s.end)) + '</span>').join('');
+  return chips + (notes.length ? '<span class="sprintPreviewNote">' + esc(notes.join(' · ')) + '</span>' : '');
+}
+
+// Builds a compact board control for promoting work from Backlog into an Epic lane.
+function boardBacklogPickerHtml() {
+  const backlog = backlogTickets().sort(ticketOrder);
+  if (!backlog.length) return '<section class="panel boardBacklogPicker empty"><div><h2>Backlog</h2><p>Everything is already on the board.</p></div><button type="button" onclick="openBacklogView()">Open Backlog</button></section>';
+  const ticketOptions = backlog.map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + normalizePromotionType(t) + ' · ' + ticketLabel(t)) + '</option>').join('');
+  const epicOptions = state.tickets.filter(t => normalizeTicketType(t.type) === 'epic').sort(ticketOrder).map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + ticketLabel(t)) + (isBacklogTicket(t) ? ' (Backlog)' : '') + '</option>').join('');
+  return '<section class="panel boardBacklogPicker"><div><h2>Add from Backlog</h2><p>Select work and place it in an Epic lane.</p></div><select id="boardBacklogTicket" aria-label="Backlog ticket">' + ticketOptions + '</select><select id="boardBacklogEpic" aria-label="Target Epic"><option value="0">No Epic</option>' + epicOptions + '</select><button id="boardBacklogAdd" type="button">Add to board</button><button class="ghost" type="button" onclick="openBacklogView()">Open Backlog</button><p id="boardBacklogError" class="formError" role="alert"></p></section>';
+}
+
+// Opens the Backlog workspace from a compact board action.
+function openBacklogView() {
+  view = 'backlog';
+  renderView();
+  syncRoute('push', 0);
+}
+
+// Attaches the sprint settings save action.
+function wireSprintPlanner() {
+  const button = $('#saveSprintSettings');
+  if (!button) return;
+  const startInput = $('#sprintStartDate');
+  const weeksInput = $('#sprintWeeks');
+  const updatePreview = () => {
+    $('.sprintPreview').innerHTML = sprintPreviewHtml(workTickets(), startInput.value, +weeksInput.value);
+    sprintSettingsStatus = 'Unsaved changes';
+    $('#sprintSettingsStatus').textContent = sprintSettingsStatus;
+  };
+  startInput.oninput = updatePreview;
+  weeksInput.oninput = updatePreview;
+  button.onclick = async () => {
+    const start = startInput.value;
+    const weeks = +weeksInput.value;
+    const error = $('#sprintSettingsError');
+    error.textContent = '';
+    if (!start) {
+      error.textContent = 'Choose the first sprint start date.';
+      return;
+    }
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) {
+      error.textContent = 'Sprint length must be a whole number from 1 to 52 weeks.';
+      return;
+    }
+    try {
+      button.disabled = true;
+      button.textContent = 'Saving...';
+      await api('/api/board-settings' + boardQuery(), { method: 'PUT', body: JSON.stringify({ BoardID: currentBoardId(), SprintStartDate: start, SprintWeeks: weeks }) });
+      sprintSettingsStatus = 'Cadence saved';
+      await load();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = 'Save Sprint plan';
+      sprintSettingsStatus = '';
+      error.textContent = (err.message || 'Sprint cadence could not be saved.').trim();
+    }
+  };
+}
+
+// Keeps the target Epic selector useful for both Epic and regular backlog items.
+function wireBoardBacklogPicker() {
+  const ticketSelect = $('#boardBacklogTicket');
+  const epicSelect = $('#boardBacklogEpic');
+  const button = $('#boardBacklogAdd');
+  if (!ticketSelect || !epicSelect || !button) return;
+  const sync = () => {
+    const ticket = parentTicket(+ticketSelect.value);
+    const isEpic = normalizePromotionType(ticket) === 'epic';
+    epicSelect.disabled = isEpic;
+    button.textContent = isEpic ? 'Add Epic and its work' : 'Add to board';
+    const currentEpic = ticket ? topEpicFor(ticket) : null;
+    if (!isEpic && currentEpic) epicSelect.value = String(currentEpic.id);
+  };
+  ticketSelect.onchange = sync;
+  sync();
+  button.onclick = async () => {
+    const ticket = parentTicket(+ticketSelect.value);
+    const error = $('#boardBacklogError');
+    error.textContent = '';
+    try {
+      await promoteBacklogTicket(ticket, +epicSelect.value || 0);
+    } catch (err) {
+      error.textContent = (err.message || 'Backlog work could not be added.').trim();
+    }
+  };
 }
 
 // Builds the full swimlane board for the filtered tickets.
@@ -764,7 +892,8 @@ function card(t) {
   const assignee = userById(t.assigneeId);
   const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
   const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
+  const sprint = ticketSprint(t);
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
 }
 
 // Renders compact dependency direction hints on a board card.
@@ -831,7 +960,7 @@ function wireDnD() {
 
 // Renders board metrics, upcoming dates, and the ticket table.
 function renderOverview() {
-  setHeader('Overview', 'Status, open work, and upcoming dates.');
+  setHeader('Overview', 'Status, planned sprints, and upcoming dates.');
   const root = $('#overview');
   root.classList.remove('hidden');
   const ts = filteredWork();
@@ -850,7 +979,7 @@ function overviewTable(tickets) {
   const typeOptions = overviewTypeOptions(tickets).map(type => '<option value="' + escAttr(type) + '"' + (overviewFilters.type === type ? ' selected' : '') + '>' + esc(type) + '</option>').join('');
   const statusOptions = state.columns.map(c => '<option value="' + c.id + '"' + (String(overviewFilters.status) === String(c.id) ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('');
   const rows = overviewRows(tickets);
-  return '<section class="panel overviewPanel"><div class="overviewTableHeader"><h2>Ticket table</h2><div class="overviewFilters"><input id="overviewSearch" type="search" placeholder="Filter tickets" value="' + escAttr(overviewFilters.q) + '"><select id="overviewTypeFilter"><option value="">All types</option>' + typeOptions + '</select><select id="overviewStatusFilter"><option value="">All statuses</option>' + statusOptions + '</select></div></div><div class="tableScroll"><table class="ticketTable"><thead><tr>' + overviewHeader('id', 'ID') + overviewHeader('title', 'Title') + overviewHeader('type', 'Type') + overviewHeader('status', 'Status') + overviewHeader('duration', 'Duration') + overviewHeader('startDate', 'Start') + overviewHeader('dueDate', 'Due') + overviewHeader('assignee', 'Assignee') + overviewHeader('milestone', 'Milestone') + overviewHeader('dependencies', 'Depends on') + overviewHeader('labels', 'Labels') + overviewHeader('updatedAt', 'Updated') + '</tr></thead><tbody>' + (rows.map(overviewRow).join('') || '<tr><td colspan="12" class="tableEmpty">No matching tickets</td></tr>') + '</tbody></table></div></section>';
+  return '<section class="panel overviewPanel"><div class="overviewTableHeader"><h2>Ticket table</h2><div class="overviewFilters"><input id="overviewSearch" type="search" placeholder="Filter tickets" value="' + escAttr(overviewFilters.q) + '"><select id="overviewTypeFilter"><option value="">All types</option>' + typeOptions + '</select><select id="overviewStatusFilter"><option value="">All statuses</option>' + statusOptions + '</select></div></div><div class="tableScroll"><table class="ticketTable"><thead><tr>' + overviewHeader('id', 'ID') + overviewHeader('title', 'Title') + overviewHeader('type', 'Type') + overviewHeader('status', 'Status') + overviewHeader('sprint', 'Sprint') + overviewHeader('duration', 'Duration') + overviewHeader('startDate', 'Start') + overviewHeader('dueDate', 'Due') + overviewHeader('assignee', 'Assignee') + overviewHeader('milestone', 'Milestone') + overviewHeader('dependencies', 'Depends on') + overviewHeader('labels', 'Labels') + overviewHeader('updatedAt', 'Updated') + '</tr></thead><tbody>' + (rows.map(overviewRow).join('') || '<tr><td colspan="13" class="tableEmpty">No matching tickets</td></tr>') + '</tbody></table></div></section>';
 }
 
 // Builds a sortable overview table header cell.
@@ -914,13 +1043,27 @@ function overviewRow(row) {
   const deps = dependencyTickets(t).map(ticketRef).join(', ') || 'None';
   const labels = (t.labels || []).map(l => '<span class="tableTag">' + esc(l) + '</span>').join('') || '<span class="muted">None</span>';
   const parent = parentTicket(t.parentId);
+  const sprint = ticketSprint(t);
   const depthClass = ' overviewDepth' + Math.max(0, Math.min(4, +(row.depth || 0)));
-  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" onclick="openTicket(' + t.id + ')"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" onclick="openTicket(' + t.id + ')"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+}
+
+// Builds the compact Sprint label shown in Overview.
+function sprintCellHtml(sprint) {
+  if (!sprint) return '<span class="muted">Unscheduled</span>';
+  if (sprint.before) return '<span class="overviewSprint before"><b>Before Sprint 1</b><small>Planned before cadence</small></span>';
+  return '<span class="overviewSprint"><b>' + esc(sprintName(sprint)) + '</b><small>' + esc(shortRange(sprint.start, sprint.end)) + '</small></span>';
+}
+
+// Formats regular and pre-cadence Sprint assignments consistently.
+function sprintName(sprint) {
+  return sprint?.before ? 'Before Sprint 1' : sprint ? 'Sprint ' + sprint.number : '';
 }
 
 // Builds the overview table group header for an Epic.
 function overviewEpicRow(epic, childCount) {
-  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-hover-scope="epic" onclick="openTicket(' + epic.id + ')"><td>' + esc(ticketRef(epic)) + '</td><td colspan="11"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + '</span></div></td></tr>';
+  const sprint = ticketSprint(epic);
+  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-hover-scope="epic" onclick="openTicket(' + epic.id + ')"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span></div></td></tr>';
 }
 
 // Builds searchable text for an overview row.
@@ -954,6 +1097,10 @@ function overviewSortValue(t, key) {
   if (key === 'assignee') return assigneeName(t.assigneeId).toLowerCase();
   if (key === 'milestone') return milestoneName(t.milestoneId).toLowerCase();
   if (key === 'dependencies') return (t.links || []).length;
+  if (key === 'sprint') {
+    const sprint = ticketSprint(t);
+    return sprint ? sprint.number : Number.MAX_SAFE_INTEGER;
+  }
   if (key === 'labels') return (t.labels || []).join(', ').toLowerCase();
   if (key === 'startDate' || key === 'dueDate' || key === 'updatedAt') return t[key] || '9999-99-99';
   return String(t[key] ?? '').toLowerCase();
@@ -1194,22 +1341,86 @@ function shortDate(v) {
   return d ? fmtIsoDate(d) : String(v).slice(0, 10);
 }
 
-// Renders the standalone Ideas list and composer.
-function renderList(type) {
-  setHeader('Ideas', 'Collect ideas outside the delivery board.');
+// Renders the lightweight product backlog, grouped around Epics.
+function renderBacklog() {
+  setHeader('Backlog', 'Shape upcoming work before it moves onto the board.');
   const root = $('#list');
   root.classList.remove('hidden');
-  root.classList.add('ideasView');
-  const rows = filteredIdeas();
-  const count = rows.length + ' idea' + (rows.length === 1 ? '' : 's');
-  root.innerHTML = '<section class="panel ideaComposer"><div class="ideaComposerHeader"><h2>New idea</h2><span>' + esc(state.board?.name || 'Board') + '</span></div><div class="ideaComposerGrid"><label>Title<input id="ideaTitle" placeholder="Idea title"></label><label class="ideaNotes">Notes<textarea id="ideaBody" placeholder="Notes"></textarea></label><button id="ideaCreateBtn" type="button">Create idea</button></div><p id="ideaError" class="formError" role="alert"></p></section><section class="ideaList"><div class="ideaListHeader"><h2>Idea backlog</h2><span>' + count + '</span></div>' + (rows.length ? '<div class="ideaGrid">' + rows.map(ideaCard).join('') + '</div>' : '<div class="ideaEmpty">No ideas yet</div>') + '</section>';
-  $('#ideaCreateBtn').onclick = createIdea;
+  root.classList.remove('ideasView');
+  root.classList.add('backlogView');
+  const rows = filteredBacklog();
+  const count = rows.length + ' item' + (rows.length === 1 ? '' : 's');
+  root.innerHTML = backlogComposerHtml() + '<section class="backlogList"><div class="backlogListHeader"><div><h2>Product backlog</h2><p>Epics stay together; individual work can be assigned as it moves.</p></div><span>' + count + '</span></div>' + (rows.length ? backlogGroupsHtml(rows) : '<div class="backlogEmpty">Your backlog is clear.</div>') + '</section>';
+  $('#backlogCreateBtn').onclick = createBacklogTicket;
+  $('#backlogType').onchange = syncBacklogComposer;
+  syncBacklogComposer();
+  wireBacklogActions(root);
 }
 
-// Builds a compact card for one idea in the standalone Ideas view.
-function ideaCard(t) {
-  const labels = (t.labels || []).map(l => '<span class="pill">' + esc(l) + '</span>').join('');
-  return '<button class="ideaCard" type="button" onclick="openTicket(' + t.id + ')"><div class="ideaCardTop"><span class="typeBadge idea">idea</span></div><h3>' + esc(t.title) + '</h3><p>' + esc(t.body || 'No notes') + '</p><div class="ideaCardMeta">' + (labels || '<span class="pill">unlabeled</span>') + '<span class="pill">' + esc(shortDate(t.updatedAt)) + '</span></div></button>';
+// Builds the compact backlog composer with an optional Epic assignment.
+function backlogComposerHtml() {
+  const epics = state.tickets.filter(t => normalizeTicketType(t.type) === 'epic').sort(ticketOrder);
+  const epicOptions = epics.map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + ticketLabel(t)) + (isBacklogTicket(t) ? '' : ' (on board)') + '</option>').join('');
+  return '<section class="panel backlogComposer"><div class="backlogComposerHeader"><div><h2>Add backlog item</h2><p>Capture just enough detail to make the work actionable.</p></div><span>' + esc(state.board?.name || 'Board') + '</span></div><div class="backlogComposerGrid"><label>Type<select id="backlogType"><option value="task">Task</option><option value="story">Story</option><option value="bug">Bug</option><option value="epic">Epic</option></select></label><label class="backlogTitle">Title<input id="backlogTitle" placeholder="What should be done?"></label><label>Epic<select id="backlogParent"><option value="0">No Epic</option>' + epicOptions + '</select></label><label>Estimate<input id="backlogDuration" type="number" min="0" max="365" placeholder="Days"></label><label>Target date<input id="backlogDue" type="date"></label><label class="backlogNotes">Notes<textarea id="backlogBody" placeholder="Context or acceptance notes"></textarea></label><button id="backlogCreateBtn" type="button">Add to Backlog</button></div><p id="backlogError" class="formError" role="alert"></p></section>';
+}
+
+// Disables Epic assignment when the backlog item itself is an Epic.
+function syncBacklogComposer() {
+  const isEpic = $('#backlogType')?.value === 'epic';
+  if ($('#backlogParent')) {
+    $('#backlogParent').disabled = isEpic;
+    if (isEpic) $('#backlogParent').value = '0';
+  }
+}
+
+// Groups backlog items beneath their Epic, followed by unassigned work.
+function backlogGroupsHtml(rows) {
+  const rowIds = new Set(rows.map(t => +t.id));
+  const groups = new Map();
+  const standalone = [];
+  rows.forEach(t => {
+    const epic = t.type === 'epic' ? t : topEpicFor(t);
+    if (!epic) {
+      standalone.push(t);
+      return;
+    }
+    if (!groups.has(+epic.id)) groups.set(+epic.id, { epic, items: [] });
+    if (+t.id !== +epic.id) groups.get(+epic.id).items.push(t);
+  });
+  const sections = [...groups.values()].sort((a, b) => ticketOrder(a.epic, b.epic)).map(group => backlogEpicGroupHtml(group, rowIds));
+  if (standalone.length) sections.push('<section class="backlogGroup standalone"><div class="backlogGroupHeader"><div><span>Unassigned</span><h3>No Epic</h3></div><small>' + standalone.length + ' item' + (standalone.length === 1 ? '' : 's') + '</small></div><div class="backlogRows">' + standalone.sort(ticketOrder).map(backlogRowHtml).join('') + '</div></section>');
+  return '<div class="backlogGroups">' + sections.join('') + '</div>';
+}
+
+// Builds one Epic section, whether the Epic itself is in Backlog or already on the board.
+function backlogEpicGroupHtml(group, visibleIds) {
+  const epicInBacklog = visibleIds.has(+group.epic.id) && isBacklogTicket(group.epic);
+  const action = epicInBacklog ? '<button class="backlogPromoteEpic" data-backlog-id="' + group.epic.id + '" type="button">Add Epic and work to board</button>' : '<span class="backlogOnBoard">Epic on board</span>';
+  return '<section class="backlogGroup epic"><div class="backlogGroupHeader"><button class="backlogEpicTitle" type="button" data-open-ticket="' + group.epic.id + '"><span>Epic ' + esc(ticketRef(group.epic)) + '</span><h3>' + esc(ticketLabel(group.epic)) + '</h3></button><div><small>' + group.items.length + ' backlog item' + (group.items.length === 1 ? '' : 's') + '</small>' + action + '</div></div><div class="backlogRows">' + (group.items.map(backlogRowHtml).join('') || '<div class="backlogGroupEmpty">No child work in Backlog yet.</div>') + '</div></section>';
+}
+
+// Builds one slim Jira-style backlog row with inline Epic placement.
+function backlogRowHtml(t) {
+  const epics = state.tickets.filter(epic => epic.type === 'epic' && +epic.id !== +t.id).sort(ticketOrder);
+  const currentEpicId = +(topEpicFor(t)?.id || 0);
+  const options = '<option value="0">No Epic</option>' + epics.map(epic => '<option value="' + epic.id + '"' + (currentEpicId === +epic.id ? ' selected' : '') + '>' + esc(ticketLabel(epic)) + (isBacklogTicket(epic) ? ' (Backlog)' : '') + '</option>').join('');
+  const type = normalizePromotionType(t);
+  const meta = [ticketRef(t), type, durationLabel(t), t.dueDate || 'No target date'].map(esc).join('<span aria-hidden="true">·</span>');
+  return '<article class="backlogRow ' + escAttr(type) + '" data-id="' + t.id + '"><button class="backlogRowMain" data-open-ticket="' + t.id + '" type="button"><span class="typeBadge ' + escAttr(type) + '">' + esc(type) + '</span><strong>' + esc(ticketLabel(t)) + '</strong><span class="backlogRowMeta">' + meta + '</span></button><select class="backlogRowEpic" data-backlog-epic="' + t.id + '" aria-label="Epic for ' + escAttr(ticketLabel(t)) + '"' + (type === 'epic' ? ' disabled' : '') + '>' + options + '</select><button class="backlogPromote" data-backlog-id="' + t.id + '" type="button">Add to board</button></article>';
+}
+
+// Attaches backlog row, Epic, and promotion actions.
+function wireBacklogActions(root) {
+  root.querySelectorAll('[data-open-ticket]').forEach(button => button.onclick = () => openTicket(+button.dataset.openTicket));
+  root.querySelectorAll('.backlogPromote,.backlogPromoteEpic').forEach(button => button.onclick = async () => {
+    const ticket = parentTicket(+button.dataset.backlogId);
+    const epicId = +(root.querySelector('[data-backlog-epic="' + ticket.id + '"]')?.value || 0);
+    try {
+      await promoteBacklogTicket(ticket, epicId);
+    } catch (err) {
+      $('#backlogError').textContent = (err.message || 'Backlog work could not be added.').trim();
+    }
+  });
 }
 
 const GANTT_LEFT_PAD = 28;
@@ -1228,7 +1439,7 @@ function renderTimeline() {
 
 // Calculates and renders the Gantt chart for scheduled work.
 function renderGantt(root) {
-  // Only scheduled delivery work reaches the timeline; ideas are kept as a separate backlog.
+  // Only promoted, scheduled delivery work reaches the timeline.
   const tasks = buildGanttRows();
   if (!tasks.length) {
     root.innerHTML = timelineControlsHtml() + '<div class="event muted">No tickets with schedulable dates yet</div>';
@@ -1257,7 +1468,7 @@ function renderGantt(root) {
   const labels = tasks.map(task => ganttTaskLabel(task, rowHeight, highlight)).join('');
   const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, highlight);
 
-  root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span><span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   wireTimelineControls(root);
   wireTimelineHover(root, tasks);
   wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth);
@@ -1707,10 +1918,36 @@ function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, row
     '<rect class="ganttSvgHead" x="0" y="0" width="' + width + '" height="' + headHeight + '"></rect>' +
     '<text class="ganttSvgHeadText" x="' + GANTT_LEFT_PAD + '" y="34">Date range</text>' +
     ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks, highlight) +
+    ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight) +
     ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, highlight) +
     tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlight)).join('') +
     ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) +
     ganttSvgCursor(headHeight + bodyHeight + axisHeight);
+}
+
+// Draws quiet alternating Sprint bands and a clear but restrained end boundary.
+function ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight) {
+  const cadenceStart = parseDate(boardSprintStartValue());
+  if (!cadenceStart) return '';
+  const rangeEnd = addDays(rangeStart, totalDays);
+  const span = boardSprintWeeks() * 7;
+  const firstIndex = Math.max(0, Math.floor(dayDiff(cadenceStart, rangeStart) / span));
+  const parts = [];
+  for (let index = firstIndex; ; index++) {
+    const start = addDays(cadenceStart, index * span);
+    const endExclusive = addDays(start, span);
+    if (start >= rangeEnd) break;
+    if (endExclusive <= rangeStart) continue;
+    const visibleStart = start < rangeStart ? rangeStart : start;
+    const visibleEnd = endExclusive > rangeEnd ? rangeEnd : endExclusive;
+    const x1 = ganttPx(visibleStart, rangeStart, dayWidth);
+    const x2 = ganttPx(visibleEnd, rangeStart, dayWidth);
+    const boundaryX = ganttPx(endExclusive, rangeStart, dayWidth);
+    parts.push('<rect class="ganttSvgSprintBand sprint' + ((index % 2) + 1) + '" x="' + x1 + '" y="' + bodyTop + '" width="' + Math.max(0, x2 - x1) + '" height="' + (bodyHeight + axisHeight) + '"></rect>');
+    if (endExclusive >= rangeStart && endExclusive <= rangeEnd) parts.push('<line class="ganttSvgSprintBoundary" x1="' + boundaryX + '" x2="' + boundaryX + '" y1="' + bodyTop + '" y2="' + (axisTop + axisHeight) + '"></line>');
+    parts.push('<text class="ganttSvgSprintLabel" x="' + (x1 + 7) + '" y="51">Sprint ' + (index + 1) + '</text>');
+  }
+  return parts.join('');
 }
 
 // Builds the pointer-following date line and its top label.
@@ -1946,6 +2183,76 @@ function parseDate(v) {
   if (!validDate(d)) return null;
   if (iso && (d.getFullYear() !== +iso[1] || d.getMonth() !== +iso[2] - 1 || d.getDate() !== +iso[3])) return null;
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// Returns the stored first Sprint date, accepting both API naming styles.
+function boardSprintStartValue() {
+  return String(state.board?.sprint_start_date ?? state.board?.SprintStartDate ?? state.board?.sprintStartDate ?? '');
+}
+
+// Returns the validated board Sprint duration in whole weeks.
+function boardSprintWeeks() {
+  const weeks = +(state.board?.sprint_weeks ?? state.board?.SprintWeeks ?? state.board?.sprintWeeks ?? 2);
+  return validSprintWeeks(weeks) || 2;
+}
+
+// Validates the editable Sprint duration without silently rounding it.
+function validSprintWeeks(value) {
+  const weeks = +value;
+  return Number.isInteger(weeks) && weeks >= 1 && weeks <= 52 ? weeks : 0;
+}
+
+// Builds one inclusive Sprint range from its zero-based sequence index.
+function sprintRange(index, cadenceStart, weeks) {
+  const span = weeks * 7;
+  const start = addDays(cadenceStart, index * span);
+  return { number: index + 1, start, end: addDays(start, span - 1), endExclusive: addDays(start, span) };
+}
+
+// Resolves a calendar date into the board's generated Sprint sequence.
+function sprintForDate(date, startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks()) {
+  const start = parseDate(startValue);
+  if (!start || !validDate(date)) return null;
+  const weeks = validSprintWeeks(weeksValue);
+  if (!weeks) return null;
+  const span = weeks * 7;
+  const offset = dayDiff(start, date);
+  if (offset < 0) return { number: 0, before: true, start: null, end: addDays(start, -1), endExclusive: start };
+  const index = Math.floor(offset / span);
+  return sprintRange(index, start, weeks);
+}
+
+// Chooses the planned finish used for Sprint assignment.
+function ticketPlannedFinish(ticket) {
+  const due = parseDate(ticket?.dueDate);
+  if (due) return due;
+  const start = parseDate(ticket?.startDate);
+  if (!start) return null;
+  return addDays(start, Math.max(0, ticketDuration(ticket) - 1));
+}
+
+// Returns the generated Sprint in which a ticket is expected to finish.
+function ticketSprint(ticket) {
+  return sprintForDate(ticketPlannedFinish(ticket));
+}
+
+// Generates Sprints only as far as the latest scheduled board ticket requires.
+function calculatedSprints(tickets = workTickets(), startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks()) {
+  const start = parseDate(startValue);
+  if (!start) return [];
+  const weeks = validSprintWeeks(weeksValue);
+  if (!weeks) return [];
+  const latest = tickets.map(ticketPlannedFinish).filter(validDate).sort((a, b) => b - a)[0];
+  if (!latest || latest < start) return [];
+  const last = sprintForDate(latest, startValue, weeks);
+  if (!last) return [];
+  return Array.from({ length: last.number }, (_, index) => sprintRange(index, start, weeks));
+}
+
+// Formats a compact inclusive date range for Sprint chips and table cells.
+function shortRange(start, end) {
+  const options = { day: '2-digit', month: 'short' };
+  return start.toLocaleDateString('en-GB', options) + ' – ' + end.toLocaleDateString('en-GB', options);
 }
 
 // Extracts a date from a created-at timestamp.
@@ -2323,7 +2630,47 @@ async function saveDrawer() {
 
 // Saves a ticket through the API.
 async function saveTicket(t) {
-  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body, Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate, DueDate: t.dueDate, MilestoneID: t.milestoneId, AssigneeID: t.assigneeId, Position: t.position, Labels: t.labels, Links: t.links }) });
+  await putTicket(t);
+  await load();
+}
+
+// Builds and sends the complete ticket payload without forcing an intermediate refresh.
+async function putTicket(t) {
+  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId || state.columns[0]?.id, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body || '', Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate || '', DueDate: t.dueDate || '', MilestoneID: t.milestoneId || 0, AssigneeID: t.assigneeId || 0, Position: t.position || 0, Labels: t.labels || [], Links: t.links || [], IsBacklog: !!t.isBacklog }) });
+}
+
+// Converts legacy idea notes into a supported delivery type when promoted.
+function normalizePromotionType(t) {
+  const type = normalizeTicketType(t?.type);
+  return type === 'idea' ? 'task' : type;
+}
+
+// Returns all backlog descendants of a parent, preserving parent-first order.
+function backlogDescendants(parentId, seen = new Set()) {
+  if (!parentId || seen.has(+parentId)) return [];
+  seen.add(+parentId);
+  return state.tickets.filter(t => isBacklogTicket(t) && +t.parentId === +parentId).sort(ticketOrder).flatMap(child => [child, ...backlogDescendants(child.id, seen)]);
+}
+
+// Promotes an item, or an entire Epic tree, from Backlog onto the first board column.
+async function promoteBacklogTicket(ticket, epicId = 0) {
+  if (!ticket || !isBacklogTicket(ticket)) throw new Error('Choose a Backlog item first.');
+  const firstColumn = state.columns[0]?.id;
+  if (!firstColumn) throw new Error('This board has no workflow column.');
+  const isEpic = normalizePromotionType(ticket) === 'epic';
+  const promote = async (item, parentId = item.parentId || 0) => {
+    const next = { ...item, type: normalizePromotionType(item), columnId: firstColumn, parentId, isBacklog: false };
+    await putTicket(next);
+  };
+  if (isEpic) {
+    await promote(ticket, 0);
+    for (const child of backlogDescendants(ticket.id)) await promote(child);
+  } else {
+    const epic = epicId ? parentTicket(epicId) : null;
+    if (epicId && (!epic || normalizeTicketType(epic.type) !== 'epic')) throw new Error('Choose a valid Epic.');
+    if (epic && isBacklogTicket(epic)) await promote(epic, 0);
+    await promote(ticket, epicId);
+  }
   await load();
 }
 
@@ -2375,25 +2722,26 @@ $('#addBtn').onclick = async () => {
   }
 };
 
-// Creates a standalone idea ticket.
-async function createIdea() {
-  const title = $('#ideaTitle').value.trim();
-  const body = $('#ideaBody').value.trim();
+// Creates a typed work item in the product backlog.
+async function createBacklogTicket() {
+  const title = $('#backlogTitle').value.trim();
+  const body = $('#backlogBody').value.trim();
+  const type = normalizeTicketType($('#backlogType').value);
   if (!title) {
-    $('#ideaError').textContent = 'Please enter an idea title.';
-    $('#ideaTitle').focus();
+    $('#backlogError').textContent = 'Please enter a title.';
+    $('#backlogTitle').focus();
     return;
   }
   if (!currentBoardId()) {
-    $('#ideaError').textContent = 'No board is available for your account yet.';
+    $('#backlogError').textContent = 'No board is available for your account yet.';
     return;
   }
   try {
-    $('#ideaError').textContent = '';
-    await api('/api/tickets' + boardQuery(), { method: 'POST', body: JSON.stringify({ BoardID: currentBoardId(), Title: title, Body: body, Type: 'idea', ColumnID: state.columns[0]?.id }) });
+    $('#backlogError').textContent = '';
+    await api('/api/tickets' + boardQuery(), { method: 'POST', body: JSON.stringify({ BoardID: currentBoardId(), Title: title, Body: body, Type: type, ParentID: type === 'epic' ? 0 : (+$('#backlogParent').value || 0), Duration: +$('#backlogDuration').value || 0, DueDate: $('#backlogDue').value || '', ColumnID: state.columns[0]?.id, IsBacklog: true }) });
     await load();
   } catch (err) {
-    $('#ideaError').textContent = (err.message || 'Idea could not be created.').trim();
+    $('#backlogError').textContent = (err.message || 'Backlog item could not be created.').trim();
   }
 }
 

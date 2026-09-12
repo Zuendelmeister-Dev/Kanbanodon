@@ -81,7 +81,7 @@ func (s *server) createTicket(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec("insert into tickets(board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", bid, t.ColumnID, t.ParentID, t.Ref, t.Title, t.Body, t.Type, t.Points, t.Duration, t.StartDate, t.DueDate, t.CompletedAt, t.MilestoneID, t.AssigneeID, t.Position, ts, ts)
+	res, err := tx.Exec("insert into tickets(board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,is_backlog,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", bid, t.ColumnID, t.ParentID, t.Ref, t.Title, t.Body, t.Type, t.Points, t.Duration, t.StartDate, t.DueDate, t.CompletedAt, t.MilestoneID, t.AssigneeID, t.Position, t.IsBacklog, ts, ts)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -243,7 +243,7 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec("update tickets set column_id=?,parent_id=?,ref=?,title=?,body=?,type=?,points=?,duration=?,start_date=?,due_date=?,completed_at=?,milestone_id=?,assignee_id=?,position=?,updated_at=? where id=?", t.ColumnID, t.ParentID, t.Ref, t.Title, t.Body, t.Type, t.Points, t.Duration, t.StartDate, t.DueDate, completedAt, t.MilestoneID, t.AssigneeID, t.Position, now(), id)
+	_, err = tx.Exec("update tickets set column_id=?,parent_id=?,ref=?,title=?,body=?,type=?,points=?,duration=?,start_date=?,due_date=?,completed_at=?,milestone_id=?,assignee_id=?,position=?,is_backlog=?,updated_at=? where id=?", t.ColumnID, t.ParentID, t.Ref, t.Title, t.Body, t.Type, t.Points, t.Duration, t.StartDate, t.DueDate, completedAt, t.MilestoneID, t.AssigneeID, t.Position, t.IsBacklog, now(), id)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -284,7 +284,7 @@ func (s *server) blockedDependenciesForLinks(boardID int64, links []int64, targe
 	if err := s.db.QueryRow("select position from columns where board_id=? and lower(name)='in progress' order by position limit 1", boardID).Scan(&startPosition); err != nil {
 		startPosition = 2
 	}
-	if targetPosition < startPosition || strings.EqualFold(targetName, "Backlog") || strings.EqualFold(targetName, "Ready") {
+	if targetPosition < startPosition || strings.EqualFold(targetName, "To Do") || strings.EqualFold(targetName, "Backlog") || strings.EqualFold(targetName, "Ready") {
 		return nil, nil
 	}
 
@@ -449,7 +449,7 @@ func (s *server) importData(w http.ResponseWriter, r *http.Request, u user) {
 				http.Error(w, err.Error(), 500)
 				return
 			}
-			res, err := tx.Exec("insert into tickets(board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", bid, t.ColumnID, 0, t.Ref, t.Title, t.Body, t.Type, t.Points, t.Duration, t.StartDate, t.DueDate, t.CompletedAt, t.MilestoneID, t.AssigneeID, t.Position, now(), now())
+			res, err := tx.Exec("insert into tickets(board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,is_backlog,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", bid, t.ColumnID, 0, t.Ref, t.Title, t.Body, t.Type, t.Points, t.Duration, t.StartDate, t.DueDate, t.CompletedAt, t.MilestoneID, t.AssigneeID, t.Position, t.IsBacklog, now(), now())
 			if err != nil {
 				http.Error(w, err.Error(), 500)
 				return
@@ -494,13 +494,13 @@ func (s *server) importData(w http.ResponseWriter, r *http.Request, u user) {
 // loadTickets reads tickets and attaches their labels and dependency links.
 func (s *server) loadTickets(boardID int64) []ticket {
 	out := []ticket{}
-	rs, err := s.db.Query("select id,board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,created_at,updated_at from tickets where board_id=? order by position,id", boardID)
+	rs, err := s.db.Query("select id,board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,is_backlog,created_at,updated_at from tickets where board_id=? order by position,id", boardID)
 	if err != nil {
 		return out
 	}
 	for rs.Next() {
 		var t ticket
-		_ = rs.Scan(&t.ID, &t.BoardID, &t.ColumnID, &t.ParentID, &t.Ref, &t.Title, &t.Body, &t.Type, &t.Points, &t.Duration, &t.StartDate, &t.DueDate, &t.CompletedAt, &t.MilestoneID, &t.AssigneeID, &t.Position, &t.CreatedAt, &t.UpdatedAt)
+		_ = rs.Scan(&t.ID, &t.BoardID, &t.ColumnID, &t.ParentID, &t.Ref, &t.Title, &t.Body, &t.Type, &t.Points, &t.Duration, &t.StartDate, &t.DueDate, &t.CompletedAt, &t.MilestoneID, &t.AssigneeID, &t.Position, &t.IsBacklog, &t.CreatedAt, &t.UpdatedAt)
 		out = append(out, t)
 	}
 	_ = rs.Close()
@@ -599,7 +599,8 @@ func normalizeTicketInput(t *ticket) {
 	t.Type = ticketType(t.Type)
 	normalizeDuration(t)
 	if t.Type == "idea" {
-		// Ideas live in their own backlog and deliberately stay out of date-based planning.
+		// Legacy ideas are preserved as backlog notes until they are promoted as work.
+		t.IsBacklog = true
 		t.Points = 0
 		t.Duration = 0
 		t.StartDate = ""
