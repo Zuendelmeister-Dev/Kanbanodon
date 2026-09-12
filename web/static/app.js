@@ -1045,6 +1045,7 @@ function renderGantt(root) {
   root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span><span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   wireTimelineControls(root);
   wireTimelineHover(root, tasks);
+  wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth);
 }
 
 // Builds ordered Gantt rows from tickets, Epics, and dependencies.
@@ -1192,6 +1193,58 @@ function timelineHoverRelatedIds(tasks, seedIds) {
     });
   }
   return related;
+}
+
+// Shows a date cursor snapped to the nearest daily grid line inside the chart.
+function wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth) {
+  const svg = root.querySelector('.ganttSvg');
+  const cursor = root.querySelector('.ganttSvgCursor');
+  if (!svg || !cursor) return;
+  const line = cursor.querySelector('.ganttSvgCursorLine');
+  const tag = cursor.querySelector('.ganttSvgCursorTag');
+  const text = cursor.querySelector('.ganttSvgCursorText');
+  const update = event => {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const viewWidth = svg.viewBox?.baseVal?.width || timelineWidth;
+    const scale = viewWidth / rect.width;
+    const svgX = (event.clientX - rect.left) * scale;
+    const scrollRect = svg.closest('.ganttSvgScroll')?.getBoundingClientRect() || rect;
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const clippedLeft = Math.max(0, scrollRect.left);
+    const clippedRight = Math.min(viewportWidth, scrollRect.right);
+    const visibleLeft = Math.max(0, (clippedLeft - rect.left) * scale);
+    const visibleRight = Math.min(timelineWidth, (clippedRight - rect.left) * scale);
+    const model = ganttCursorAtX(svgX, rangeStart, totalDays, dayWidth, timelineWidth, visibleLeft, visibleRight);
+    line.setAttribute('x1', model.x);
+    line.setAttribute('x2', model.x);
+    tag.setAttribute('x', model.tagX);
+    tag.setAttribute('width', model.tagWidth);
+    text.setAttribute('x', model.tagX + model.tagWidth / 2);
+    text.textContent = model.label;
+    cursor.classList.add('visible');
+  };
+  svg.onmouseenter = update;
+  svg.onmousemove = update;
+  svg.onmouseleave = () => cursor.classList.remove('visible');
+}
+
+// Calculates the nearest timeline day and a viewport-safe tooltip position.
+function ganttCursorAtX(svgX, rangeStart, totalDays, dayWidth, timelineWidth, visibleLeft = 0, visibleRight = timelineWidth) {
+  const day = Math.max(0, Math.min(totalDays, Math.round((svgX - GANTT_LEFT_PAD) / dayWidth)));
+  const x = GANTT_LEFT_PAD + day * dayWidth;
+  const date = addDays(rangeStart, day);
+  const label = ganttCursorDateLabel(date);
+  const minTagX = Math.max(4, visibleLeft + 4);
+  const maxTagRight = Math.min(timelineWidth - 4, visibleRight - 4);
+  const tagWidth = Math.min(Math.max(104, label.length * 7 + 22), Math.max(60, maxTagRight - minTagX));
+  const tagX = Math.max(minTagX, Math.min(x - tagWidth / 2, maxTagRight - tagWidth));
+  return { day, x, date, label, tagX, tagWidth };
+}
+
+// Formats the cursor label as a readable calendar date.
+function ganttCursorDateLabel(date) {
+  return new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'long' }).format(date);
 }
 
 // Toggles dependency-path highlighting for a timeline task.
@@ -1453,7 +1506,13 @@ function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, row
     ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks, highlight) +
     ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, highlight) +
     tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlight)).join('') +
-    ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width);
+    ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) +
+    ganttSvgCursor(headHeight + bodyHeight + axisHeight);
+}
+
+// Builds the pointer-following date line and its top label.
+function ganttSvgCursor(height) {
+  return '<g class="ganttSvgCursor" aria-hidden="true"><line class="ganttSvgCursorLine" x1="0" x2="0" y1="34" y2="' + height + '"></line><rect class="ganttSvgCursorTag" x="0" y="7" width="104" height="26" rx="6"></rect><text class="ganttSvgCursorText" x="52" y="25"></text></g>';
 }
 
 // Builds SVG background rows, grid lines, and weekend shading.
@@ -1577,9 +1636,19 @@ function ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, high
     const endX = Math.max(0, x2 - 10);
     const d = 'M ' + x1 + ' ' + y1 + ' H ' + bend + ' V ' + y2 + ' H ' + endX;
     const aria = ticketLabel(source.ticket) + ' enables ' + ticketLabel(target.ticket);
-    paths.push('<g class="ganttSvgArrowGroup' + pathClass + '" data-from-id="' + source.ticket.id + '" data-to-id="' + target.ticket.id + '" tabindex="0" role="img" aria-label="' + escAttr(aria) + '"><title>' + esc(aria) + '</title><path class="ganttSvgArrowHit" d="' + d + '"></path><path class="ganttSvgArrowOutline" d="' + d + '"></path><path class="ganttSvgArrow" d="' + d + '"></path></g>');
+    const midPoints = ganttArrowMidPoints(bend, y1, y2);
+    paths.push('<g class="ganttSvgArrowGroup' + pathClass + '" data-from-id="' + source.ticket.id + '" data-to-id="' + target.ticket.id + '" tabindex="0" role="img" aria-label="' + escAttr(aria) + '"><title>' + esc(aria) + '</title><path class="ganttSvgArrowHit" d="' + d + '"></path><path class="ganttSvgArrowOutline" d="' + d + '"></path><path class="ganttSvgArrow" d="' + d + '"></path><polygon class="ganttSvgArrowMid" points="' + midPoints + '"></polygon></g>');
   }));
   return paths.join('');
+}
+
+// Returns a triangle centered on the vertical segment and pointing toward the dependent task.
+function ganttArrowMidPoints(x, fromY, toY) {
+  const middleY = (fromY + toY) / 2;
+  const direction = toY >= fromY ? 1 : -1;
+  const tipY = middleY + direction * 8;
+  const baseY = middleY - direction * 6;
+  return x + ',' + tipY + ' ' + (x - 7) + ',' + baseY + ' ' + (x + 7) + ',' + baseY;
 }
 
 // Builds the Gantt date axis.
