@@ -48,7 +48,7 @@ You must change this password after login. Also change `KANBANODON_SESSION_SECRE
 - Comments per ticket
 - Overview table with sorting and filters
 - Independent ideas list without delivery dates
-- Timeline/Gantt view based on scheduled work, dependencies, and live delay status
+- Timeline/Gantt view with live delays, best-case finish estimates, and interactive dependency paths
 - JSON export and import
 - Local SQLite storage
 - One-container deployment
@@ -390,7 +390,7 @@ Sidebar:
 
 - `Board`: shows columns and draggable ticket cards.
 - `Overview`: shows a sortable table for scanning and comparing work.
-- `Timeline`: shows a Gantt-style view from start dates, due dates, durations, dependencies, and live delay status for overdue work.
+- `Timeline`: shows a Gantt-style view from start dates, due dates, and durations. Overdue work extends to today in red, its duration continues as a dashed best-case estimate, and hovering a task or dependency arrow fades unrelated work.
 - `Ideas`: collects independent ideas that do not need due dates and do not appear in the board timeline.
 - `Sharing`: shown to regular users under `Access`; board owners can grant or remove access to their own boards.
 - `Admin`: shown to admins under `Administration`; contains separate sections for creating users, managing users, and sharing boards.
