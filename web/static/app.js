@@ -999,9 +999,9 @@ function ideaCard(t) {
 
 const GANTT_LEFT_PAD = 28;
 
-// Renders the beta Timeline view or an error message.
+// Renders the Timeline view or an error message.
 function renderTimeline() {
-  setHeader('Timeline (beta)', 'Gantt chart with scheduled work and dependencies.');
+  setHeader('Timeline', 'Gantt chart with scheduled work, dependencies, and live delay status.');
   const root = $('#timeline');
   root.classList.remove('hidden');
   try {
@@ -1013,7 +1013,7 @@ function renderTimeline() {
 
 // Calculates and renders the Gantt chart for scheduled work.
 function renderGantt(root) {
-  // Only scheduled delivery work reaches the beta timeline; ideas are kept as a separate backlog.
+  // Only scheduled delivery work reaches the timeline; ideas are kept as a separate backlog.
   const tasks = buildGanttRows();
   if (!tasks.length) {
     root.innerHTML = timelineControlsHtml() + '<div class="event muted">No tickets with schedulable dates yet</div>';
@@ -1022,7 +1022,7 @@ function renderGantt(root) {
   }
   tasks.forEach((task, index) => task.row = index);
 
-  const dates = tasks.flatMap(t => [t.plannedStart, t.start, t.end, t.due, t.actualFinish, t.readyAt, t.overrunEnd]).filter(validDate);
+  const dates = tasks.flatMap(t => [t.plannedStart, t.start, t.end, t.due, t.actualFinish, t.readyAt, t.delayEnd, t.overrunEnd]).filter(validDate);
   const minDate = dates.length ? new Date(Math.min(...dates.map(Number))) : startOfDay(new Date());
   const maxDate = dates.length ? new Date(Math.max(...dates.map(Number))) : addDays(startOfDay(new Date()), 14);
   const rangeStart = addDays(minDate, -1);
@@ -1202,9 +1202,11 @@ function ganttTaskSort(a, b) {
 
 // Builds the aggregate Gantt row for one Epic.
 function ganttEpicAggregate(epic, childTasks, ownTask) {
-  const childDates = childTasks.flatMap(task => [task.start, task.end, task.due, task.readyAt]).filter(validDate);
-  const childStart = childDates.length ? new Date(Math.min(...childDates.map(Number))) : null;
-  const childEnd = childDates.length ? new Date(Math.max(...childDates.map(Number))) : null;
+  const childDates = childTasks.flatMap(task => [task.start, task.end, task.due, task.readyAt, task.delayEnd]);
+  if (ownTask) childDates.push(ownTask.start, ownTask.end, ownTask.due, ownTask.readyAt, ownTask.delayEnd);
+  const validChildDates = childDates.filter(validDate);
+  const childStart = validChildDates.length ? new Date(Math.min(...validChildDates.map(Number))) : null;
+  const childEnd = validChildDates.length ? new Date(Math.max(...validChildDates.map(Number))) : null;
   const explicitStart = parseDate(epic.startDate);
   const explicitDue = parseDate(epic.dueDate);
   const start = childStart || explicitStart || ownTask?.start || startOfDay(new Date());
@@ -1222,6 +1224,7 @@ function ganttEpicAggregate(epic, childTasks, ownTask) {
     end,
     actualFinish: null,
     readyAt: end,
+    delayEnd: null,
     saved: false,
     late: false,
     dependencyReady: null,
@@ -1247,10 +1250,12 @@ function ganttTask(ticket) {
   const start = dependencyReady || base.plannedStart;
   let due = base.due;
   if (due <= start) due = addDays(start, plannedDuration || 1);
-  const actualFinish = base.actualFinish && base.actualFinish >= start ? base.actualFinish : null;
+  const actualFinish = base.actualFinish && base.actualFinish >= start ? base.actualFinish : (base.actualFinish ? start : null);
+  const today = startOfDay(new Date());
+  const delayEnd = actualFinish && actualFinish > due ? actualFinish : (!actualFinish && today > due ? today : null);
   const end = actualFinish && actualFinish < due ? actualFinish : due;
   const readyAt = actualFinish || due;
-  return { ticket, deps, blocked: unfinishedDependencies(ticket), plannedStart: base.plannedStart, start, due, end, actualFinish, readyAt, saved: actualFinish && actualFinish < due, late: actualFinish && actualFinish > due, dependencyReady };
+  return { ticket, deps, blocked: unfinishedDependencies(ticket), plannedStart: base.plannedStart, start, due, end, actualFinish, readyAt, delayEnd, saved: actualFinish && actualFinish < due, late: !!delayEnd, dependencyReady };
 }
 
 // Calculates the planned start and due date for a ticket.
@@ -1327,6 +1332,8 @@ function ganttTaskLabel(task, rowHeight, highlight) {
   const depIds = task.deps.map(ticketRef).join(', ');
   const doneText = task.deps.length > 1 ? ' are done' : ' is done';
   const depText = task.isAggregate ? (task.childCount + ' child item' + (task.childCount === 1 ? '' : 's')) : (task.deps.length ? (task.blocked.length ? 'Can start when ' + depIds + doneText : 'Starts after ' + depIds + doneText) : 'No dependency');
+  const delayText = ganttDelayText(task);
+  const detailText = [depText, delayText].filter(Boolean).join(' · ');
   const classes = ['ganttTaskItem'];
   if (task.isAggregate) classes.push('epicSummary');
   if (task.groupId && !task.isAggregate) classes.push('epicChild');
@@ -1334,7 +1341,19 @@ function ganttTaskLabel(task, rowHeight, highlight) {
   classes.push(...timelineTaskHighlightClass(task, highlight).trim().split(/\s+/).filter(Boolean));
   classes.push('indent' + Math.max(0, Math.min(4, +(task.depth || 0))));
   const typeLabel = task.isAggregate ? 'epic total' : task.ticket.type;
-  return '<button class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '"><strong>' + esc(ticketLabel(task.ticket)) + '</strong><span>' + esc(typeLabel) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span><em class="' + (task.blocked.length ? 'waiting' : '') + '">' + esc(depText) + '</em></button>';
+  const detailClasses = [task.blocked.length ? 'waiting' : '', delayText ? 'late' : ''].filter(Boolean).join(' ');
+  return '<button class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '"><strong>' + esc(ticketLabel(task.ticket)) + '</strong><span>' + esc(typeLabel) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span><em class="' + detailClasses + '">' + esc(detailText) + '</em></button>';
+}
+
+// Describes how far a task or Epic has passed its target date.
+function ganttDelayText(task) {
+  const delayEnd = task?.delayEnd || (task?.overrun ? task.overrunEnd : null);
+  if (!validDate(task?.due) || !validDate(delayEnd)) return '';
+  const days = Math.max(0, dayDiff(task.due, delayEnd));
+  if (!days) return '';
+  const unit = days === 1 ? 'day' : 'days';
+  if (task.overrun) return days + ' ' + unit + ' over target';
+  return task.actualFinish ? 'Finished ' + days + ' ' + unit + ' late' : days + ' ' + unit + ' overdue';
 }
 
 // Builds the full SVG markup for the Gantt chart.
@@ -1385,7 +1404,7 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlig
   const left = ganttPx(task.start, rangeStart, dayWidth);
   const visualEnd = task.overrun ? task.due : task.end;
   const right = ganttPx(visualEnd, rangeStart, dayWidth);
-  const totalRight = ganttPx(task.overrunEnd || task.end, rangeStart, dayWidth);
+  const totalRight = ganttPx(task.overrunEnd || task.delayEnd || task.end, rangeStart, dayWidth);
   const width = Math.max(42, right - left);
   const totalWidth = Math.max(width, totalRight - left);
   const dueX = ganttPx(task.due, rangeStart, dayWidth);
@@ -1397,8 +1416,9 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlig
   const saved = task.saved ? ganttSvgSaved(task, rangeStart, dayWidth, y, h) : '';
   const late = task.late ? ganttSvgLate(task, rangeStart, dayWidth, y, h) : '';
   const overrun = task.overrun ? ganttSvgOverrun(task, rangeStart, dayWidth, y, h) : '';
+  const delayText = ganttDelayText(task);
   return '<g class="ganttSvgTask' + pathClass + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" role="button">' +
-    '<title>' + esc(ticketLabel(task.ticket)) + ' | ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</title>' + saved +
+    '<title>' + esc(ticketLabel(task.ticket)) + ' | ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + (delayText ? ' | ' + delayText : '') + '</title>' + saved +
     '<rect class="ganttSvgBar ' + type + blocked + aggregate + pathClass + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late +
     '<text class="ganttSvgBarText" x="' + (left + 9) + '" y="' + (y + 21) + '">' + esc(label) + '</text>' +
     '<line class="ganttSvgDueLine" x1="' + dueX + '" x2="' + dueX + '" y1="' + (rowTop + 10) + '" y2="' + (rowTop + rowHeight - 10) + '"></line>' +
@@ -1432,7 +1452,7 @@ function ganttSvgSaved(task, rangeStart, dayWidth, y, h) {
 // Builds the delay segment for late completion.
 function ganttSvgLate(task, rangeStart, dayWidth, y, h) {
   const left = ganttPx(task.due, rangeStart, dayWidth);
-  const right = ganttPx(task.actualFinish, rangeStart, dayWidth);
+  const right = ganttPx(task.delayEnd, rangeStart, dayWidth);
   const width = Math.max(0, right - left);
   return width ? '<rect class="ganttSvgLate" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' : '';
 }

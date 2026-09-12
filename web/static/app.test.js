@@ -62,7 +62,7 @@ function loadApp() {
     blockingTicketIds, dependencyTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    timelineHighlight, timelineTaskHighlightClass, truncateSvgText, monthLabel, ganttPx,
+    timelineHighlight, timelineTaskHighlightClass, ganttDelayText, ganttSvgLate, truncateSvgText, monthLabel, ganttPx,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
@@ -166,6 +166,30 @@ test('timeline scheduling waits for dependencies and builds highlight paths', ()
   assert.equal(highlight.direct.has('13>12'), true);
   assert.equal(highlight.ancestors.has(10), true);
   assert.equal(app.timelineTaskHighlightClass(task, highlight), ' selectedPath');
+});
+
+test('timeline shows live delay for overdue work and actual delay for late completion', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  app.setState(state);
+
+  const overdue = { ...state.tickets[2], columnId: 1, links: [], startDate: '2000-01-01', dueDate: '2000-01-03' };
+  const openTask = app.ganttTask(overdue);
+  assert.equal(openTask.actualFinish, null);
+  assert.equal(openTask.late, true);
+  assert.equal(app.dayDiff(openTask.due, openTask.delayEnd) > 0, true);
+  assert.match(app.ganttDelayText(openTask), /days overdue$/);
+  assert.match(app.ganttSvgLate(openTask, app.parseDate('1999-12-31'), 10, 0, 10), /class="ganttSvgLate"/);
+
+  const completed = { ...overdue, columnId: 5, completedAt: '2000-01-08' };
+  const completedTask = app.ganttTask(completed);
+  assert.equal(app.fmtIsoDate(completedTask.delayEnd), '2000-01-08');
+  assert.equal(app.ganttDelayText(completedTask), 'Finished 5 days late');
+
+  const aggregate = app.ganttEpicAggregate(state.tickets[0], [openTask], null);
+  aggregate.due = app.parseDate('2000-01-04');
+  aggregate.overrun = aggregate.overrunEnd > aggregate.due;
+  assert.match(app.ganttDelayText(aggregate), /days over target$/);
 });
 
 test('sorting, grouping, and labels remain deterministic', () => {

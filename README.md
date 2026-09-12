@@ -48,7 +48,7 @@ You must change this password after login. Also change `KANBANODON_SESSION_SECRE
 - Comments per ticket
 - Overview table with sorting and filters
 - Independent ideas list without delivery dates
-- Timeline (beta)/Gantt view based on scheduled work and dependencies
+- Timeline/Gantt view based on scheduled work, dependencies, and live delay status
 - JSON export and import
 - Local SQLite storage
 - One-container deployment
@@ -63,9 +63,9 @@ Overview with status cards and grouped ticket table:
 
 ![Overview with status cards and ticket table](docs/screenshots/overview-table.png)
 
-Timeline (beta) with Epic grouping, dependency arrows, zoom, and path highlighting:
+Timeline with Epic grouping, dependency arrows, zoom, path highlighting, and overdue work:
 
-![Timeline beta with Epic grouping and dependencies](docs/screenshots/timeline-beta.png)
+![Timeline with Epic grouping and dependencies](docs/screenshots/timeline-beta.png)
 
 Admin area with user management and per-board sharing:
 
@@ -390,7 +390,7 @@ Sidebar:
 
 - `Board`: shows columns and draggable ticket cards.
 - `Overview`: shows a sortable table for scanning and comparing work.
-- `Timeline (beta)`: shows a Gantt-style view from start dates, due dates, durations, and dependencies.
+- `Timeline`: shows a Gantt-style view from start dates, due dates, durations, dependencies, and live delay status for overdue work.
 - `Ideas`: collects independent ideas that do not need due dates and do not appear in the board timeline.
 - `Sharing`: shown to regular users under `Access`; board owners can grant or remove access to their own boards.
 - `Admin`: shown to admins under `Administration`; contains separate sections for creating users, managing users, and sharing boards.
