@@ -464,7 +464,7 @@ function avatar(name, title = '') {
   if (window.KanbanodonDinoAvatars) {
     return '<span class="avatar dinoAvatar" title="' + escAttr(tooltip) + '">' + window.KanbanodonDinoAvatars.createDinoAvatar(seed, { template: seed, size: 48, palette: 'Original' }) + '</span>';
   }
-  return '<span class="avatar" title="' + escAttr(tooltip) + '">' + seed.slice(0, 2).toUpperCase() + '</span>';
+  return '<span class="avatar" title="' + escAttr(tooltip) + '">' + esc(seed.slice(0, 2).toUpperCase()) + '</span>';
 }
 
 // Renders board selection and new-board controls.
@@ -758,7 +758,7 @@ function card(t) {
   const assignee = userById(t.assigneeId);
   const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
   const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (blocked.length ? '<span class="pill warn">waiting for ' + blocked.map(ticketLabel).join(', ') + '</span>' : '') + '</div></article>';
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (blocked.length ? '<span class="pill warn">waiting for ' + esc(blocked.map(ticketLabel).join(', ')) + '</span>' : '') + '</div></article>';
 }
 
 // Calculates card indentation based on nested non-Epic parents.
@@ -1552,9 +1552,10 @@ function startOfDay(date) {
 function parseDate(v) {
   if (!v) return null;
   const raw = String(v);
-  const iso = raw.match(/^\d{4}-\d{2}-\d{2}/);
-  const d = iso ? new Date(iso[0] + 'T00:00:00') : new Date(raw);
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const d = iso ? new Date(+iso[1], +iso[2] - 1, +iso[3]) : new Date(raw);
   if (!validDate(d)) return null;
+  if (iso && (d.getFullYear() !== +iso[1] || d.getMonth() !== +iso[2] - 1 || d.getDate() !== +iso[3])) return null;
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 

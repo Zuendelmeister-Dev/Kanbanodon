@@ -18,6 +18,13 @@ func main() {
 	s := &server{db: open(filepath.Join(data, "app.db")), cfg: open(filepath.Join(data, "config.db")), authMode: env("KANBANODON_AUTH_MODE", "local"), allowSignup: env("KANBANODON_ALLOW_SIGNUP", "true") == "true", secret: []byte(env("KANBANODON_SESSION_SECRET", "change-me-kanbanodon"))}
 	must(s.migrate())
 	must(s.seed())
+	addr := env("KANBANODON_ADDR", ":8080")
+	log.Printf("Kanbanodon listening on %s (%s mode)", addr, s.authMode)
+	log.Fatal(http.ListenAndServe(addr, newHandler(s)))
+}
+
+// newHandler wires all application routes and shared HTTP middleware.
+func newHandler(s *server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", index)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
@@ -35,8 +42,7 @@ func main() {
 	mux.HandleFunc("/api/tickets/", s.withUser(s.ticketAction))
 	mux.HandleFunc("/api/export", s.withUser(s.export))
 	mux.HandleFunc("/api/import", s.withUser(s.importData))
-	log.Printf("Kanbanodon listening on %s (%s mode)", env("KANBANODON_ADDR", ":8080"), s.authMode)
-	log.Fatal(http.ListenAndServe(env("KANBANODON_ADDR", ":8080"), secure(mux)))
+	return secure(mux)
 }
 
 // open connects to a SQLite database and limits it to one writer connection.

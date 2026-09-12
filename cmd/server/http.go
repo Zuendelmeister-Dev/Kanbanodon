@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 )
 
@@ -33,7 +34,13 @@ func jsonOut(w http.ResponseWriter, v any) {
 
 // decodeJSON reads a request body into the target value and reports bad JSON.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return false
 	}

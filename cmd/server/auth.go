@@ -51,7 +51,9 @@ func (s *server) currentUser(r *http.Request) (user, error) {
 	if err := s.db.QueryRow("select user_id,expires_at from sessions where token_hash=?", tokenHash(c.Value, s.secret)).Scan(&uid, &exp); err != nil {
 		return user{}, err
 	}
-	if exp < now() {
+	expiresAt, err := time.Parse(time.RFC3339, exp)
+	if err != nil || !expiresAt.After(time.Now().UTC()) {
+		_, _ = s.db.Exec("delete from sessions where token_hash=?", tokenHash(c.Value, s.secret))
 		return user{}, errors.New("expired")
 	}
 	var u user
@@ -93,7 +95,11 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 
 // signup creates a regular user account when open registration is enabled.
 func (s *server) signup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" || !s.allowSignup {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowSignup {
 		http.Error(w, "signup disabled", 403)
 		return
 	}
@@ -159,6 +165,10 @@ func internalUserEmail(username string) string {
 
 // logout removes the current session and clears the login cookie.
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
 	if c, err := r.Cookie("kanbanodon_session"); err == nil {
 		_, _ = s.db.Exec("delete from sessions where token_hash=?", tokenHash(c.Value, s.secret))
 	}
@@ -205,7 +215,7 @@ func hashPassword(pw string) (string, error) {
 // checkPassword compares a plaintext password with a stored password hash.
 func checkPassword(enc, pw string) bool {
 	p := strings.Split(enc, "$")
-	if len(p) != 3 {
+	if len(p) != 3 || p[0] != "v1" {
 		return false
 	}
 	salt, err := hex.DecodeString(p[1])
