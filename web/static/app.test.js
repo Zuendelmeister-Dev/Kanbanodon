@@ -64,6 +64,7 @@ function loadApp() {
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
     timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds,
     ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
+    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttArrowMidPoints,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
@@ -210,6 +211,22 @@ test('timeline hover keeps dependency components visible in either direction', (
   assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [2])].sort(), [1, 2]);
   assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [1, 2])].sort(), [1, 2]);
   assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [3])], [3]);
+});
+
+test('timeline cursor snaps to days and dependency midpoint arrows preserve direction', () => {
+  const app = loadApp();
+  const rangeStart = app.parseDate('2026-08-01');
+  const cursor = app.ganttCursorAtX(152, rangeStart, 31, 10, 400);
+
+  assert.equal(cursor.day, 12);
+  assert.equal(cursor.x, 148);
+  assert.equal(app.fmtIsoDate(cursor.date), '2026-08-13');
+  assert.equal(cursor.label, '13. August');
+  const edgeCursor = app.ganttCursorAtX(296, rangeStart, 31, 10, 400, 100, 300);
+  assert.equal(edgeCursor.tagX + edgeCursor.tagWidth <= 296, true);
+  assert.match(app.ganttSvgCursor(300), /class="ganttSvgCursorLine"/);
+  assert.equal(app.ganttArrowMidPoints(20, 10, 50), '20,38 13,24 27,24');
+  assert.equal(app.ganttArrowMidPoints(20, 50, 10), '20,22 13,36 27,36');
 });
 
 test('sorting, grouping, and labels remain deterministic', () => {
