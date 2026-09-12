@@ -59,10 +59,11 @@ function loadApp() {
   source += `\nwindow.__appTest = {
     normalizeTicketType, normTicket, ticketRef, ticketLabel, isIdea, workTickets, ideaTickets,
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
-    blockingTicketIds, dependencyTickets, unfinishedDependencies, ticketDuration, durationLabel,
+    blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
+    boardDependencyHtml, workHoverRelatedIds, epicHoverRelatedIds, dependencyComponentIds,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds,
+    timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds, timelineEpicHoverRelatedIds,
     ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
     ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttArrowMidPoints,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
@@ -131,12 +132,29 @@ test('dependency and duration helpers reflect workflow state', () => {
   app.setState(state);
   assert.deepEqual([...app.blockingTicketIds()], [13]);
   assert.equal(app.dependencyTickets(state.tickets[2])[0].id, 13);
+  assert.equal(app.dependentTickets(state.tickets[3])[0].id, 12);
   assert.equal(app.unfinishedDependencies(state.tickets[2]).length, 0);
   state.tickets[3].columnId = 1;
   assert.equal(app.unfinishedDependencies(state.tickets[2]).length, 1);
   assert.equal(app.ticketDuration({ duration: -2, points: 8 }), 0);
   assert.equal(app.ticketDuration({ points: 8 }), 8);
   assert.equal(app.durationLabel({ duration: 2 }), '2d');
+});
+
+test('board dependency hints and shared hover scopes expose useful context', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  app.setState(state);
+  const work = state.tickets.filter(ticket => ticket.type !== 'idea');
+
+  assert.deepEqual([...app.workHoverRelatedIds(work, [12])].sort((a, b) => a - b), [12, 13]);
+  assert.deepEqual([...app.epicHoverRelatedIds(work, 10)].sort((a, b) => a - b), [10, 11, 12]);
+  assert.match(app.boardDependencyHtml(state.tickets[2]), /Depends on #2/);
+  assert.match(app.boardDependencyHtml(state.tickets[3]), /Enables #10\.1\.1/);
+  assert.match(app.card(state.tickets[2]), /data-work-id="12"/);
+
+  state.tickets[3].columnId = 1;
+  assert.match(app.boardDependencyHtml(state.tickets[2]), /Waiting for #2/);
 });
 
 test('date helpers reject rollover dates and calculate stable local days', () => {
@@ -202,6 +220,8 @@ test('timeline shows live delay for overdue work and actual delay for late compl
 
 test('timeline hover keeps dependency components visible in either direction', () => {
   const app = loadApp();
+  const state = stateWithHierarchy();
+  app.setState(state);
   const task1 = { ticket: { id: 1 }, deps: [{ id: 2 }] };
   const task2 = { ticket: { id: 2 }, deps: [] };
   const task3 = { ticket: { id: 3 }, deps: [] };
@@ -211,6 +231,9 @@ test('timeline hover keeps dependency components visible in either direction', (
   assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [2])].sort(), [1, 2]);
   assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [1, 2])].sort(), [1, 2]);
   assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [3])], [3]);
+
+  const epicTasks = state.tickets.slice(0, 4).map(ticket => ({ ticket, deps: [] }));
+  assert.deepEqual([...app.timelineEpicHoverRelatedIds(epicTasks, 10)].sort((a, b) => a - b), [10, 11, 12]);
 });
 
 test('timeline cursor snaps to days and dependency midpoint arrows preserve direction', () => {
