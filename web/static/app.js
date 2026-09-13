@@ -1,8 +1,8 @@
 const router = window.KanbanodonRoute;
-const initialRoute = router?.parseRoute() || { view: 'board', boardId: 0, ticketId: 0 };
+const initialRoute = router?.parseRoute() || { view: 'board', boardId: 0, ticketId: 0, sprintNumber: 0 };
 
 function emptyState() {
-  return { boards: [], board: null, columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
+  return { boards: [], board: null, sprintNames: [], columns: [], tickets: [], labels: [], milestones: [], users: [], boardAccess: [], allBoardAccess: [], comments: [], me: null, authMode: 'local' };
 }
 
 let state = emptyState();
@@ -18,6 +18,8 @@ let sprintSettingsStatus = '';
 let timelineZoom = 1;
 let timelineEpicFilter = 'all';
 let timelineHighlightId = 0;
+let timelineFocusSprint = initialRoute.sprintNumber || 0;
+let timelineCenterDate = null;
 
 // Finds the first DOM element matching a CSS selector.
 const $ = s => document.querySelector(s);
@@ -84,12 +86,20 @@ function normTicket(t) {
   };
 }
 
+// Converts persisted custom Sprint names into a stable client-side shape.
+function normSprintName(item) {
+  return {
+    sprintNumber: +(item?.sprint_number ?? item?.SprintNumber ?? item?.sprintNumber ?? 0),
+    name: String(item?.name ?? item?.Name ?? '').trim(),
+  };
+}
+
 // Loads application state from the server and refreshes the visible UI.
 async function load() {
   try {
     const url = '/api/state' + (selectedBoardId ? ('?boardId=' + encodeURIComponent(selectedBoardId)) : '');
     const s = await api(url);
-    state = { ...s, tickets: (s.tickets || []).map(normTicket), boards: s.boards || [], boardAccess: s.boardAccess || [], allBoardAccess: s.allBoardAccess || [] };
+    state = { ...s, tickets: (s.tickets || []).map(normTicket), sprintNames: (s.sprintNames || s.sprint_names || []).map(normSprintName).filter(item => item.sprintNumber > 0 && item.name), boards: s.boards || [], boardAccess: s.boardAccess || [], allBoardAccess: s.allBoardAccess || [] };
     selectedBoardId = currentBoardId();
     if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
     hideLogin();
@@ -145,13 +155,15 @@ function render() {
 // The visible route mirrors the current view, selected board, and optional open drawer.
 function syncRoute(mode = 'push', ticketId = editing?.id || 0) {
   if (!router || !state.me) return;
-  router.writeRoute(mode, view, currentBoardId(), ticketId);
+  router.writeRoute(mode, view, currentBoardId(), ticketId, view === 'timeline' ? timelineFocusSprint : 0);
 }
 
 // Applies a parsed URL hash route to the in-memory UI state.
 function applyRoute(route) {
   view = route.view || 'board';
   pendingTicketId = route.ticketId || 0;
+  timelineFocusSprint = view === 'timeline' ? +(route.sprintNumber || 0) : 0;
+  timelineCenterDate = null;
   if (route.boardId && route.boardId !== currentBoardId()) {
     selectedBoardId = route.boardId;
     localStorage.setItem('kanbanodon.boardId', selectedBoardId);
@@ -492,6 +504,8 @@ function renderBoardSelect() {
   select.onchange = () => {
     selectedBoardId = +select.value;
     sprintSettingsStatus = '';
+    timelineFocusSprint = 0;
+    timelineCenterDate = null;
     localStorage.setItem('kanbanodon.boardId', selectedBoardId);
     closeDrawer();
     if (router) router.writeRoute('push', view, selectedBoardId, 0);
@@ -530,6 +544,8 @@ async function createBoard() {
   hideNewBoardForm();
   closeDrawer();
   view = 'board';
+  timelineFocusSprint = 0;
+  timelineCenterDate = null;
   syncRoute('push', 0);
   await load();
 }
@@ -680,24 +696,31 @@ function sprintPlannerHtml(tickets) {
   return '<section class="panel sprintPlanner"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>Set the first Sprint once. Every following Sprint continues automatically.</p></div><div class="sprintSettings"><label><span>First Sprint starts</span><input id="sprintStartDate" type="date" value="' + escAttr(start) + '"></label><label><span>Duration</span><span class="sprintDurationField"><input id="sprintWeeks" type="number" min="1" max="52" step="1" value="' + weeks + '"><em>weeks</em></span></label><button id="saveSprintSettings" type="button">Save Sprint plan</button></div></div><div class="sprintPreview">' + sprintPreviewHtml(tickets, start, weeks) + '</div><div class="sprintPlannerFeedback"><p id="sprintSettingsError" class="formError" role="alert"></p><span id="sprintSettingsStatus" class="sprintSettingsStatus">' + esc(status) + '</span></div></section>';
 }
 
-// Builds a preview that also explains dates before Sprint 1 or missing schedules.
-function sprintPreviewHtml(tickets, startValue, weeksValue) {
+// Builds the current Sprint plus five successors and explains unscheduled work.
+function sprintPreviewHtml(tickets, startValue, weeksValue, today = startOfDay(new Date())) {
   const start = parseDate(startValue);
   if (!start) return '<span class="sprintPreviewNote">Choose the first Sprint start date.</span>';
   const weeks = validSprintWeeks(weeksValue);
   if (!weeks) return '<span class="sprintPreviewNote">Use a whole number from 1 to 52 weeks.</span>';
   const planned = tickets.map(ticketPlannedFinish).filter(validDate);
-  const calculated = calculatedSprints(tickets, startValue, weeks);
-  const first = sprintRange(0, start, weeks);
-  const sprints = calculated.length ? calculated : [first];
+  const sprints = sprintWindow(startValue, weeks, today, 6);
   const before = planned.filter(date => date < start).length;
   const unscheduled = tickets.length - planned.length;
   const notes = [];
   if (before) notes.push(before + ' scheduled item' + (before === 1 ? ' is' : 's are') + ' before Sprint 1');
   if (unscheduled) notes.push(unscheduled + ' item' + (unscheduled === 1 ? ' has' : 's have') + ' no planned date');
-  if (!planned.length) notes.push('Sprints will extend when dated work is added');
-  const chips = sprints.map(s => '<span class="sprintChip"><b>Sprint ' + s.number + '</b>' + esc(shortRange(s.start, s.end)) + '</span>').join('');
-  return chips + (notes.length ? '<span class="sprintPreviewNote">' + esc(notes.join(' · ')) + '</span>' : '');
+  const cards = sprints.map(sprintPreviewCardHtml).join('');
+  return '<div class="sprintWindow">' + cards + '</div>' + (notes.length ? '<span class="sprintPreviewNote">' + esc(notes.join(' · ')) + '</span>' : '');
+}
+
+// Builds one editable Sprint card with a dedicated Timeline focus action.
+function sprintPreviewCardHtml(sprint) {
+  const fallback = defaultSprintName(sprint.number);
+  const name = sprintName(sprint);
+  const phase = sprint.current ? 'Current' : sprint.next ? 'Next' : 'Upcoming';
+  const phaseClass = sprint.current ? ' current' : sprint.next ? ' next' : '';
+  const jumpLabel = 'Open ' + name + ' centered in Timeline';
+  return '<article class="sprintCard' + phaseClass + '" data-sprint-card="' + sprint.number + '"><button class="sprintJump" data-sprint-jump="' + sprint.number + '" type="button" title="' + escAttr(jumpLabel) + '" aria-label="' + escAttr(jumpLabel) + '"><span aria-hidden="true">⌖</span></button><label><span>' + esc(fallback) + '<em>' + phase + '</em></span><input class="sprintNameInput" data-sprint-name="' + sprint.number + '" data-original-display="' + escAttr(name) + '" maxlength="80" value="' + escAttr(name) + '" title="Edit name · saved automatically" aria-label="Name for ' + escAttr(fallback) + '"></label><small>' + esc(shortRange(sprint.start, sprint.end)) + '</small><span class="sprintNameStatus" data-sprint-name-status="' + sprint.number + '" aria-live="polite"></span></article>';
 }
 
 // Builds a compact board control for promoting work from Backlog into an Epic lane.
@@ -726,6 +749,7 @@ function wireSprintPlanner() {
     $('.sprintPreview').innerHTML = sprintPreviewHtml(workTickets(), startInput.value, +weeksInput.value);
     sprintSettingsStatus = 'Unsaved changes';
     $('#sprintSettingsStatus').textContent = sprintSettingsStatus;
+    wireSprintCards(false);
   };
   startInput.oninput = updatePreview;
   weeksInput.oninput = updatePreview;
@@ -755,6 +779,76 @@ function wireSprintPlanner() {
       error.textContent = (err.message || 'Sprint cadence could not be saved.').trim();
     }
   };
+  wireSprintCards(true);
+}
+
+// Attaches editable Sprint names and the icon-only Timeline jump actions.
+function wireSprintCards(jumpEnabled) {
+  $$('.sprintJump').forEach(button => {
+    button.disabled = !jumpEnabled;
+    if (!jumpEnabled) button.title = 'Save the Sprint plan before opening it in Timeline';
+    button.onclick = () => jumpToSprint(+button.dataset.sprintJump);
+  });
+  $$('.sprintNameInput').forEach(input => {
+    let saveTimer = 0;
+    input.oninput = () => {
+      clearTimeout(saveTimer);
+      const status = document.querySelector('[data-sprint-name-status="' + input.dataset.sprintName + '"]');
+      if (status) status.textContent = 'Unsaved';
+      saveTimer = setTimeout(() => saveSprintName(input), 450);
+    };
+    input.onkeydown = event => {
+      if (event.key === 'Enter') {
+        clearTimeout(saveTimer);
+        saveSprintName(input);
+      }
+      if (event.key === 'Escape') {
+        clearTimeout(saveTimer);
+        input.value = input.dataset.originalDisplay || defaultSprintName(+input.dataset.sprintName);
+        input.blur();
+      }
+    };
+    input.onchange = () => {
+      clearTimeout(saveTimer);
+      saveSprintName(input);
+    };
+  });
+}
+
+// Persists one inline Sprint name and refreshes all visible Sprint labels.
+async function saveSprintName(input) {
+  const number = +input.dataset.sprintName;
+  const fallback = defaultSprintName(number);
+  const display = input.value.trim() || fallback;
+  const name = display === fallback ? '' : display;
+  const status = document.querySelector('[data-sprint-name-status="' + number + '"]');
+  if (display === input.dataset.originalDisplay) return;
+  input.disabled = true;
+  if (status) status.textContent = 'Saving…';
+  try {
+    await api('/api/sprint-names' + boardQuery(), { method: 'PUT', body: JSON.stringify({ BoardID: currentBoardId(), SprintNumber: number, Name: name }) });
+    state.sprintNames = (state.sprintNames || []).filter(item => +item.sprintNumber !== number);
+    if (name) state.sprintNames.push({ sprintNumber: number, name });
+    sprintSettingsStatus = 'Sprint name saved';
+    if (view === 'board') renderBoard();
+  } catch (err) {
+    input.disabled = false;
+    input.value = input.dataset.originalDisplay || fallback;
+    if (status) status.textContent = (err.message || 'Could not save').trim();
+  }
+}
+
+// Opens the Timeline and centers the requested generated Sprint.
+function jumpToSprint(number) {
+  const range = sprintByNumber(number);
+  if (!range) return;
+  timelineFocusSprint = number;
+  timelineCenterDate = addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2));
+  timelineHighlightId = 0;
+  view = 'timeline';
+  closeDrawer();
+  renderView();
+  syncRoute('push', 0);
 }
 
 // Keeps the target Epic selector useful for both Epic and regular backlog items.
@@ -1057,7 +1151,9 @@ function sprintCellHtml(sprint) {
 
 // Formats regular and pre-cadence Sprint assignments consistently.
 function sprintName(sprint) {
-  return sprint?.before ? 'Before Sprint 1' : sprint ? 'Sprint ' + sprint.number : '';
+  if (sprint?.before) return 'Before Sprint 1';
+  if (!sprint) return '';
+  return customSprintName(sprint.number) || defaultSprintName(sprint.number);
 }
 
 // Builds the overview table group header for an Epic.
@@ -1441,14 +1537,22 @@ function renderTimeline() {
 function renderGantt(root) {
   // Only promoted, scheduled delivery work reaches the timeline.
   const tasks = buildGanttRows();
-  if (!tasks.length) {
+  const focusRange = sprintByNumber(timelineFocusSprint);
+  if (!tasks.length && !focusRange) {
     root.innerHTML = timelineControlsHtml() + '<div class="event muted">No tickets with schedulable dates yet</div>';
     wireTimelineControls(root);
     return;
   }
   tasks.forEach((task, index) => task.row = index);
 
+  const taskColumnWidth = root.clientWidth < 900 ? 230 : 320;
+  const availableTimelineWidth = Math.max(520, root.clientWidth - taskColumnWidth - 32);
+  const focusCenter = focusRange ? addDays(focusRange.start, Math.floor(dayDiff(focusRange.start, focusRange.endExclusive) / 2)) : null;
   const dates = tasks.flatMap(t => [t.plannedStart, t.start, t.end, t.due, t.actualFinish, t.readyAt, t.delayEnd, t.overrunEnd, t.estimateEnd]).filter(validDate);
+  if (focusCenter) {
+    const focusPadding = Math.ceil(availableTimelineWidth / 20) + 2;
+    dates.push(addDays(focusCenter, -focusPadding), addDays(focusCenter, focusPadding));
+  }
   const minDate = dates.length ? new Date(Math.min(...dates.map(Number))) : startOfDay(new Date());
   const maxDate = dates.length ? new Date(Math.max(...dates.map(Number))) : addDays(startOfDay(new Date()), 14);
   const rangeStart = addDays(minDate, -1);
@@ -1457,8 +1561,6 @@ function renderGantt(root) {
   const rowHeight = 78;
   const headHeight = 56;
   const axisHeight = 62;
-  const taskColumnWidth = root.clientWidth < 900 ? 230 : 320;
-  const availableTimelineWidth = Math.max(520, root.clientWidth - taskColumnWidth - 32);
   const fittedDayWidth = (availableTimelineWidth - GANTT_LEFT_PAD * 2) / totalDays;
   const dayWidth = Math.max(10, Math.min(90, Math.floor((fittedDayWidth || 24) * timelineZoom)));
   const timelineWidth = Math.max(availableTimelineWidth, totalDays * dayWidth + GANTT_LEFT_PAD * 2);
@@ -1468,10 +1570,13 @@ function renderGantt(root) {
   const labels = tasks.map(task => ganttTaskLabel(task, rowHeight, highlight)).join('');
   const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, highlight);
 
-  root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   wireTimelineControls(root);
   wireTimelineHover(root, tasks);
   wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth);
+  wireTimelinePan(root);
+  const requestedCenter = validDate(timelineCenterDate) ? timelineCenterDate : focusCenter;
+  if (requestedCenter) centerTimelineOnDate(root, requestedCenter);
 }
 
 // Builds ordered Gantt rows from tickets, Epics, and dependencies.
@@ -1530,30 +1635,131 @@ function timelineControlsHtml() {
   const epics = workTickets().filter(t => t.type === 'epic').sort(ticketOrder);
   if (timelineEpicFilter !== 'all' && !epics.some(t => String(t.id) === String(timelineEpicFilter))) timelineEpicFilter = 'all';
   const options = '<option value="all">All epics</option>' + epics.map(t => '<option value="' + t.id + '"' + (String(timelineEpicFilter) === String(t.id) ? ' selected' : '') + '>' + esc(ticketLabel(t)) + '</option>').join('');
-  return '<div class="ganttControls"><label>Epic<select id="timelineEpicFilter">' + options + '</select></label><label class="zoomControl">Zoom<input id="timelineZoom" type="range" min="0.65" max="3" step="0.05" value="' + escAttr(String(timelineZoom)) + '"><span>' + Math.round(timelineZoom * 100) + '%</span></label>' + (timelineHighlightId ? '<button id="timelineClearPath" class="ghost" type="button">Clear path</button>' : '') + '</div>';
+  const focused = sprintByNumber(timelineFocusSprint);
+  const focusHtml = focused ? '<span class="timelineFocusBadge"><b aria-hidden="true">⌖</b>' + esc(sprintName(focused)) + '</span><button id="timelineClearFocus" class="ghost" type="button">Show full timeline</button>' : '';
+  return '<div class="ganttControls"><label>Epic<select id="timelineEpicFilter">' + options + '</select></label><label class="zoomControl">Zoom<input id="timelineZoom" type="range" min="0.65" max="3" step="0.05" value="' + escAttr(String(timelineZoom)) + '"><span>' + Math.round(timelineZoom * 100) + '%</span></label><span class="timelinePanHint">Hold and drag to move</span>' + focusHtml + (timelineHighlightId ? '<button id="timelineClearPath" class="ghost" type="button">Clear path</button>' : '') + '</div>';
 }
 
 // Attaches timeline filter, zoom, and path selection handlers.
 function wireTimelineControls(root) {
   const epic = $('#timelineEpicFilter');
   if (epic) epic.onchange = () => {
+    rememberTimelineCenter(root);
     timelineEpicFilter = epic.value;
     timelineHighlightId = 0;
     renderGantt(root);
   };
   const zoom = $('#timelineZoom');
   if (zoom) zoom.oninput = () => {
+    rememberTimelineCenter(root);
     timelineZoom = +zoom.value || 1;
+    renderGantt(root);
+  };
+  const clearFocus = $('#timelineClearFocus');
+  if (clearFocus) clearFocus.onclick = () => {
+    timelineFocusSprint = 0;
+    timelineCenterDate = null;
+    syncRoute('replace', 0);
     renderGantt(root);
   };
   const clear = $('#timelineClearPath');
   if (clear) clear.onclick = () => {
+    rememberTimelineCenter(root);
     timelineHighlightId = 0;
     renderGantt(root);
   };
   $$('.ganttTaskItem,.ganttSvgTask').forEach(el => {
     el.onclick = () => selectTimelineTask(+el.dataset.timelineId);
   });
+}
+
+// Enables mouse and pen panning while preserving regular task clicks.
+function wireTimelinePan(root) {
+  const scroll = root.querySelector('.ganttSvgScroll');
+  if (!scroll) return;
+  let pointerId = null;
+  let startX = 0;
+  let startScroll = 0;
+  let moved = false;
+  let suppressClick = false;
+  scroll.onpointerdown = event => {
+    if (event.button !== 0) return;
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startScroll = scroll.scrollLeft;
+    moved = false;
+    scroll.classList.add('isPanning');
+    try {
+      scroll.setPointerCapture?.(pointerId);
+    } catch (_) {
+      // Synthetic test events and older browsers may not expose pointer capture.
+    }
+  };
+  scroll.onpointermove = event => {
+    if (pointerId == null || event.pointerId !== pointerId) return;
+    const delta = event.clientX - startX;
+    if (Math.abs(delta) > 4) moved = true;
+    if (!moved) return;
+    event.preventDefault();
+    scroll.scrollLeft = startScroll - delta;
+  };
+  const finish = event => {
+    if (pointerId == null || (event?.pointerId != null && event.pointerId !== pointerId)) return;
+    const releasedPointer = pointerId;
+    pointerId = null;
+    scroll.classList.remove('isPanning');
+    if (moved) {
+      suppressClick = true;
+      rememberTimelineCenter(root);
+    }
+    if (scroll.hasPointerCapture?.(releasedPointer)) scroll.releasePointerCapture(releasedPointer);
+  };
+  scroll.onpointerup = finish;
+  scroll.onpointercancel = finish;
+  scroll.onlostpointercapture = finish;
+  scroll.addEventListener('click', event => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  scroll.ondragstart = () => false;
+}
+
+// Remembers the calendar date currently visible at the horizontal center.
+function rememberTimelineCenter(root = document) {
+  const scroll = root.querySelector?.('.ganttSvgScroll') || $('.ganttSvgScroll');
+  if (!scroll) return null;
+  const rangeStart = parseDate(scroll.dataset.rangeStart);
+  const dayWidth = +scroll.dataset.dayWidth;
+  if (!rangeStart || !dayWidth) return null;
+  timelineCenterDate = timelineDateAtScrollCenter(scroll.scrollLeft, scroll.clientWidth, rangeStart, dayWidth);
+  return timelineCenterDate;
+}
+
+// Centers the scrollable chart on a calendar date and clamps it to its edges.
+function centerTimelineOnDate(root, date) {
+  const scroll = root.querySelector('.ganttSvgScroll');
+  if (!scroll || !validDate(date)) return;
+  const rangeStart = parseDate(scroll.dataset.rangeStart);
+  const dayWidth = +scroll.dataset.dayWidth;
+  const timelineWidth = +scroll.dataset.timelineWidth;
+  scroll.scrollLeft = timelineScrollForDate(date, rangeStart, dayWidth, scroll.clientWidth, timelineWidth);
+}
+
+// Converts a target calendar date into a clamped horizontal scroll offset.
+function timelineScrollForDate(date, rangeStart, dayWidth, viewportWidth, timelineWidth) {
+  if (!validDate(date) || !validDate(rangeStart) || !(dayWidth > 0)) return 0;
+  const targetX = GANTT_LEFT_PAD + dayDiff(rangeStart, date) * dayWidth;
+  const maxScroll = Math.max(0, timelineWidth - viewportWidth);
+  return Math.max(0, Math.min(maxScroll, targetX - viewportWidth / 2));
+}
+
+// Resolves the date currently visible at the horizontal center of the chart.
+function timelineDateAtScrollCenter(scrollLeft, viewportWidth, rangeStart, dayWidth) {
+  if (!validDate(rangeStart) || !(dayWidth > 0)) return null;
+  const day = Math.max(0, Math.round((scrollLeft + viewportWidth / 2 - GANTT_LEFT_PAD) / dayWidth));
+  return addDays(rangeStart, day);
 }
 
 // Highlights the complete visible dependency component while a task or arrow is hovered or focused.
@@ -1663,6 +1869,7 @@ function ganttCursorDateLabel(date) {
 
 // Toggles dependency-path highlighting for a timeline task.
 function selectTimelineTask(id) {
+  rememberTimelineCenter();
   timelineHighlightId = timelineHighlightId === id ? 0 : id;
   renderTimeline();
 }
@@ -1943,9 +2150,11 @@ function ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeigh
     const x1 = ganttPx(visibleStart, rangeStart, dayWidth);
     const x2 = ganttPx(visibleEnd, rangeStart, dayWidth);
     const boundaryX = ganttPx(endExclusive, rangeStart, dayWidth);
-    parts.push('<rect class="ganttSvgSprintBand sprint' + ((index % 2) + 1) + '" x="' + x1 + '" y="' + bodyTop + '" width="' + Math.max(0, x2 - x1) + '" height="' + (bodyHeight + axisHeight) + '"></rect>');
+    const sprintNumber = index + 1;
+    const focused = sprintNumber === timelineFocusSprint ? ' focused' : '';
+    parts.push('<rect class="ganttSvgSprintBand sprint' + ((index % 2) + 1) + focused + '" x="' + x1 + '" y="' + bodyTop + '" width="' + Math.max(0, x2 - x1) + '" height="' + (bodyHeight + axisHeight) + '"></rect>');
     if (endExclusive >= rangeStart && endExclusive <= rangeEnd) parts.push('<line class="ganttSvgSprintBoundary" x1="' + boundaryX + '" x2="' + boundaryX + '" y1="' + bodyTop + '" y2="' + (axisTop + axisHeight) + '"></line>');
-    parts.push('<text class="ganttSvgSprintLabel" x="' + (x1 + 7) + '" y="51">Sprint ' + (index + 1) + '</text>');
+    parts.push('<text class="ganttSvgSprintLabel' + focused + '" x="' + (x1 + 7) + '" y="51">' + esc(sprintName({ number: sprintNumber })) + '</text>');
   }
   return parts.join('');
 }
@@ -2202,11 +2411,44 @@ function validSprintWeeks(value) {
   return Number.isInteger(weeks) && weeks >= 1 && weeks <= 52 ? weeks : 0;
 }
 
+// Returns the conventional label when a Sprint has no custom name.
+function defaultSprintName(number) {
+  return 'Sprint ' + number;
+}
+
+// Looks up one board-scoped custom Sprint name.
+function customSprintName(number) {
+  return (state.sprintNames || []).find(item => +item.sprintNumber === +number)?.name || '';
+}
+
 // Builds one inclusive Sprint range from its zero-based sequence index.
 function sprintRange(index, cadenceStart, weeks) {
   const span = weeks * 7;
   const start = addDays(cadenceStart, index * span);
   return { number: index + 1, start, end: addDays(start, span - 1), endExclusive: addDays(start, span) };
+}
+
+// Resolves one positive Sprint number against the persisted board cadence.
+function sprintByNumber(number, startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks()) {
+  const start = parseDate(startValue);
+  const weeks = validSprintWeeks(weeksValue);
+  number = +number;
+  if (!start || !weeks || !Number.isSafeInteger(number) || number < 1) return null;
+  return sprintRange(number - 1, start, weeks);
+}
+
+// Returns the active Sprint plus a fixed number of successors for Board planning.
+function sprintWindow(startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks(), today = startOfDay(new Date()), count = 6) {
+  const start = parseDate(startValue);
+  const weeks = validSprintWeeks(weeksValue);
+  if (!start || !weeks || !validDate(today) || count < 1) return [];
+  const span = weeks * 7;
+  const beforeCadence = today < start;
+  const firstIndex = beforeCadence ? 0 : Math.floor(dayDiff(start, today) / span);
+  return Array.from({ length: count }, (_, offset) => {
+    const sprint = sprintRange(firstIndex + offset, start, weeks);
+    return { ...sprint, current: !beforeCadence && offset === 0, next: beforeCadence && offset === 0 };
+  });
 }
 
 // Resolves a calendar date into the board's generated Sprint sequence.
@@ -2747,6 +2989,8 @@ async function createBacklogTicket() {
 
 $$('.navButton').forEach(b => b.onclick = () => {
   view = b.dataset.view;
+  timelineFocusSprint = 0;
+  timelineCenterDate = null;
   closeDrawer();
   renderView();
   syncRoute('push', 0);
@@ -2755,6 +2999,8 @@ $$('.navButton').forEach(b => b.onclick = () => {
 $('#homeLink').onclick = e => {
   e.preventDefault();
   view = 'board';
+  timelineFocusSprint = 0;
+  timelineCenterDate = null;
   closeDrawer();
   renderView();
   syncRoute('push', 0);

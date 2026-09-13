@@ -37,6 +37,7 @@ func (s *server) migrate() error {
 		`create table if not exists users(id integer primary key,username text unique not null,name text not null,email text unique not null,password_hash text not null,avatar text not null,is_admin integer not null default 0,must_change_password integer not null default 0,created_at text not null);`,
 		`create table if not exists sessions(token_hash text primary key,user_id integer not null,expires_at text not null);`,
 		`create table if not exists boards(id integer primary key,name text not null,owner_id integer not null default 0,sprint_start_date text not null default '',sprint_weeks integer not null default 2,created_at text not null);`,
+		`create table if not exists sprint_names(board_id integer not null,sprint_number integer not null,name text not null,updated_at text not null,primary key(board_id,sprint_number));`,
 		`create table if not exists board_users(board_id integer not null,user_id integer not null,full_access integer not null default 1,primary key(board_id,user_id));`,
 		`create table if not exists columns(id integer primary key,board_id integer not null,name text not null,position integer not null);`,
 		`create table if not exists milestones(id integer primary key,board_id integer not null,name text not null,due_date text not null);`,

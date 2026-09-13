@@ -272,6 +272,42 @@ func TestBoardSettingsPersistSprintCadence(t *testing.T) {
 	}
 }
 
+// TestSprintNamesPersistAndReset verifies custom generated Sprint labels stay board-scoped.
+func TestSprintNamesPersistAndReset(t *testing.T) {
+	s := newTestServer(t)
+	save := httptest.NewRecorder()
+	s.withUser(s.sprintNames).ServeHTTP(save, httptest.NewRequest(http.MethodPut, "/api/sprint-names?boardId=1", strings.NewReader(`{"BoardID":1,"SprintNumber":2,"Name":"Release Train"}`)))
+	if save.Code != http.StatusOK {
+		t.Fatalf("saving Sprint name failed with %d: %q", save.Code, save.Body.String())
+	}
+	var name string
+	if err := s.db.QueryRow("select name from sprint_names where board_id=1 and sprint_number=2").Scan(&name); err != nil || name != "Release Train" {
+		t.Fatalf("unexpected stored Sprint name %q: %v", name, err)
+	}
+
+	denied := httptest.NewRecorder()
+	s.sprintNames(denied, httptest.NewRequest(http.MethodPut, "/api/sprint-names", strings.NewReader(`{"BoardID":1,"SprintNumber":2,"Name":"Hidden"}`)), user{ID: 999})
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("expected inaccessible Sprint rename to fail, got %d", denied.Code)
+	}
+
+	reset := httptest.NewRecorder()
+	s.withUser(s.sprintNames).ServeHTTP(reset, httptest.NewRequest(http.MethodPut, "/api/sprint-names?boardId=1", strings.NewReader(`{"BoardID":1,"SprintNumber":2,"Name":"   "}`)))
+	if reset.Code != http.StatusOK {
+		t.Fatalf("resetting Sprint name failed with %d: %q", reset.Code, reset.Body.String())
+	}
+	var count int
+	if err := s.db.QueryRow("select count(*) from sprint_names where board_id=1 and sprint_number=2").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expected Sprint name reset, count=%d err=%v", count, err)
+	}
+
+	invalid := httptest.NewRecorder()
+	s.withUser(s.sprintNames).ServeHTTP(invalid, httptest.NewRequest(http.MethodPut, "/api/sprint-names?boardId=1", strings.NewReader(`{"BoardID":1,"SprintNumber":0,"Name":"Invalid"}`)))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid Sprint number to fail, got %d", invalid.Code)
+	}
+}
+
 // TestMigrateMovesLegacyIdeasAndWorkflowBacklog verifies the in-place naming migration.
 func TestMigrateMovesLegacyIdeasAndWorkflowBacklog(t *testing.T) {
 	s := newTestServer(t)
