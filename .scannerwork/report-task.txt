@@ -1,6 +1,0 @@
-projectKey=Kanbanodon
-serverUrl=http://localhost:9000
-serverVersion=26.9.0.129388
-dashboardUrl=http://localhost:9000/dashboard?id=Kanbanodon
-ceTaskId=e25f3367-74a3-4dda-851c-2a83f8de0a8a
-ceTaskUrl=http://localhost:9000/api/ce/task?id=e25f3367-74a3-4dda-851c-2a83f8de0a8a
