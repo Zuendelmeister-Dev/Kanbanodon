@@ -57,7 +57,7 @@ function loadApp() {
   let source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
   source = source.replace(/\nload\(\);\s*$/, '\n');
   source += `\nwindow.__appTest = {
-    normalizeTicketType, normTicket, ticketRef, ticketLabel, isIdea, isBacklogTicket, workTickets, backlogTickets, ideaTickets,
+    normalizeTicketType, normTicket, normSprintName, ticketRef, ticketLabel, isIdea, isBacklogTicket, workTickets, backlogTickets, ideaTickets,
     normalizePromotionType, backlogDescendants,
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
@@ -69,8 +69,9 @@ function loadApp() {
     ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
     ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttArrowMidPoints, ganttSvgSprintBands,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
-    boardSprintStartValue, boardSprintWeeks, validSprintWeeks, sprintRange, sprintForDate, ticketPlannedFinish, ticketSprint,
-    calculatedSprints, sprintName, sprintPreviewHtml, shortRange,
+    boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
+    calculatedSprints, sprintName, sprintPreviewHtml, sprintPreviewCardHtml, shortRange,
+    wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
     setOverviewSort(value) { overviewSort = value; },
@@ -83,6 +84,7 @@ function loadApp() {
 function stateWithHierarchy() {
   return {
     board: { id: 1, name: 'Board', sprint_start_date: '2026-01-01', sprint_weeks: 2 },
+    sprintNames: [],
     boards: [{ id: 1, name: 'Board' }],
     columns: [{ id: 1, name: 'To Do' }, { id: 5, name: 'Done' }],
     labels: [],
@@ -243,6 +245,70 @@ test('sprint preview validates editable cadence values independently from stored
   assert.equal(app.validSprintWeeks(1.5), 0);
   assert.match(app.sprintPreviewHtml(app.workTickets(), '', 2), /Choose the first Sprint start date/);
   assert.match(app.sprintPreviewHtml(app.workTickets(), '2026-01-01', 0), /whole number from 1 to 52 weeks/);
+});
+
+test('Sprint window exposes current plus five successors and applies custom names safely', () => {
+  const app = loadApp();
+  const state = stateWithHierarchy();
+  state.sprintNames = [app.normSprintName({ sprint_number: 2, name: 'Launch Prep' })];
+  app.setState(state);
+
+  const window = app.sprintWindow('2026-01-01', 2, app.parseDate('2026-01-20'), 6);
+  assert.equal(window.length, 6);
+  assert.equal(window[0].number, 2);
+  assert.equal(window[0].current, true);
+  assert.equal(window[5].number, 7);
+  assert.equal(app.sprintName(window[0]), 'Launch Prep');
+  assert.equal(app.sprintName(window[1]), 'Sprint 3');
+  assert.match(app.sprintPreviewCardHtml(window[0]), /data-sprint-jump="2"/);
+
+  const future = app.sprintWindow('2026-02-01', 2, app.parseDate('2026-01-20'), 6);
+  assert.equal(future[0].number, 1);
+  assert.equal(future[0].next, true);
+});
+
+test('timeline centering converts dates and scroll offsets symmetrically', () => {
+  const app = loadApp();
+  const rangeStart = app.parseDate('2026-01-01');
+  const target = app.parseDate('2026-01-21');
+  const scroll = app.timelineScrollForDate(target, rangeStart, 20, 400, 1000);
+  assert.equal(scroll, 228);
+  assert.equal(app.fmtIsoDate(app.timelineDateAtScrollCenter(scroll, 400, rangeStart, 20)), '2026-01-21');
+  assert.equal(app.timelineScrollForDate(rangeStart, rangeStart, 20, 400, 1000), 0);
+  assert.equal(app.timelineScrollForDate(app.parseDate('2026-03-01'), rangeStart, 20, 400, 1000), 600);
+});
+
+test('timeline pointer drag pans horizontally and suppresses the following task click', () => {
+  const app = loadApp();
+  const classes = new Set();
+  let captureClick = null;
+  let prevented = false;
+  let stopped = false;
+  const scroll = {
+    scrollLeft: 400,
+    clientWidth: 500,
+    dataset: { rangeStart: '2026-01-01', dayWidth: '20' },
+    classList: {
+      add: name => classes.add(name),
+      remove: name => classes.delete(name),
+      contains: name => classes.has(name),
+    },
+    addEventListener(name, listener) { if (name === 'click') captureClick = listener; },
+    setPointerCapture() {},
+    hasPointerCapture() { return false; },
+  };
+  const root = { querySelector: selector => selector === '.ganttSvgScroll' ? scroll : null };
+
+  app.wireTimelinePan(root);
+  scroll.onpointerdown({ button: 0, pointerId: 9, clientX: 500 });
+  assert.equal(classes.has('isPanning'), true);
+  scroll.onpointermove({ pointerId: 9, clientX: 650, preventDefault() { prevented = true; } });
+  assert.equal(scroll.scrollLeft, 250);
+  assert.equal(prevented, true);
+  scroll.onpointerup({ pointerId: 9 });
+  assert.equal(classes.has('isPanning'), false);
+  captureClick({ preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+  assert.equal(stopped, true);
 });
 
 test('timeline scheduling waits for dependencies and builds highlight paths', () => {

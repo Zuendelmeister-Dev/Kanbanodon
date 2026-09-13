@@ -18,16 +18,18 @@ function loadRouter(hash = '') {
 }
 
 test('route parsing accepts known views and positive ids', () => {
-  const { router } = loadRouter('#/timeline/42/ticket/7');
-  assert.deepEqual({ ...router.parseRoute() }, { view: 'timeline', boardId: 42, ticketId: 7 });
-  assert.deepEqual({ ...router.parseRoute('#/unknown/-2/ticket/nope') }, { view: 'board', boardId: 0, ticketId: 0 });
-  assert.deepEqual({ ...router.parseRoute('#/backlog/3') }, { view: 'backlog', boardId: 3, ticketId: 0 });
-  assert.deepEqual({ ...router.parseRoute('#/ideas/3') }, { view: 'backlog', boardId: 3, ticketId: 0 });
+  const { router } = loadRouter('#/timeline/42/ticket/7/sprint/4');
+  assert.deepEqual({ ...router.parseRoute() }, { view: 'timeline', boardId: 42, ticketId: 7, sprintNumber: 4 });
+  assert.deepEqual({ ...router.parseRoute('#/unknown/-2/ticket/nope') }, { view: 'board', boardId: 0, ticketId: 0, sprintNumber: 0 });
+  assert.deepEqual({ ...router.parseRoute('#/backlog/3') }, { view: 'backlog', boardId: 3, ticketId: 0, sprintNumber: 0 });
+  assert.deepEqual({ ...router.parseRoute('#/ideas/3') }, { view: 'backlog', boardId: 3, ticketId: 0, sprintNumber: 0 });
 });
 
 test('route building normalizes invalid route values', () => {
   const { router } = loadRouter();
   assert.equal(router.buildRoute('overview', 5, 9), '#/overview/5/ticket/9');
+  assert.equal(router.buildRoute('timeline', 5, 0, 8), '#/timeline/5/sprint/8');
+  assert.equal(router.buildRoute('board', 5, 0, 8), '#/board/5');
   assert.equal(router.buildRoute('invalid', -1, Number.NaN), '#/board');
   assert.equal(router.buildRoute('board', 1.5, Number.MAX_SAFE_INTEGER + 1), '#/board');
 });
@@ -37,9 +39,9 @@ test('route writing pushes, replaces, and skips the current hash', () => {
   router.writeRoute('push', 'board', 2, 0);
   assert.deepEqual(calls, []);
   router.writeRoute('push', 'overview', 2, 0);
-  router.writeRoute('replace', 'timeline', 2, 4);
+  router.writeRoute('replace', 'timeline', 2, 4, 3);
   assert.deepEqual(calls, [
     ['push', '#/overview/2'],
-    ['replace', '#/timeline/2/ticket/4'],
+    ['replace', '#/timeline/2/ticket/4/sprint/3'],
   ]);
 });
