@@ -36,11 +36,12 @@ func (s *server) migrate() error {
 	qs := []string{
 		`create table if not exists users(id integer primary key,username text unique not null,name text not null,email text unique not null,password_hash text not null,avatar text not null,is_admin integer not null default 0,must_change_password integer not null default 0,created_at text not null);`,
 		`create table if not exists sessions(token_hash text primary key,user_id integer not null,expires_at text not null);`,
-		`create table if not exists boards(id integer primary key,name text not null,owner_id integer not null default 0,created_at text not null);`,
+		`create table if not exists boards(id integer primary key,name text not null,owner_id integer not null default 0,sprint_start_date text not null default '',sprint_weeks integer not null default 2,created_at text not null);`,
+		`create table if not exists sprint_names(board_id integer not null,sprint_number integer not null,name text not null,updated_at text not null,primary key(board_id,sprint_number));`,
 		`create table if not exists board_users(board_id integer not null,user_id integer not null,full_access integer not null default 1,primary key(board_id,user_id));`,
 		`create table if not exists columns(id integer primary key,board_id integer not null,name text not null,position integer not null);`,
 		`create table if not exists milestones(id integer primary key,board_id integer not null,name text not null,due_date text not null);`,
-		`create table if not exists tickets(id integer primary key,board_id integer not null,column_id integer not null,title text not null,body text not null default '',type text not null default 'task',points integer not null default 0,duration integer not null default 0,start_date text not null default '',due_date text not null default '',completed_at text not null default '',milestone_id integer not null default 0,assignee_id integer not null default 0,position integer not null default 0,created_at text not null,updated_at text not null);`,
+		`create table if not exists tickets(id integer primary key,board_id integer not null,column_id integer not null,title text not null,body text not null default '',type text not null default 'task',points integer not null default 0,duration integer not null default 0,start_date text not null default '',due_date text not null default '',completed_at text not null default '',milestone_id integer not null default 0,assignee_id integer not null default 0,position integer not null default 0,is_backlog integer not null default 0,created_at text not null,updated_at text not null);`,
 		`create table if not exists labels(id integer primary key,board_id integer not null,name text not null,color text not null);`,
 		`create table if not exists ticket_labels(ticket_id integer not null,label_id integer not null,primary key(ticket_id,label_id));`,
 		`create table if not exists ticket_links(from_ticket_id integer not null,to_ticket_id integer not null,primary key(from_ticket_id,to_ticket_id));`,
@@ -68,6 +69,12 @@ func (s *server) migrate() error {
 	if err := ensureColumn(s.db, "boards", "owner_id", "integer not null default 0"); err != nil {
 		return err
 	}
+	if err := ensureColumn(s.db, "boards", "sprint_start_date", "text not null default ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(s.db, "boards", "sprint_weeks", "integer not null default 2"); err != nil {
+		return err
+	}
 	if err := ensureColumn(s.db, "tickets", "start_date", "text not null default ''"); err != nil {
 		return err
 	}
@@ -80,10 +87,19 @@ func (s *server) migrate() error {
 	if err := ensureColumn(s.db, "tickets", "parent_id", "integer not null default 0"); err != nil {
 		return err
 	}
+	if err := ensureColumn(s.db, "tickets", "is_backlog", "integer not null default 0"); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec("update tickets set duration=points where duration=0 and points>0"); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec("update tickets set type='bug' where lower(type)='problem'"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("update tickets set is_backlog=1 where lower(type)='idea'"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("update columns set name='To Do' where lower(trim(name))='backlog'"); err != nil {
 		return err
 	}
 	if err := ensureColumn(s.db, "tickets", "completed_at", "text not null default ''"); err != nil {

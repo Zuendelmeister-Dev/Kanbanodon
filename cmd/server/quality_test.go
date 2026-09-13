@@ -340,7 +340,7 @@ func TestTicketRelationsMustStayValidAndBoardLocal(t *testing.T) {
 	}
 
 	id := createTestTicket(t, s, `{"Title":"Keep","Type":"task"}`)
-	columnID := testColumnID(t, s, "Backlog")
+	columnID := testColumnID(t, s, "To Do")
 	for _, tt := range []struct {
 		name string
 		body string
@@ -456,7 +456,7 @@ func TestTicketCommentsCompletionAndErrorPaths(t *testing.T) {
 	}
 
 	doneID := testColumnID(t, s, "Done")
-	backlogID := testColumnID(t, s, "Backlog")
+	backlogID := testColumnID(t, s, "To Do")
 	move := func(columnID int64) *httptest.ResponseRecorder {
 		t.Helper()
 		rec := httptest.NewRecorder()
