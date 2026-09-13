@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 )
 
 // users routes user-management requests by HTTP method.
@@ -36,6 +37,19 @@ func (s *server) userCreate(w http.ResponseWriter, r *http.Request, u user) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if !in.IsAdmin && in.FullAccess {
+		if in.BoardID < 0 {
+			http.Error(w, "board id must not be negative", http.StatusBadRequest)
+			return
+		}
+		if in.BoardID == 0 {
+			in.BoardID = s.boardID(r, u)
+		}
+		if in.BoardID > 0 && !s.canAccessBoard(u, in.BoardID) {
+			http.Error(w, "board not found", http.StatusNotFound)
+			return
+		}
+	}
 	created, err := s.createUserAccount(accountInput{
 		Username: in.Username,
 		Name:     in.Name,
@@ -56,9 +70,6 @@ func (s *server) userCreate(w http.ResponseWriter, r *http.Request, u user) {
 			return
 		}
 	} else if in.FullAccess {
-		if in.BoardID == 0 {
-			in.BoardID = s.boardID(r, u)
-		}
 		if err := s.setBoardAccess(in.BoardID, created.ID, true); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -117,6 +128,16 @@ func (s *server) userDelete(w http.ResponseWriter, r *http.Request, u user) {
 			http.Error(w, "at least one admin is required", 400)
 			return
 		}
+	}
+	if _, err := tx.Exec(`insert into board_users(board_id,user_id,full_access)
+		select id,?,1 from boards where owner_id=?
+		on conflict(board_id,user_id) do update set full_access=1`, u.ID, in.UserID); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if _, err := tx.Exec("update boards set owner_id=? where owner_id=?", u.ID, in.UserID); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 
 	for _, stmt := range []string{
@@ -204,11 +225,15 @@ func (s *server) userPassword(w http.ResponseWriter, r *http.Request, u user) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if in.UserID <= 0 || in.Password == "" {
+	if in.UserID <= 0 || strings.TrimSpace(in.Password) == "" {
 		http.Error(w, "user and password required", 400)
 		return
 	}
-	h, _ := hashPassword(in.Password)
+	h, err := hashPassword(in.Password)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	res, err := s.db.Exec("update users set password_hash=?,must_change_password=1 where id=?", h, in.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -234,7 +259,7 @@ func (s *server) password(w http.ResponseWriter, r *http.Request, u user) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if in.NewPassword == "" {
+	if strings.TrimSpace(in.NewPassword) == "" {
 		http.Error(w, "new password required", 400)
 		return
 	}
@@ -245,8 +270,12 @@ func (s *server) password(w http.ResponseWriter, r *http.Request, u user) {
 			return
 		}
 	}
-	h, _ := hashPassword(in.NewPassword)
-	_, err := s.db.Exec("update users set password_hash=?,must_change_password=0 where id=?", h, u.ID)
+	h, err := hashPassword(in.NewPassword)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_, err = s.db.Exec("update users set password_hash=?,must_change_password=0 where id=?", h, u.ID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

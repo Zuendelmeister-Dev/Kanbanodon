@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -275,15 +276,14 @@ func TestUpdateTicketRejectsParentCycle(t *testing.T) {
 	s := newTestServer(t)
 	epicID := createTestTicket(t, s, `{"Title":"Epic","Type":"epic"}`)
 	storyID := createTestTicket(t, s, `{"Title":"Story","Type":"story","ParentID":`+strconv.FormatInt(epicID, 10)+`}`)
-	taskID := createTestTicket(t, s, `{"Title":"Task","Type":"task","ParentID":`+strconv.FormatInt(storyID, 10)+`}`)
 	columnID := testColumnID(t, s, "Backlog")
 
-	updateBody := `{"Title":"Epic","Type":"epic","ColumnID":` + strconv.FormatInt(columnID, 10) + `,"ParentID":` + strconv.FormatInt(taskID, 10) + `}`
+	updateBody := `{"Title":"Epic","Type":"task","ColumnID":` + strconv.FormatInt(columnID, 10) + `,"ParentID":` + strconv.FormatInt(storyID, 10) + `}`
 	req := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(epicID, 10), bytes.NewBufferString(updateBody))
 	rec := httptest.NewRecorder()
 	s.withUser(s.ticketAction).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "cycle") {
 		t.Fatalf("expected parent cycle to be rejected, got %d with body %q", rec.Code, rec.Body.String())
 	}
 }
