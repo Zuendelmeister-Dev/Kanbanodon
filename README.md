@@ -1,503 +1,341 @@
 # Kanbanodon
 
-Kanbanodon is a small, private Kanban board for people who want to structure their work without starting a large project-management platform.
+Kanbanodon is a compact, self hosted Kanban application for personal work and small teams. It combines an Epic based board, a product backlog, Sprint planning, an overview table, and an interactive timeline in one Go service.
 
-The project exists for three simple reasons:
+The application runs in a single container and stores its data in local SQLite databases. It does not require a separate database server, external fonts, cloud synchronization, telemetry, or runtime calls to third party services.
 
-1. I wanted something fast to start and stop, with a minimal footprint. Kanbanodon should run as one container, with one local data volume, and no extra database server to operate.
-2. I did not want my work data to leave my machine or server. Kanbanodon has no telemetry, no cloud sync, no external fonts, no CDN assets, and no runtime calls to third-party services.
-3. My son is in his dinosaur phase, so the name and visual style became dinosaur-shaped on purpose.
+## Purpose and goals
 
-Kanbanodon is free to run, uses local SQLite files, and is designed for personal work or a small trusted team.
+Kanbanodon keeps planning, delivery status, dependencies, and time based projections in one local application. Work can begin as an item in the Product Backlog, move to an Epic lane on the Board, and remain visible through Overview and Timeline until completion.
 
-## Quick Start
+| Priority | Goal | Result |
+| --- | --- | --- |
+| 1 | Data ownership | Board and account data remain in the configured local data directory |
+| 2 | Clear planning | Backlog, Sprints, dependencies, delays, and estimates use the same ticket data |
+| 3 | Simple operation | One service and one data volume are sufficient |
+| 4 | Direct interaction | Common planning actions work without page reloads or a frontend build chain |
 
-Prerequisites:
+### Users and responsibilities
 
-- Docker with Docker Compose
-- A modern browser
+| Role | Responsibilities |
+| --- | --- |
+| User | Creates, plans, moves, and completes work on accessible boards |
+| Board owner | Manages access to boards they own |
+| Administrator | Manages accounts, roles, passwords, and access to all boards |
+| Operator | Runs the service, protects the session secret, and backs up the data volume |
 
-Start the app:
+## Constraints
 
-```bash
-docker compose up --build
-```
+| Constraint | Consequence |
+| --- | --- |
+| Go 1.22 | Server code and migrations use the Go standard HTTP stack with `modernc.org/sqlite` |
+| Local SQLite storage | No separate database server is required |
+| Static browser application | HTML, CSS, and JavaScript are served by the Go process |
+| Single container deployment | Application and static assets are built into one image |
+| Local authentication | Accounts and sessions are managed by Kanbanodon |
+| No runtime external services | Core operation does not depend on cloud APIs, telemetry, fonts, or CDN assets |
 
-Open:
-
-```text
-http://localhost:8080
-```
-
-On first start, Kanbanodon creates a default admin account:
-
-```text
-Username: kanbanoadmin
-Password: kanbanopw
-```
-
-You must change this password after login. Also change `KANBANODON_SESSION_SECRET` in `docker-compose.yml` before using the app for real work.
-
-## What It Does
-
-- Kanban board with drag and drop
-- Multiple boards
-- Local users, passwords, admin roles, and dino avatars
-- Board access management per user
-- Work items with epics, stories, tasks, bugs, visible references, one optional parent, labels, dates, assignees, milestones, and dependencies
-- Comments per ticket
-- Product backlog grouped by Epics, with typed work promotion into the Board
-- Board-level Sprint cadence with automatic calculation, editable Sprint names, and Timeline focus links
-- Overview table with sorting, filters, and planned Sprint assignment
-- Timeline/Gantt view with live delays, best-case finish estimates, Sprint bands, and interactive dependency paths
-- JSON export and import
-- Local SQLite storage
-- One-container deployment
-
-## Screenshots
-
-Board view with Epic swimlanes:
-
-![Board view with Epic swimlanes](docs/screenshots/board-swimlanes.png)
-
-Overview with status cards and grouped ticket table:
-
-![Overview with status cards and ticket table](docs/screenshots/overview-table.png)
-
-Timeline with Epic grouping, dependency arrows, zoom, path highlighting, and overdue work:
-
-![Timeline with Epic grouping and dependencies](docs/screenshots/timeline-beta.png)
-
-Admin area with user management and per-board sharing:
-
-![Admin user management and board sharing](docs/screenshots/admin-sharing.png)
-
-## Architecture
+## System context
 
 ```mermaid
 flowchart LR
-    Browser["Browser UI<br>HTML, CSS, JavaScript"] -->|HTTP and JSON| Server["Go HTTP server"]
-    Server --> Static["Static assets<br>/web/static"]
-    Server --> AppDB[("app.db<br>boards, tickets, users")]
-    Server --> ConfigDB[("config.db<br>runtime config")]
-    Server --> Volume["Docker volume<br>/data"]
-    AppDB --> Volume
-    ConfigDB --> Volume
-    Server -. "no runtime outbound calls" .-> Nowhere["No telemetry<br>No CDN<br>No cloud sync"]
+    User["User"] -->|Uses| Browser["Browser"]
+    Admin["Administrator"] -->|Manages access| Browser
+    Browser -->|HTTP and JSON| App["Kanbanodon"]
+    Operator["Operator"] -->|Configures and runs| App
+    App -->|Reads and writes| Data["Local SQLite data"]
+    App -->|Exports and imports| File["Board JSON file"]
 ```
 
-The language split is intentional:
+The browser is the only user facing client. Kanbanodon serves the interface and its JSON API from the same address. All trusted validation and authorization remain in the Go service. Board exports are explicit file operations initiated from the interface.
 
-- Go owns HTTP routing, authentication, authorization, SQLite access, imports, exports, and server-side validation.
-- JavaScript owns browser interaction, rendering, drag and drop, filters, and the timeline visualization.
-- HTML and CSS define the local UI shell and styling.
+## Features and screenshots
 
-This keeps private data and trusted rules on the server, while keeping UI behavior in the browser where it belongs.
+| Area | Capabilities |
+| --- | --- |
+| Board | Epic swimlanes, drag and drop, configurable workflow columns, ticket creation, dependency context, Sprint labels |
+| Backlog | Epics, stories, tasks, and bugs, grouping by Epic, inline Epic assignment, individual promotion, complete Epic promotion |
+| Sprints | Start date, duration in whole weeks, automatic continuation, editable names, current Sprint plus five upcoming Sprints |
+| Overview | Status summary, upcoming dates, filters, sorting, Sprint assignment, dependency visualization |
+| Timeline | Gantt view, Epic totals, live delay status, best case estimates, Sprint bands, zoom, horizontal panning, date cursor |
+| Tickets | Description, reference, type, parent, duration, dates, assignee, milestone, labels, dependencies, comments |
+| Access | Local accounts, administrator roles, board ownership, access management, password changes, optional signup |
+| Data | Local SQLite storage, board export and import as JSON |
 
-## Runtime Flow
+### Sprint planning and board
+
+Sprint cadence, editable Sprint names, Backlog promotion, and the delivery board share one planning view.
+
+![Sprint planning and board](docs/screenshots/board_sprint_planning.png)
+
+### Product backlog
+
+Backlog items remain outside the delivery board until they are promoted individually or together with an Epic.
+
+![Product backlog](docs/screenshots/product_backlog.png)
+
+## Solution strategy
+
+| Concern | Approach |
+| --- | --- |
+| Delivery | Compile one Go binary and copy it with the static browser assets into one container |
+| Persistence | Store relational application data in `app.db` and runtime configuration in `config.db` |
+| Compatibility | Run additive schema migrations during startup and preserve older local data |
+| Security | Validate sessions, board access, administrative actions, and ticket relations on the server |
+| Planning | Derive Sprint assignment, Timeline ranges, delays, and estimates from persisted ticket dates and durations |
+| Interaction | Render all views in the browser and keep the selected board and route in client state |
+
+## Building blocks
+
+```mermaid
+flowchart TB
+    subgraph Browser["Browser application"]
+        Router["Hash router"]
+        Views["Board, Backlog, Overview, Timeline"]
+        Interaction["Drag, hover, zoom, and pan"]
+        Router --> Views
+        Views --> Interaction
+    end
+
+    subgraph Server["Go service"]
+        HTTP["HTTP routing and sessions"]
+        Boards["Boards, access, and Sprints"]
+        Tickets["Tickets, relations, import, and export"]
+        Users["Users and passwords"]
+        HTTP --> Boards
+        HTTP --> Tickets
+        HTTP --> Users
+    end
+
+    Browser -->|JSON API| HTTP
+    Boards --> AppDB[("app.db")]
+    Tickets --> AppDB
+    Users --> AppDB
+    HTTP --> ConfigDB[("config.db")]
+```
+
+### Browser application
+
+`web/static/index.html` provides the application shell. `web/static/app.js` loads state, renders views, validates browser input, and coordinates interactions. `web/static/route.js` keeps board, ticket, view, and focused Sprint in the URL. `web/static/styles.css` contains the complete visual system.
+
+### Go service
+
+`cmd/server/main.go` configures the service and its routes. Board settings, Sprint names, and access are handled in `boards.go`. Ticket operations, dependencies, and board import and export are handled in `tickets.go`. Account and password operations are handled in `auth.go` and `users.go`.
+
+### Persistence
+
+`cmd/server/migrate.go` creates and upgrades both SQLite databases. `app.db` contains users, sessions, boards, access rules, Sprint settings, Sprint names, workflow columns, tickets, labels, dependencies, comments, and milestones. `config.db` contains runtime configuration.
+
+## Runtime scenarios
+
+### Planning and delivery
+
+```mermaid
+flowchart LR
+    Create["Create Backlog item"] --> Group["Assign an Epic"]
+    Group --> Promote["Promote to Board"]
+    Promote --> Plan["Set dates, duration, and dependencies"]
+    Plan --> Sprint["Calculate planned Sprint"]
+    Plan --> Timeline["Render Timeline"]
+    Sprint --> Move["Move through workflow"]
+    Move --> Done["Complete ticket"]
+```
+
+The Board uses Epic swimlanes and the default workflow `To Do`, `Ready`, `In Progress`, `Review`, and `Done`. Active work is blocked while an unfinished dependency remains. Moving a ticket to `Done` records its completion time for Timeline calculations.
+
+The Product Backlog supports the same work types and ticket fields as the Board. Backlog tickets are excluded from delivery views until promotion. A ticket can be assigned to an Epic during promotion, and a complete Epic package can be promoted together.
+
+### Authenticated request
 
 ```mermaid
 sequenceDiagram
-    participant Operator
-    participant Compose as Docker Compose
-    participant App as Kanbanodon container
-    participant DB as SQLite volume
     participant Browser
+    participant Server
+    participant Session as Session store
+    participant Data as Application data
 
-    Operator->>Compose: docker compose up --build
-    Compose->>App: start /app/kanbanodon
-    App->>DB: open app.db and config.db
-    App->>DB: migrate schema and seed default admin
-    Browser->>App: GET /
-    App-->>Browser: static UI
-    Browser->>App: API calls with session cookie
-    App->>DB: read/write local data
+    Browser->>Server: Send request with session cookie
+    Server->>Session: Resolve user
+    Server->>Data: Check board access and validate input
+    Data-->>Server: Read or persist state
+    Server-->>Browser: Return JSON response
 ```
 
-## Data Storage
+The server performs access checks for every protected endpoint. Administrative actions require an administrator account. Board scoped operations require ownership, explicit access, or administrator status.
 
-Kanbanodon stores data in two local SQLite databases under `KANBANODON_DATA_DIR`. SQLite is an embedded relational database: there is no separate database server, just ordinary `.db` files read and written by the Go process.
+## Planning rules
 
-Default in Docker:
+### Board and dependencies
 
-```text
-/data
-```
+Dependency indicators show both directions. A ticket identifies what it depends on and which work it enables. Hovering a ticket, Epic lane, or dependency connection keeps the related chain visible and fades unrelated work. The `No epic` lane applies the same focus behavior to standalone tickets.
 
-Files:
+### Sprints
 
-- `app.db`: users, sessions, boards, board access, columns, tickets, labels, ticket links, comments, and milestones
-- `config.db`: runtime configuration such as auth mode
+Each board stores the first Sprint start date and a duration from 1 to 52 whole weeks. Following Sprints are calculated automatically. The Board shows the current Sprint and the next five Sprints, or the first six Sprints when the cadence has not started yet.
 
-The Docker Compose file mounts `/data` as the named volume `kanbanodon-data`.
+Sprint names can be edited directly in their cards and are saved for the selected board. Clearing a custom name restores the generated `Sprint N` label. The focus icon on a Sprint card opens Timeline with that Sprint centered.
 
-Back up the data volume:
+A ticket is assigned to the Sprint in which it is planned to finish. Its due date is used when available. Otherwise Kanbanodon uses the start date and duration. Tickets planned before the configured cadence are shown as `Before Sprint 1`; tickets without a usable date remain unscheduled.
 
-```bash
-docker run --rm -v kanbanodon-data:/data -v "$PWD:/backup" alpine tar czf /backup/kanbanodon-data.tgz -C /data .
-```
+### Timeline
 
-Restore into an empty volume:
+Timeline derives its range from scheduled work and displays work items, Epic totals, dependencies, delays, estimates, and Sprint boundaries on a shared daily grid.
 
-```bash
-docker run --rm -v kanbanodon-data:/data -v "$PWD:/backup" alpine sh -c "cd /data && tar xzf /backup/kanbanodon-data.tgz"
-```
+Overdue unfinished work extends from its due date to the current date as a red delay area. The remaining duration continues after the current date as a dashed best case estimate. Dependency paths use visible direction markers and become prominent together with their connected tickets on hover.
 
-You can also export one board as JSON from the top bar.
-
-## Data Model
-
-```mermaid
-erDiagram
-    USERS ||--o{ SESSIONS : owns
-    USERS ||--o{ BOARDS : owns
-    USERS ||--o{ BOARD_USERS : receives
-    BOARDS ||--o{ BOARD_USERS : grants
-    BOARDS ||--o{ COLUMNS : has
-    BOARDS ||--o{ TICKETS : contains
-    BOARDS ||--o{ LABELS : defines
-    BOARDS ||--o{ MILESTONES : defines
-    COLUMNS ||--o{ TICKETS : groups
-    USERS ||--o{ TICKETS : assigned
-    TICKETS ||--o{ COMMENTS : has
-    USERS ||--o{ COMMENTS : writes
-    TICKETS ||--o{ TICKET_LABELS : uses
-    LABELS ||--o{ TICKET_LABELS : applied
-    TICKETS ||--o{ TICKET_LINKS : depends_on
-```
-
-## Database Schema
-
-`app.db` schema:
-
-```sql
-create table users (
-  id integer primary key,
-  username text unique not null,
-  name text not null,
-  email text unique not null,
-  password_hash text not null,
-  avatar text not null,
-  is_admin integer not null default 0,
-  must_change_password integer not null default 0,
-  created_at text not null
-);
-
-create table sessions (
-  token_hash text primary key,
-  user_id integer not null,
-  expires_at text not null
-);
-
-create table boards (
-  id integer primary key,
-  name text not null,
-  owner_id integer not null default 0,
-  created_at text not null
-);
-
-create table board_users (
-  board_id integer not null,
-  user_id integer not null,
-  full_access integer not null default 1,
-  primary key (board_id, user_id)
-);
-
-create table columns (
-  id integer primary key,
-  board_id integer not null,
-  name text not null,
-  position integer not null
-);
-
-create table milestones (
-  id integer primary key,
-  board_id integer not null,
-  name text not null,
-  due_date text not null
-);
-
-create table tickets (
-  id integer primary key,
-  board_id integer not null,
-  column_id integer not null,
-  parent_id integer not null default 0,
-  ref text not null default '',
-  title text not null,
-  body text not null default '',
-  type text not null default 'task',
-  points integer not null default 0,
-  duration integer not null default 0,
-  start_date text not null default '',
-  due_date text not null default '',
-  completed_at text not null default '',
-  milestone_id integer not null default 0,
-  assignee_id integer not null default 0,
-  position integer not null default 0,
-  created_at text not null,
-  updated_at text not null
-);
-
-create table labels (
-  id integer primary key,
-  board_id integer not null,
-  name text not null,
-  color text not null
-);
-
-create table ticket_labels (
-  ticket_id integer not null,
-  label_id integer not null,
-  primary key (ticket_id, label_id)
-);
-
-create table ticket_links (
-  from_ticket_id integer not null,
-  to_ticket_id integer not null,
-  primary key (from_ticket_id, to_ticket_id)
-);
-
-create table comments (
-  id integer primary key,
-  ticket_id integer not null,
-  user_id integer not null,
-  body text not null,
-  created_at text not null
-);
-```
-
-`config.db` schema:
-
-```sql
-create table config (
-  key text primary key,
-  value text not null,
-  updated_at text not null
-);
-```
-
-## Configuration
-
-Environment variables:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `KANBANODON_ADDR` | `:8080` | HTTP listen address inside the container |
-| `KANBANODON_DATA_DIR` | `data` locally, `/data` in Docker | Directory for SQLite files |
-| `KANBANODON_AUTH_MODE` | `local` | Stored and shown as the runtime mode |
-| `KANBANODON_ALLOW_SIGNUP` | `true` | Allows users to create their own accounts from the login screen |
-| `KANBANODON_SESSION_SECRET` | `change-me-kanbanodon` | Secret used to sign session tokens |
-
-Recommended production-like local settings:
-
-```yaml
-environment:
-  KANBANODON_ADDR: ":8080"
-  KANBANODON_DATA_DIR: "/data"
-  KANBANODON_AUTH_MODE: "local"
-  KANBANODON_ALLOW_SIGNUP: "false"
-  KANBANODON_SESSION_SECRET: "replace-with-a-long-random-secret"
-```
-
-The default Compose file binds the app to localhost only:
-
-```yaml
-ports:
-  - "127.0.0.1:8080:8080"
-```
-
-Keep this binding if Kanbanodon should only be reachable from the same machine.
+The zoom control changes the density of the daily grid while preserving the visible center. The graph can be moved horizontally by holding and dragging. A vertical cursor snaps to the daily grid and displays the corresponding date. Sprint bands alternate subtly, and a Sprint opened from the Board receives a restrained focus treatment.
 
 ## Deployment
 
-Build and start:
-
-```bash
-docker compose up --build -d
+```mermaid
+flowchart LR
+    Host["Host"] --> Compose["Docker Compose"]
+    Compose --> Container["Kanbanodon container<br/>Port 8080"]
+    Container --> Volume["kanbanodon data volume<br/>app.db and config.db"]
+    Browser["Browser"] -->|localhost:8080| Container
 ```
 
-View logs:
+### Quick start
 
-```bash
-docker compose logs -f
-```
+Docker with Docker Compose and a modern browser are required.
 
-Stop:
+1. Start Kanbanodon.
+
+   ```bash
+   docker compose up --build
+   ```
+
+2. Open `http://localhost:8080`.
+
+3. Sign in with the initial administrator account.
+
+   ```text
+   Username: kanbanoadmin
+   Password: kanbanopw
+   ```
+
+4. Change the initial password after login.
+
+5. Set a unique value for `KANBANODON_SESSION_SECRET` before using the application with real data.
+
+Stop the application with:
 
 ```bash
 docker compose down
 ```
 
-Stop and remove the data volume:
+### Configuration
 
-```bash
-docker compose down -v
-```
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `KANBANODON_ADDR` | `:8080` | HTTP listen address inside the container |
+| `KANBANODON_DATA_DIR` | `data` locally, `/data` in Docker | Directory containing the SQLite databases |
+| `KANBANODON_AUTH_MODE` | `local` | Authentication mode reported by the application |
+| `KANBANODON_ALLOW_SIGNUP` | `true` | Enables account registration from the login screen |
+| `KANBANODON_SESSION_SECRET` | `change-me-kanbanodon` | Secret used to sign session tokens |
 
-Only use `-v` when you intentionally want to delete all stored Kanbanodon data.
+The supplied Compose configuration publishes the application on `127.0.0.1:8080`. Keep this binding when Kanbanodon should only be available on the same machine. Use a reverse proxy with TLS before exposing it through a network.
 
-## User Management
+### Storage and export
 
-Create users:
+Docker Compose mounts `/data` as the named volume `kanbanodon-data`. Protect this volume with the backup method used by the host environment. Each board can also be exported as JSON from the top bar and imported into another Kanbanodon instance.
 
-- Admins can create users from `Admin` with username, initial password, and optional access to the current board.
-- Admin-created users must change their initial password after login.
-- If `KANBANODON_ALLOW_SIGNUP=true`, users can sign up from the login screen.
-- New users are regular users, not admins.
-- New users do not automatically receive existing board access.
-- A user can create their own board from the sidebar.
-- The user who creates a board becomes that board's owner.
+## Shared concepts
 
-Kanbanodon currently does not ask for email addresses when creating or registering users. There is no mail delivery feature yet, so email addresses would not be used for password resets, invites, or notifications. The SQLite schema still contains an internal `email` column for compatibility with earlier local data, but new accounts are created from username and password only.
+| Concept | Implementation |
+| --- | --- |
+| Authentication | A signed session cookie identifies a locally stored session |
+| Authorization | Board access and administrator permissions are checked by the Go service |
+| Passwords | Password hashes are stored instead of plaintext passwords |
+| Validation | Dates, Sprint duration, ticket relations, access changes, and workflow moves are checked before persistence |
+| Migration | Startup migrations add required tables and columns while retaining existing records |
+| Time | Dates use calendar days; completion timestamps provide the finished state for delay calculations |
+| Dependencies | Directed ticket links determine blocking rules and visual connection paths |
+| Routing | Hash routes preserve the selected view, board, ticket, and focused Sprint |
+| Privacy | Static assets are bundled and core operation has no runtime dependency on external services |
 
-Manage users:
+## Architecture decisions
 
-1. Log in as an admin.
-2. Open `Admin`.
-3. Use the `Create user` section to add a new account.
-4. Use the `User management` section to promote or demote users, reset passwords, or delete accounts.
-5. Use the `Board sharing` section to grant or remove access per board, then save the board whose access changed.
+| Decision | Rationale |
+| --- | --- |
+| One Go process | Keeps deployment and local operation small |
+| SQLite persistence | Provides relational storage without a database service |
+| Server side authorization | Prevents browser state from becoming a trust boundary |
+| Static JavaScript interface | Avoids a separate frontend toolchain and runtime |
+| Calculated Sprint sequence | A single cadence avoids maintaining separate Sprint records for every interval |
+| Date driven Sprint assignment | Board, Overview, and Timeline derive the same planned Sprint from ticket data |
+| Explicit Backlog state | Work type and delivery readiness remain independent concepts |
+| URL based Sprint focus | A Timeline focus can survive reloads and direct navigation |
 
-Delete behavior:
+## Quality requirements
 
-- Admins cannot delete their own account.
-- Kanbanodon keeps at least one admin account.
-- Deleting a user removes their sessions, board access, and comments.
-- Tickets assigned to the deleted user are set back to unassigned.
+| Scenario | Expected behavior |
+| --- | --- |
+| Existing data is opened after an update | Startup migrations retain existing boards and add required schema changes |
+| A user requests an inaccessible board | The server rejects the request without returning board data |
+| A ticket with open dependencies enters active work | The move is rejected and the stored status remains unchanged |
+| Sprint cadence changes | Board, Overview, and Timeline use the new calculation after the save completes |
+| A Sprint focus link is opened | Timeline centers the requested Sprint and preserves the focus in the route |
+| The service restarts with the same data volume | Accounts, boards, Sprint names, and tickets remain available |
+| Runtime network access is unavailable | Core planning and board functions remain usable on the local host |
 
-Board sharing:
+## Risks and limitations
 
-- Regular users see `Sharing` under `Access`.
-- Board owners can open `Sharing` and grant or remove `Full access` for other users on their own boards.
-- Users without owned boards see that no boards are available to share yet.
-- Board owners cannot manage access for boards they do not own.
-- Board owner access cannot be removed from the board.
-- Admins can open `Admin` and use the separate `Board sharing` section to manage access for every board.
-- Each board has its own `Save` button so access changes are confirmed per board.
-- Admin users have implicit access to all boards.
-
-## Menus And Screens
-
-Top bar:
-
-- `Search`: filters the current board view.
-- `All types`: filters by `epic`, `story`, `task`, or `bug`.
-- `All labels`: filters by label.
-- `Export`: downloads the selected board as JSON.
-- `Import`: imports tickets from a Kanbanodon JSON export into the selected board.
-- Account menu: change your password or log out.
-
-Sidebar:
-
-- `Board`: shows `To Do`, active workflow columns, and draggable ticket cards. Cards identify what they depend on and what they enable; hovering keeps the complete dependency context visible, connects it with directional arrows, and fades unrelated work. Hovering `No epic` isolates standalone work. The planning panels define the Sprint cadence, rename the current and next five Sprints, jump directly to a centered Sprint in Timeline, and promote selected Backlog work into an Epic lane.
-- `Backlog`: holds Epics, stories, tasks, and bugs outside the delivery board. Work is grouped by Epic and can be promoted individually or as a complete Epic package.
-- `Overview`: shows a sortable table for scanning and comparing work, including its calculated Sprint, with the same dependency-focused hover behavior and directional connectors as the Board.
-- `Timeline`: shows a Gantt-style view from start dates, due dates, and durations. Overdue work extends to today in red, its duration continues as a dashed best-case estimate, and subtle alternating named Sprint bands show cadence boundaries. The chart can be panned horizontally by holding and dragging. Hovering a task or dependency arrow fades unrelated work. Hovering an Epic keeps its complete group visible. Dependency lines include a direction marker, while the mouse cursor snaps a labeled date line to the daily grid.
-- `Sharing`: shown to regular users under `Access`; board owners can grant or remove access to their own boards.
-- `Admin`: shown to admins under `Administration`; contains separate sections for creating users, managing users, and sharing boards.
-- `Configuration`: shows current board/system facts.
-
-Ticket drawer:
-
-- Edit title, description, type, one optional parent, duration, dates, assignee, milestone, labels, and dependencies.
-- Backlog tickets keep their regular work-item fields while staying out of Board, Overview, and Timeline until promotion.
-- Add comments.
-- Delete the ticket.
-
-Dependency behavior:
-
-- A ticket can depend on other tickets.
-- Moving a ticket into active work is blocked while its dependencies are not in `Done`.
-- Moving a ticket to `Done` stores `completed_at`, which is used by the timeline.
-
-## Main Use Cases
-
-```mermaid
-flowchart TD
-    Login["Log in"] --> SelectBoard["Select or create board"]
-    SelectBoard --> CreateTicket["Create ticket"]
-    CreateTicket --> Plan["Set labels, duration, due date, dependencies"]
-    Plan --> Move["Move ticket across columns"]
-    Move --> Done["Complete in Done"]
-    SelectBoard --> ShareOwn["Share owned board"]
-
-    AdminLogin["Admin login"] --> Users["Manage users"]
-    AdminLogin --> Access["Manage any board access"]
-    Users --> Reset["Reset password"]
-    Users --> Delete["Delete user"]
-
-    SelectBoard --> Export["Export board JSON"]
-    SelectBoard --> Import["Import board JSON"]
-```
-
-## Privacy And Security
-
-- No outbound runtime connections
-- No telemetry
-- No external fonts or CDN assets
-- HTTP-only session cookies
-- Passwords are hashed before storage
-- Local SQLite databases in the configured data directory
-- Localhost-only port binding in the default Compose file
-
-Important operational notes:
-
-- Change the default admin password immediately.
-- Change `KANBANODON_SESSION_SECRET` before real use.
-- Use a reverse proxy with TLS if you expose Kanbanodon beyond localhost.
-- Back up the Docker volume if the data matters.
+| Topic | Current limitation |
+| --- | --- |
+| Scaling | The current deployment model is one application process with local SQLite files |
+| Transport security | TLS termination is not included and must be provided before network exposure |
+| Account recovery | There is no mail integration; password recovery is an administrator action |
+| Sprint capacity | Sprint assignment is based on planned finish dates and does not calculate team capacity |
+| Backups | Persistent volume backups are an operator responsibility |
+| Large boards | No performance target is currently defined for unusually large ticket sets |
 
 ## Development
 
-Prerequisites for local development:
+Local development requires Go 1.22 or newer and Node.js.
 
-- Go 1.22 or newer
-- Node.js for JavaScript syntax checks and avatar tests
-
-Run the Go tests:
+Run the server tests:
 
 ```bash
 go test ./...
 ```
 
-Check browser JavaScript syntax:
-
-```bash
-node --check web/static/app.js
-node --check web/static/dino-avatar.js
-```
-
-Run all browser-side unit and asset tests:
+Run the browser tests:
 
 ```bash
 node --test web/static/*.test.js
 ```
 
-Build the server locally:
+Check the main browser source:
+
+```bash
+node --check web/static/app.js
+```
+
+Build the server:
 
 ```bash
 go build ./cmd/server
 ```
 
-## Repository Layout
+### Repository layout
 
 ```text
-cmd/server/          Go HTTP server, auth, SQLite persistence, tests
-web/static/          Browser UI, styles, dino avatar assets
-docs/                Screenshots and generated avatar reference material
-data/                Local development databases, ignored by Git
-Dockerfile           One-container image
-docker-compose.yml   Local deployment
+cmd/server/          Go server, SQLite persistence, migrations, and tests
+web/static/          Browser application, styles, routes, and avatar assets
+docs/screenshots/    Product screenshots used by this README
+Dockerfile           Container image
+docker-compose.yml   Local runtime configuration
 ```
 
-## Design Notes
+## Glossary
 
-Kanbanodon intentionally stays small:
-
-- SQLite instead of a separate database server
-- Static browser assets instead of a frontend build chain
-- One Go binary inside one container
-- JSON APIs instead of additional service layers
-- Local-first operation instead of hosted sync
-
-That keeps the project easy to start, stop, inspect, back up, and delete.
+| Term | Meaning |
+| --- | --- |
+| Backlog item | Work stored outside the delivery Board |
+| Board item | Work promoted into a workflow column |
+| Epic | Parent work item used as a Board swimlane and Backlog group |
+| Dependency | Directed relation that requires another ticket to be completed first |
+| Sprint cadence | Repeating interval calculated from one start date and a duration in weeks |
+| Planned finish | Due date, or start date plus ticket duration when no due date exists |
+| Best case estimate | Remaining duration displayed after the current date for overdue unfinished work |
