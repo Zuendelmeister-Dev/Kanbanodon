@@ -217,12 +217,120 @@ func TestTicketTypeNormalizesSupportedWorkItemTypes(t *testing.T) {
 	}
 }
 
-// TestNormalizeIdeaClearsPlanningFields verifies ideas stay outside scheduling fields.
+// TestNormalizeIdeaClearsPlanningFields verifies legacy ideas migrate into Backlog safely.
 func TestNormalizeIdeaClearsPlanningFields(t *testing.T) {
 	ticket := ticket{Type: "idea", Points: 3, Duration: 5, StartDate: "2026-07-01", DueDate: "2026-07-02", CompletedAt: "2026-07-03", MilestoneID: 4, ParentID: 5, Links: []int64{1, 2}}
 	normalizeTicketInput(&ticket)
-	if ticket.Type != "idea" || ticket.Points != 0 || ticket.Duration != 0 || ticket.StartDate != "" || ticket.DueDate != "" || ticket.CompletedAt != "" || ticket.MilestoneID != 0 || ticket.ParentID != 0 || len(ticket.Links) != 0 {
+	if ticket.Type != "idea" || !ticket.IsBacklog || ticket.Points != 0 || ticket.Duration != 0 || ticket.StartDate != "" || ticket.DueDate != "" || ticket.CompletedAt != "" || ticket.MilestoneID != 0 || ticket.ParentID != 0 || len(ticket.Links) != 0 {
 		t.Fatalf("expected idea planning fields to be cleared, got %#v", ticket)
+	}
+}
+
+// TestBacklogStateRoundTrips verifies typed work can live outside the delivery board.
+func TestBacklogStateRoundTrips(t *testing.T) {
+	s := newTestServer(t)
+	id := createTestTicket(t, s, `{"Title":"Future story","Type":"story","IsBacklog":true}`)
+	items := s.loadTickets(1)
+	if len(items) != 1 || items[0].ID != id || !items[0].IsBacklog || items[0].Type != "story" {
+		t.Fatalf("expected typed backlog ticket to round-trip, got %#v", items)
+	}
+
+	columnID := testColumnID(t, s, "To Do")
+	body := `{"Title":"Future story","Type":"story","ColumnID":` + strconv.FormatInt(columnID, 10) + `,"IsBacklog":false}`
+	rec := httptest.NewRecorder()
+	s.withUser(s.ticketAction).ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(id, 10), strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("promoting backlog ticket failed with %d: %q", rec.Code, rec.Body.String())
+	}
+	if promoted := s.loadTickets(1)[0]; promoted.IsBacklog {
+		t.Fatalf("expected promoted ticket on board, got %#v", promoted)
+	}
+}
+
+// TestBoardSettingsPersistSprintCadence verifies board-level Sprint configuration.
+func TestBoardSettingsPersistSprintCadence(t *testing.T) {
+	s := newTestServer(t)
+	rec := httptest.NewRecorder()
+	body := `{"BoardID":1,"SprintStartDate":"2026-09-14","SprintWeeks":3}`
+	s.withUser(s.boardSettings).ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/board-settings?boardId=1", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("saving Sprint cadence failed with %d: %q", rec.Code, rec.Body.String())
+	}
+	var start string
+	var weeks int
+	if err := s.db.QueryRow("select sprint_start_date,sprint_weeks from boards where id=1").Scan(&start, &weeks); err != nil {
+		t.Fatal(err)
+	}
+	if start != "2026-09-14" || weeks != 3 {
+		t.Fatalf("unexpected Sprint cadence %q / %d", start, weeks)
+	}
+
+	invalid := httptest.NewRecorder()
+	s.withUser(s.boardSettings).ServeHTTP(invalid, httptest.NewRequest(http.MethodPut, "/api/board-settings?boardId=1", strings.NewReader(`{"BoardID":1,"SprintStartDate":"2026-09-14","SprintWeeks":0}`)))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid Sprint length to fail, got %d", invalid.Code)
+	}
+}
+
+// TestSprintNamesPersistAndReset verifies custom generated Sprint labels stay board-scoped.
+func TestSprintNamesPersistAndReset(t *testing.T) {
+	s := newTestServer(t)
+	save := httptest.NewRecorder()
+	s.withUser(s.sprintNames).ServeHTTP(save, httptest.NewRequest(http.MethodPut, "/api/sprint-names?boardId=1", strings.NewReader(`{"BoardID":1,"SprintNumber":2,"Name":"Release Train"}`)))
+	if save.Code != http.StatusOK {
+		t.Fatalf("saving Sprint name failed with %d: %q", save.Code, save.Body.String())
+	}
+	var name string
+	if err := s.db.QueryRow("select name from sprint_names where board_id=1 and sprint_number=2").Scan(&name); err != nil || name != "Release Train" {
+		t.Fatalf("unexpected stored Sprint name %q: %v", name, err)
+	}
+
+	denied := httptest.NewRecorder()
+	s.sprintNames(denied, httptest.NewRequest(http.MethodPut, "/api/sprint-names", strings.NewReader(`{"BoardID":1,"SprintNumber":2,"Name":"Hidden"}`)), user{ID: 999})
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("expected inaccessible Sprint rename to fail, got %d", denied.Code)
+	}
+
+	reset := httptest.NewRecorder()
+	s.withUser(s.sprintNames).ServeHTTP(reset, httptest.NewRequest(http.MethodPut, "/api/sprint-names?boardId=1", strings.NewReader(`{"BoardID":1,"SprintNumber":2,"Name":"   "}`)))
+	if reset.Code != http.StatusOK {
+		t.Fatalf("resetting Sprint name failed with %d: %q", reset.Code, reset.Body.String())
+	}
+	var count int
+	if err := s.db.QueryRow("select count(*) from sprint_names where board_id=1 and sprint_number=2").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expected Sprint name reset, count=%d err=%v", count, err)
+	}
+
+	invalid := httptest.NewRecorder()
+	s.withUser(s.sprintNames).ServeHTTP(invalid, httptest.NewRequest(http.MethodPut, "/api/sprint-names?boardId=1", strings.NewReader(`{"BoardID":1,"SprintNumber":0,"Name":"Invalid"}`)))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid Sprint number to fail, got %d", invalid.Code)
+	}
+}
+
+// TestMigrateMovesLegacyIdeasAndWorkflowBacklog verifies the in-place naming migration.
+func TestMigrateMovesLegacyIdeasAndWorkflowBacklog(t *testing.T) {
+	s := newTestServer(t)
+	id := createTestTicket(t, s, `{"Title":"Old idea","Type":"idea"}`)
+	if _, err := s.db.Exec("update tickets set is_backlog=0 where id=?", id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("update columns set name='Backlog' where board_id=1 and name='To Do'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var backlog int
+	var columnName string
+	if err := s.db.QueryRow("select is_backlog from tickets where id=?", id).Scan(&backlog); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow("select name from columns where board_id=1 and position=0").Scan(&columnName); err != nil {
+		t.Fatal(err)
+	}
+	if backlog != 1 || columnName != "To Do" {
+		t.Fatalf("expected legacy idea/backlog migration, got flag=%d column=%q", backlog, columnName)
 	}
 }
 
@@ -276,7 +384,7 @@ func TestUpdateTicketRejectsParentCycle(t *testing.T) {
 	s := newTestServer(t)
 	epicID := createTestTicket(t, s, `{"Title":"Epic","Type":"epic"}`)
 	storyID := createTestTicket(t, s, `{"Title":"Story","Type":"story","ParentID":`+strconv.FormatInt(epicID, 10)+`}`)
-	columnID := testColumnID(t, s, "Backlog")
+	columnID := testColumnID(t, s, "To Do")
 
 	updateBody := `{"Title":"Epic","Type":"task","ColumnID":` + strconv.FormatInt(columnID, 10) + `,"ParentID":` + strconv.FormatInt(storyID, 10) + `}`
 	req := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(epicID, 10), bytes.NewBufferString(updateBody))

@@ -30,6 +30,8 @@ func newHandler(s *server) http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 	mux.HandleFunc("/api/state", s.withUser(s.state))
 	mux.HandleFunc("/api/boards", s.withUser(s.boards))
+	mux.HandleFunc("/api/board-settings", s.withUser(s.boardSettings))
+	mux.HandleFunc("/api/sprint-names", s.withUser(s.sprintNames))
 	mux.HandleFunc("/api/board-access", s.withUser(s.boardAccess))
 	mux.HandleFunc("/api/users", s.withUser(s.users))
 	mux.HandleFunc("/api/users/admin", s.withUser(s.userAdmin))

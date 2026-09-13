@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // createBoard inserts a board with the default workflow columns and metadata.
@@ -24,7 +25,7 @@ func (s *server) createBoard(name string, ownerID int64) (int64, error) {
 		return 0, err
 	}
 	bid, _ := res.LastInsertId()
-	for i, c := range []string{"Backlog", "Ready", "In Progress", "Review", "Done"} {
+	for i, c := range []string{"To Do", "Ready", "In Progress", "Review", "Done"} {
 		if _, err := tx.Exec("insert into columns(board_id,name,position) values(?,?,?)", bid, c, i); err != nil {
 			return 0, err
 		}
@@ -77,9 +78,9 @@ func (s *server) setBoardAccess(boardID, userID int64, fullAccess bool) error {
 // accessibleBoards returns the boards visible to a user.
 func (s *server) accessibleBoards(u user) []map[string]any {
 	if u.IsAdmin {
-		return rows(s.db, "select id,name,owner_id,created_at from boards order by id")
+		return rows(s.db, "select id,name,owner_id,sprint_start_date,sprint_weeks,created_at from boards order by id")
 	}
-	return rows(s.db, `select b.id,b.name,b.owner_id,b.created_at
+	return rows(s.db, `select b.id,b.name,b.owner_id,b.sprint_start_date,b.sprint_weeks,b.created_at
 		from boards b
 		join board_users bu on bu.board_id=b.id
 		where bu.user_id=? and bu.full_access=1
@@ -179,6 +180,7 @@ func (s *server) state(w http.ResponseWriter, r *http.Request, u user) {
 		"authMode":       s.authMode,
 		"boards":         boards,
 		"board":          map[string]any{},
+		"sprintNames":    []map[string]any{},
 		"columns":        []map[string]any{},
 		"tickets":        []ticket{},
 		"labels":         []map[string]any{},
@@ -189,7 +191,8 @@ func (s *server) state(w http.ResponseWriter, r *http.Request, u user) {
 		"comments":       []map[string]any{},
 	}
 	if bid > 0 {
-		payload["board"] = one(s.db, "select id,name,owner_id from boards where id=?", bid)
+		payload["board"] = one(s.db, "select id,name,owner_id,sprint_start_date,sprint_weeks from boards where id=?", bid)
+		payload["sprintNames"] = rows(s.db, "select sprint_number,name from sprint_names where board_id=? order by sprint_number", bid)
 		payload["columns"] = rows(s.db, "select id,name,position from columns where board_id=? order by position", bid)
 		payload["tickets"] = s.loadTickets(bid)
 		payload["labels"] = rows(s.db, "select id,name,color from labels where board_id=? order by name", bid)
@@ -201,6 +204,91 @@ func (s *server) state(w http.ResponseWriter, r *http.Request, u user) {
 		payload["comments"] = rows(s.db, "select c.id,c.ticket_id,c.user_id,c.body,c.created_at from comments c join tickets t on t.id=c.ticket_id where t.board_id=? order by c.created_at", bid)
 	}
 	jsonOut(w, payload)
+}
+
+// boardSettings updates the board-level sprint cadence used by every planning view.
+func (s *server) boardSettings(w http.ResponseWriter, r *http.Request, u user) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		BoardID         int64
+		SprintStartDate string
+		SprintWeeks     int
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.BoardID == 0 {
+		in.BoardID = s.dataBoardID(r, u)
+	}
+	if !s.canAccessBoard(u, in.BoardID) {
+		http.Error(w, "board access required", http.StatusForbidden)
+		return
+	}
+	in.SprintStartDate = strings.TrimSpace(in.SprintStartDate)
+	if in.SprintStartDate != "" {
+		if _, err := time.Parse("2006-01-02", in.SprintStartDate); err != nil {
+			http.Error(w, "sprint start date must use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+	if in.SprintWeeks < 1 || in.SprintWeeks > 52 {
+		http.Error(w, "sprint length must be between 1 and 52 weeks", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.db.Exec("update boards set sprint_start_date=?,sprint_weeks=? where id=?", in.SprintStartDate, in.SprintWeeks, in.BoardID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOut(w, map[string]any{"ok": true})
+}
+
+// sprintNames saves or resets one custom name in the generated Sprint sequence.
+func (s *server) sprintNames(w http.ResponseWriter, r *http.Request, u user) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		BoardID      int64
+		SprintNumber int
+		Name         string
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.BoardID == 0 {
+		in.BoardID = s.dataBoardID(r, u)
+	}
+	if !s.canAccessBoard(u, in.BoardID) {
+		http.Error(w, "board access required", http.StatusForbidden)
+		return
+	}
+	if in.SprintNumber < 1 || in.SprintNumber > 10000 {
+		http.Error(w, "sprint number must be between 1 and 10000", http.StatusBadRequest)
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	if utf8.RuneCountInString(in.Name) > 80 {
+		http.Error(w, "sprint name must not exceed 80 characters", http.StatusBadRequest)
+		return
+	}
+	if in.Name == "" {
+		if _, err := s.db.Exec("delete from sprint_names where board_id=? and sprint_number=?", in.BoardID, in.SprintNumber); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonOut(w, map[string]any{"ok": true, "name": ""})
+		return
+	}
+	if _, err := s.db.Exec(`insert into sprint_names(board_id,sprint_number,name,updated_at) values(?,?,?,?)
+		on conflict(board_id,sprint_number) do update set name=excluded.name,updated_at=excluded.updated_at`, in.BoardID, in.SprintNumber, in.Name, now()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOut(w, map[string]any{"ok": true, "name": in.Name})
 }
 
 // allBoardAccess returns board-sharing rows for every board the user can manage.
