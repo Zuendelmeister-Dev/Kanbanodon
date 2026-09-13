@@ -105,10 +105,11 @@ func (s *server) ensureUsernames() error {
 	}
 	defer rs.Close()
 	type row struct {
-		id       int64
-		name     string
-		email    string
-		username string
+		id             int64
+		name           string
+		email          string
+		username       string
+		storedUsername string
 	}
 	var users []row
 	taken := map[string]bool{}
@@ -117,6 +118,7 @@ func (s *server) ensureUsernames() error {
 		if err := rs.Scan(&u.id, &u.name, &u.email, &u.username); err != nil {
 			return err
 		}
+		u.storedUsername = u.username
 		u.username = cleanUsername(u.username)
 		if u.username != "" && !taken[u.username] {
 			taken[u.username] = true
@@ -129,7 +131,11 @@ func (s *server) ensureUsernames() error {
 	if err := rs.Err(); err != nil {
 		return err
 	}
-	for _, u := range users {
+	if err := rs.Close(); err != nil {
+		return err
+	}
+	for i := range users {
+		u := &users[i]
 		if u.username != "" {
 			continue
 		}
@@ -145,7 +151,24 @@ func (s *server) ensureUsernames() error {
 			name = base + strconv.Itoa(i)
 		}
 		taken[name] = true
-		if _, err := s.db.Exec("update users set username=? where id=?", name, u.id); err != nil {
+		u.username = name
+	}
+	// Move changed values out of the way first. This handles legacy
+	// case-sensitive pairs such as "Ada" and "ada" even with a unique index.
+	for _, u := range users {
+		if u.username == u.storedUsername {
+			continue
+		}
+		temporary := "__migrate_" + strconv.FormatInt(u.id, 10) + "__"
+		if _, err := s.db.Exec("update users set username=? where id=?", temporary, u.id); err != nil {
+			return err
+		}
+	}
+	for _, u := range users {
+		if u.username == u.storedUsername {
+			continue
+		}
+		if _, err := s.db.Exec("update users set username=? where id=?", u.username, u.id); err != nil {
 			return err
 		}
 	}

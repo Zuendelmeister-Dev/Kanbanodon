@@ -466,10 +466,10 @@ node --check web/static/app.js
 node --check web/static/dino-avatar.js
 ```
 
-Run the avatar asset test:
+Run all browser-side unit and asset tests:
 
 ```bash
-node web/static/dino-avatar.test.js
+node --test web/static/*.test.js
 ```
 
 Build the server locally:
