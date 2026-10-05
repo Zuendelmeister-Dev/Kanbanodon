@@ -7,18 +7,31 @@
   <link rel="stylesheet" href="/static/styles.css?v=sprint-focus-pan-20260913">
   <link rel="stylesheet" href="/static/admin.css?v=all-board-sharing-20260628">
   <link rel="stylesheet" href="/static/auth.css?v=password-confirm-20260628">
+  <link rel="stylesheet" href="/static/dino-creator.css?v=avatars-auto-20261005">
+  <link rel="stylesheet" href="/static/task-tools.css?v=20261005-fixes">
 </head>
 <body>
   <header class="topbar">
-    <a id="homeLink" class="brand" href="#/board" aria-label="Open main board"><img src="/static/kanbanodon-logo.png" alt=""><div><strong>Kanbanodon</strong><span id="mode">local</span></div></a>
+    <a id="homeLink" class="brand" href="#/board" aria-label="Open main board"><img src="/static/kanbanodon-logo.png" alt=""><div><strong>Kanbanodon</strong></div></a>
     <div class="tools">
       <input id="search" type="search" placeholder="Search">
+      <button id="myTasksBtn" type="button" aria-pressed="false">My tasks</button>
+      <details class="toolsMenu"><summary id="filtersTitle">Filters</summary><div class="toolsPopover">
       <select id="typeFilter"><option value="">All types</option><option>epic</option><option>story</option><option>task</option><option>bug</option></select>
       <select id="assigneeFilter"><option value="">All assignees</option></select>
       <select id="dependencyFilter"><option value="">All dependencies</option><option value="blocking">Blocking others</option><option value="blocked">Blocked</option></select>
       <select id="labelFilter"><option value="">All labels</option></select>
+      <button id="resetFiltersBtn" type="button">Reset filters</button>
+      </div></details>
+      <details class="toolsMenu"><summary>Board menu</summary><div class="toolsPopover">
       <button id="exportBtn" title="Export">Export</button>
       <label class="importBtn">Import<input id="importFile" type="file" accept="application/json"></label>
+      <button data-view="archive" class="navButton" type="button">Archive</button>
+      <button data-view="trash" class="navButton" type="button">Trash</button>
+      <button data-view="config" class="navButton" type="button">Board information</button>
+      <button id="boardSharingBtn" type="button">Sharing</button>
+      </div></details>
+      <details id="notificationsMenu" class="toolsMenu"><summary id="notificationsTitle">Notifications</summary><div class="toolsPopover" id="notificationsList"></div></details>
     </div>
     <div id="me" class="me"></div>
   </header>
@@ -67,15 +80,16 @@
         </section>
         <nav class="sideNav" aria-label="Workspaces">
           <button data-view="board" class="navButton active" type="button">Board</button>
+          <button data-view="backlog" class="navButton" type="button">Backlog</button>
+          <details class="planningNav"><summary>Planning</summary>
           <button data-view="overview" class="navButton" type="button">Overview</button>
           <button data-view="timeline" class="navButton" type="button">Timeline</button>
-          <button data-view="backlog" class="navButton" type="button">Backlog</button>
+          </details>
         </nav>
         <section class="sideSection sideSectionBottom">
           <div id="accessSectionLabel" class="sideLabel">Access</div>
           <nav class="sideNav compact" aria-label="Administration">
             <button data-view="admin" class="navButton" type="button">Admin</button>
-            <button data-view="config" class="navButton" type="button">Configuration</button>
           </nav>
         </section>
       </aside>
@@ -89,6 +103,8 @@
         </section>
         <section class="composer">
           <input id="newTitle" placeholder="New ticket">
+          <button id="addBtn" type="button">Create task</button>
+          <details class="composerMore"><summary>More details</summary><div class="composerExtraFields">
           <select id="newType"><option>task</option><option>bug</option><option>story</option><option>epic</option></select>
           <select id="newParent" aria-label="Parent work item"><option value="0">No parent</option></select>
           <input id="newDuration" type="number" min="0" max="365" placeholder="Days">
@@ -100,7 +116,7 @@
               <div id="newDependencyOptions" class="dependencyOptions"></div>
             </div>
           </div>
-          <button id="addBtn">Create</button>
+          </div></details>
           <p id="formError" class="formError" role="alert"></p>
         </section>
         <section id="board" class="board"></section>
@@ -109,13 +125,15 @@
         <section id="timeline" class="timeline hidden"></section>
         <section id="admin" class="admin hidden"></section>
         <section id="config" class="config hidden"></section>
+        <section id="stash" class="list hidden"></section>
       </section>
     </section>
   </main>
 
   <aside id="drawer" class="drawer hidden"></aside>
-  <script src="/static/dino-avatar.js"></script>
+  <script src="/static/dino-creator.js?v=avatars-auto-20261005"></script>
   <script src="/static/route.js?v=sprint-focus-pan-20260913"></script>
-  <script src="/static/app.js?v=sprint-focus-pan-20260913"></script>
+  <script src="/static/task-tools.js?v=20261005-fixes"></script>
+  <script src="/static/app.js?v=avatars-auto-20261005"></script>
 </body>
 </html>

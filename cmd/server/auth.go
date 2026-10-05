@@ -5,15 +5,22 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 var errInvalidAccount = errors.New("username and password required")
+var errSessionPersistence = errors.New("could not open session")
+var errUsernameTaken = errors.New("username is already taken")
 
 // withUser authenticates requests and passes the current user to API handlers.
 func (s *server) withUser(next func(http.ResponseWriter, *http.Request, user)) http.HandlerFunc {
@@ -61,12 +68,36 @@ func (s *server) currentUser(r *http.Request) (user, error) {
 	return u, err
 }
 
-// setSession creates and stores a long-lived login cookie for a user.
-func (s *server) setSession(w http.ResponseWriter, uid int64) {
-	t := token(32)
+// insertSession persists a session within the caller's account/credential transaction.
+func (s *server) insertSession(tx *sql.Tx, uid int64) (*http.Cookie, error) {
+	var random [32]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return nil, err
+	}
+	t := base64.RawURLEncoding.EncodeToString(random[:])
 	exp := time.Now().Add(30 * 24 * time.Hour).UTC()
-	_, _ = s.db.Exec("insert into sessions(token_hash,user_id,expires_at) values(?,?,?)", tokenHash(t, s.secret), uid, exp.Format(time.RFC3339))
-	http.SetCookie(w, &http.Cookie{Name: "kanbanodon_session", Value: t, Path: "/", Expires: exp, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	if _, err := tx.Exec("insert into sessions(token_hash,user_id,expires_at) values(?,?,?)", tokenHash(t, s.secret), uid, exp.Format(time.RFC3339)); err != nil {
+		return nil, err
+	}
+	return &http.Cookie{Name: "kanbanodon_session", Value: t, Path: "/", Expires: exp, HttpOnly: true, SameSite: http.SameSiteLaxMode}, nil
+}
+
+// setSession publishes the cookie only after successful session persistence.
+func (s *server) setSession(w http.ResponseWriter, uid int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	cookie, err := s.insertSession(tx, uid)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	http.SetCookie(w, cookie)
+	return nil
 }
 
 // login validates username or legacy email credentials and opens a session.
@@ -85,11 +116,32 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var id int64
 	var h string
-	if s.db.QueryRow("select id,password_hash from users where lower(username)=? or lower(email)=?", login, login).Scan(&id, &h) != nil || !checkPassword(h, in.Password) {
+	// Keep credential validation and session insertion together: a password reset
+	// cannot revoke existing sessions and then have an old login insert a new one.
+	tx, err := s.db.Begin()
+	if err != nil {
+		http.Error(w, "could not open session", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+	err = tx.QueryRow("select id,password_hash from users where lower(username)=? or lower(email)=?", login, login).Scan(&id, &h)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "could not open session", http.StatusInternalServerError)
+		return
+	}
+	if err != nil || !checkPassword(h, in.Password) {
 		http.Error(w, "invalid login", 401)
 		return
 	}
-	s.setSession(w, id)
+	cookie, err := s.insertSession(tx, id)
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		http.Error(w, "could not open session", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, cookie)
 	jsonOut(w, map[string]any{"ok": true})
 }
 
@@ -107,28 +159,51 @@ func (s *server) signup(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	created, err := s.createUserAccount(in, false, false)
+	_, cookie, err := s.createAccount(in, false, false, true)
 	if err != nil {
-		if errors.Is(err, errInvalidAccount) {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		http.Error(w, err.Error(), 400)
+		accountCreationError(w, err)
 		return
 	}
-	s.setSession(w, created.ID)
+	http.SetCookie(w, cookie)
 	jsonOut(w, map[string]any{"ok": true})
+}
+
+// Account forms receive useful validation feedback, never database diagnostics.
+func accountCreationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errInvalidAccount):
+		http.Error(w, "Enter a username and password.", http.StatusBadRequest)
+	case errors.Is(err, errInvalidAvatar):
+		http.Error(w, "Avatar is not valid.", http.StatusBadRequest)
+	case errors.Is(err, errUsernameTaken):
+		log.Printf("Kanbanodon account creation rejected: %v", err)
+		http.Error(w, "Username is already taken.", http.StatusBadRequest)
+	default:
+		log.Printf("Kanbanodon account creation failed: %v", err)
+		http.Error(w, "Account could not be created. Please try again.", http.StatusInternalServerError)
+	}
 }
 
 // createUserAccount normalizes input, hashes the password, and inserts a user.
 func (s *server) createUserAccount(in accountInput, isAdmin, mustChangePassword bool) (user, error) {
+	created, _, err := s.createAccount(in, isAdmin, mustChangePassword, false)
+	return created, err
+}
+
+// createAccount optionally commits the signup session with the account itself.
+// No cookie is published until both writes have committed successfully.
+func (s *server) createAccount(in accountInput, isAdmin, mustChangePassword, withSession bool) (user, *http.Cookie, error) {
 	username, name, email := normalizeAccount(in)
 	if strings.TrimSpace(in.Password) == "" || username == "" || username == defaultAdminUsername {
-		return user{}, errInvalidAccount
+		return user{}, nil, errInvalidAccount
+	}
+	selectedAvatar, err := accountAvatar(in.Avatar)
+	if err != nil {
+		return user{}, nil, err
 	}
 	h, err := hashPassword(in.Password)
 	if err != nil {
-		return user{}, err
+		return user{}, nil, err
 	}
 	admin := 0
 	if isAdmin {
@@ -138,12 +213,69 @@ func (s *server) createUserAccount(in accountInput, isAdmin, mustChangePassword 
 	if mustChangePassword {
 		must = 1
 	}
-	res, err := s.db.Exec("insert into users(username,name,email,password_hash,avatar,is_admin,must_change_password,created_at) values(?,?,?,?,?,?,?,?)", username, name, email, h, avatar(username), admin, must, now())
+	tx, err := s.db.Begin()
 	if err != nil {
-		return user{}, err
+		return user{}, nil, err
+	}
+	defer tx.Rollback()
+	selectedAvatar, err = availableAccountAvatar(tx, selectedAvatar)
+	if err != nil {
+		return user{}, nil, err
+	}
+	res, err := tx.Exec("insert into users(username,name,email,password_hash,avatar,is_admin,must_change_password,created_at) values(?,?,?,?,?,?,?,?)", username, name, email, h, selectedAvatar, admin, must, now())
+	if err != nil {
+		var sqliteErr *sqlite.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+			// Both username and internal email are unique. Identify the actual
+			// username collision from stored data rather than parsing SQL text.
+			var count int
+			if lookupErr := tx.QueryRow("select count(*) from users where username=?", username).Scan(&count); lookupErr != nil {
+				return user{}, nil, errors.Join(err, lookupErr)
+			}
+			if count > 0 {
+				return user{}, nil, errors.Join(errUsernameTaken, err)
+			}
+		}
+		return user{}, nil, err
 	}
 	id, _ := res.LastInsertId()
-	return user{ID: id, Username: username, Name: name, Email: email, Avatar: avatar(username), IsAdmin: isAdmin, MustChangePassword: mustChangePassword}, nil
+	var cookie *http.Cookie
+	if withSession {
+		cookie, err = s.insertSession(tx, id)
+		if err != nil {
+			return user{}, nil, errors.Join(errSessionPersistence, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		if withSession {
+			return user{}, nil, errors.Join(errSessionPersistence, err)
+		}
+		return user{}, nil, err
+	}
+	return user{ID: id, Username: username, Name: name, Email: email, Avatar: selectedAvatar, IsAdmin: isAdmin, MustChangePassword: mustChangePassword}, cookie, nil
+}
+
+// passwordSession checks the session again within a password writer transaction.
+// Middleware authentication alone can be stale after a concurrent reset.
+func (s *server) passwordSession(tx *sql.Tx, r *http.Request, uid int64) (string, error) {
+	if s.authMode == "test" {
+		return "", nil
+	}
+	cookie, err := r.Cookie("kanbanodon_session")
+	if err != nil {
+		return "", err
+	}
+	hash := tokenHash(cookie.Value, s.secret)
+	var storedID int64
+	var expires string
+	if err := tx.QueryRow("select user_id,expires_at from sessions where token_hash=?", hash).Scan(&storedID, &expires); err != nil {
+		return "", err
+	}
+	expiresAt, err := time.Parse(time.RFC3339, expires)
+	if err != nil || storedID != uid || !expiresAt.After(time.Now().UTC()) {
+		return "", errors.New("invalid session")
+	}
+	return hash, nil
 }
 
 // normalizeAccount derives the stored username, display name, and internal email.
@@ -188,18 +320,6 @@ func tokenHash(t string, sec []byte) string {
 	mac := hmac.New(sha256.New, sec)
 	mac.Write([]byte(t))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// avatar deterministically assigns one dinosaur avatar template to a seed.
-func avatar(seed string) string {
-	templates := []string{
-		"trex-stride", "trex-roar", "raptor", "allosaurus", "triceratops",
-		"triceratops-heavy", "styracosaurus", "stegosaurus", "kentrosaurus", "ankylosaurus",
-		"brontosaurus", "brachiosaurus", "spinosaurus", "parasaurolophus", "iguanodon",
-		"pachycephalosaurus", "gallimimus", "pterosaur-wide", "pterosaur-dive", "dimetrodon",
-	}
-	sum := sha256.Sum256([]byte(strings.ToLower(seed)))
-	return templates[int(sum[0])%len(templates)]
 }
 
 // hashPassword stores passwords as salted, versioned hashes.

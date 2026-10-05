@@ -1,0 +1,4 @@
+.dinoAvatar .generated-dino-avatar{display:block;width:100%;height:100%;border-radius:50%}
+.authShell{align-items:start}
+.authCard{align-content:start}
+@media(max-width:520px){.authShell{max-height:calc(100dvh - 100px);overflow-y:auto}}

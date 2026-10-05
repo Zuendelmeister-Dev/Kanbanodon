@@ -37,6 +37,8 @@ func newHandler(s *server) http.Handler {
 	mux.HandleFunc("/api/users/admin", s.withUser(s.userAdmin))
 	mux.HandleFunc("/api/users/password", s.withUser(s.userPassword))
 	mux.HandleFunc("/api/password", s.withUser(s.password))
+	mux.HandleFunc("/api/notifications/read", s.withUser(s.readNotifications))
+	mux.HandleFunc("/api/notifications", s.withUser(s.notifications))
 	mux.HandleFunc("/api/login", s.login)
 	mux.HandleFunc("/api/signup", s.signup)
 	mux.HandleFunc("/api/logout", s.logout)

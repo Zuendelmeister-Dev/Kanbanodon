@@ -32,6 +32,18 @@ type ticket struct {
 	Labels                                                                        []string
 	Links                                                                         []int64
 	IsBacklog                                                                     bool
+	Extras                                                                        *ticketExtras
+	ArchivedAt, DeletedAt                                                         string
+}
+
+type checklistItem struct {
+	Text string
+	Done bool
+}
+
+type ticketExtras struct {
+	Checklist  []checklistItem
+	RepeatDays int
 }
 
 type accountInput struct {
@@ -39,4 +51,5 @@ type accountInput struct {
 	Name     string
 	Email    string
 	Password string
+	Avatar   string
 }

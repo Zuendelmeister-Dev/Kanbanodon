@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,7 +77,7 @@ func (s *server) setBoardAccess(boardID, userID int64, fullAccess bool) error {
 }
 
 // accessibleBoards returns the boards visible to a user.
-func (s *server) accessibleBoards(u user) []map[string]any {
+func (s *server) accessibleBoards(u user) ([]map[string]any, error) {
 	if u.IsAdmin {
 		return rows(s.db, "select id,name,owner_id,sprint_start_date,sprint_weeks,created_at from boards order by id")
 	}
@@ -148,7 +149,12 @@ func (s *server) dataBoardID(r *http.Request, u user) int64 {
 // boards serves board listing and board creation requests.
 func (s *server) boards(w http.ResponseWriter, r *http.Request, u user) {
 	if r.Method == http.MethodGet {
-		jsonOut(w, map[string]any{"boards": s.accessibleBoards(u)})
+		items, err := s.accessibleBoards(u)
+		if err != nil {
+			stateReadError(w, err)
+			return
+		}
+		jsonOut(w, map[string]any{"boards": items})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -174,7 +180,26 @@ func (s *server) state(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	bid := s.boardID(r, u)
-	boards := s.accessibleBoards(u)
+	boards, err := s.accessibleBoards(u)
+	if err != nil {
+		stateReadError(w, err)
+		return
+	}
+	access, err := s.allBoardAccess(u)
+	if err != nil {
+		stateReadError(w, err)
+		return
+	}
+	notifications, err := s.notificationRows(u)
+	if err != nil {
+		stateReadError(w, err)
+		return
+	}
+	users, err := rows(s.db, "select id,username,name,avatar,is_admin,must_change_password from users order by name")
+	if err != nil {
+		stateReadError(w, err)
+		return
+	}
 	payload := map[string]any{
 		"me":             u,
 		"authMode":       s.authMode,
@@ -185,25 +210,54 @@ func (s *server) state(w http.ResponseWriter, r *http.Request, u user) {
 		"tickets":        []ticket{},
 		"labels":         []map[string]any{},
 		"milestones":     []map[string]any{},
-		"users":          rows(s.db, "select id,username,name,avatar,is_admin,must_change_password from users order by name"),
+		"users":          users,
 		"boardAccess":    []map[string]any{},
-		"allBoardAccess": s.allBoardAccess(u),
+		"allBoardAccess": access,
 		"comments":       []map[string]any{},
+		"activity":       []map[string]any{},
+		"notifications":  notifications,
 	}
 	if bid > 0 {
-		payload["board"] = one(s.db, "select id,name,owner_id,sprint_start_date,sprint_weeks from boards where id=?", bid)
-		payload["sprintNames"] = rows(s.db, "select sprint_number,name from sprint_names where board_id=? order by sprint_number", bid)
-		payload["columns"] = rows(s.db, "select id,name,position from columns where board_id=? order by position", bid)
-		payload["tickets"] = s.loadTickets(bid)
-		payload["labels"] = rows(s.db, "select id,name,color from labels where board_id=? order by name", bid)
-		payload["milestones"] = rows(s.db, "select id,name,due_date from milestones where board_id=? order by due_date", bid)
-		payload["boardAccess"] = rows(s.db, `select u.id user_id,coalesce(bu.full_access,0) full_access
+		board, err := one(s.db, "select id,name,owner_id,sprint_start_date,sprint_weeks from boards where id=?", bid)
+		if err != nil {
+			stateReadError(w, err)
+			return
+		}
+		payload["board"] = board
+		tickets, err := s.loadTickets(bid)
+		if err != nil {
+			stateReadError(w, err)
+			return
+		}
+		payload["tickets"] = tickets
+		queries := []struct{ key, query string }{
+			{"sprintNames", "select sprint_number,name from sprint_names where board_id=? order by sprint_number"},
+			{"columns", "select id,name,position from columns where board_id=? order by position"},
+			{"labels", "select id,name,color from labels where board_id=? order by name"},
+			{"milestones", "select id,name,due_date from milestones where board_id=? order by due_date"},
+			{"boardAccess", `select u.id user_id,coalesce(bu.full_access,0) full_access
 			from users u
 			left join board_users bu on bu.user_id=u.id and bu.board_id=?
-			order by u.name`, bid)
-		payload["comments"] = rows(s.db, "select c.id,c.ticket_id,c.user_id,c.body,c.created_at from comments c join tickets t on t.id=c.ticket_id where t.board_id=? order by c.created_at", bid)
+			order by u.name`},
+			{"comments", boardCommentsQuery},
+			{"activity", "select a.id,a.ticket_id,a.user_id,a.body,a.created_at from ticket_activity a join tickets t on t.id=a.ticket_id where t.board_id=? order by a.id desc limit 500"},
+		}
+		for _, query := range queries {
+			items, err := rows(s.db, query.query, bid)
+			if err != nil {
+				stateReadError(w, err)
+				return
+			}
+			payload[query.key] = items
+		}
 	}
 	jsonOut(w, payload)
+}
+
+// Reject partial snapshots while retaining the diagnostic detail in server logs.
+func stateReadError(w http.ResponseWriter, err error) {
+	log.Printf("Kanbanodon database read failed: %v", err)
+	http.Error(w, "Data could not be loaded. Please try again.", http.StatusInternalServerError)
 }
 
 // boardSettings updates the board-level sprint cadence used by every planning view.
@@ -292,7 +346,7 @@ func (s *server) sprintNames(w http.ResponseWriter, r *http.Request, u user) {
 }
 
 // allBoardAccess returns board-sharing rows for every board the user can manage.
-func (s *server) allBoardAccess(u user) []map[string]any {
+func (s *server) allBoardAccess(u user) ([]map[string]any, error) {
 	if u.IsAdmin {
 		return rows(s.db, `select b.id board_id,b.name board_name,b.owner_id,u.id user_id,coalesce(bu.full_access,0) full_access
 			from boards b

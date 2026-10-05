@@ -20,24 +20,44 @@ let timelineEpicFilter = 'all';
 let timelineHighlightId = 0;
 let timelineFocusSprint = initialRoute.sprintNumber || 0;
 let timelineCenterDate = null;
+let loadGeneration = 0;
+let sessionGeneration = 0;
+let editorGeneration = 0;
+let drawerMutation = null;
+const pendingTicketMutations = new Map();
+let drawerSnapshot = '';
+let drawerDraftId = 0;
 
 // Finds the first DOM element matching a CSS selector.
 const $ = s => document.querySelector(s);
 // Finds all DOM elements matching a CSS selector as a real array.
 const $$ = s => [...document.querySelectorAll(s)];
 // Calls the JSON API and turns non-2xx responses into thrown errors.
-const api = (url, opts = {}) => fetch(url, { headers: { 'content-type': 'application/json' }, ...opts }).then(async r => {
-  const text = await r.text();
-  if (!r.ok) {
-    const err = new Error((text || r.statusText || 'Request failed').trim());
-    err.status = r.status;
-    err.url = url;
-    if (isLoginRequired(err)) showLoginRequired();
-    throw err;
-  }
-  const body = text.trim();
-  return body ? JSON.parse(body) : {};
-});
+const api = (url, opts = {}, isCurrent = () => true) => {
+  const session = sessionGeneration;
+  return fetch(url, { headers: { 'content-type': 'application/json' }, ...opts }).then(async r => {
+    const text = await r.text();
+    if (!r.ok) {
+      const err = new Error(r.status >= 500 ? 'Something went wrong. Please try again.' : (text || r.statusText || 'Request failed').trim());
+      err.status = r.status;
+      err.url = url;
+      if (isLoginRequired(err) && session === sessionGeneration && isCurrent()) showLoginRequired();
+      throw err;
+    }
+    const body = text.trim();
+    return body ? JSON.parse(body) : {};
+  });
+};
+
+function currentSessionGuard() {
+  const session = sessionGeneration;
+  return () => session === sessionGeneration;
+}
+
+function invalidateSessionRequests() {
+  sessionGeneration++;
+  loadGeneration++;
+}
 
 // Returns the currently selected board id, falling back to the first accessible board.
 function currentBoardId() {
@@ -83,6 +103,9 @@ function normTicket(t) {
     isBacklog: !!(t.IsBacklog ?? t.isBacklog ?? t.is_backlog ?? false),
     createdAt: t.CreatedAt ?? t.createdAt,
     updatedAt: t.UpdatedAt ?? t.updatedAt,
+    extras: t.Extras ?? t.extras ?? { Checklist: [], RepeatDays: 0 },
+    archivedAt: t.ArchivedAt ?? t.archivedAt ?? '',
+    deletedAt: t.DeletedAt ?? t.deletedAt ?? '',
   };
 }
 
@@ -96,9 +119,14 @@ function normSprintName(item) {
 
 // Loads application state from the server and refreshes the visible UI.
 async function load() {
+  const generation = ++loadGeneration;
+  const sessionCurrent = currentSessionGuard();
+  const isCurrent = () => generation === loadGeneration && sessionCurrent();
+  if (selectedBoardId && currentBoardId() && selectedBoardId !== currentBoardId()) renderView();
   try {
     const url = '/api/state' + (selectedBoardId ? ('?boardId=' + encodeURIComponent(selectedBoardId)) : '');
-    const s = await api(url);
+    const s = await api(url, {}, isCurrent);
+    if (!isCurrent()) return;
     state = { ...s, tickets: (s.tickets || []).map(normTicket), sprintNames: (s.sprintNames || s.sprint_names || []).map(normSprintName).filter(item => item.sprintNumber > 0 && item.name), boards: s.boards || [], boardAccess: s.boardAccess || [], allBoardAccess: s.allBoardAccess || [] };
     selectedBoardId = currentBoardId();
     if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
@@ -109,9 +137,16 @@ async function load() {
     if (currentUserMustChangePassword()) showPasswordChange(true);
     else hidePasswordChange();
   } catch (e) {
+    if (!isCurrent()) return;
     if (isLoginRequired(e)) {
       showLoginRequired();
       return;
+    }
+    if (state.me && selectedBoardId !== currentBoardId()) {
+      selectedBoardId = currentBoardId();
+      pendingTicketId = 0;
+      if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
+      render();
     }
     showLoadError(e);
   }
@@ -136,7 +171,6 @@ function showLoadError(err) {
 
 // Renders global chrome, filters, navigation, and the active view.
 function render() {
-  $('#mode').textContent = state.authMode;
   renderAccount();
   renderBoardSelect();
   renderFilters();
@@ -144,34 +178,35 @@ function render() {
   renderNav();
   setupNewDependencyPicker();
   renderView();
-  syncRoute('replace', pendingTicketId || editing?.id || 0);
   if (pendingTicketId) {
     const id = pendingTicketId;
     pendingTicketId = 0;
     openTicket(id, false);
   }
+  syncRoute('replace');
 }
 
 // The visible route mirrors the current view, selected board, and optional open drawer.
 function syncRoute(mode = 'push', ticketId = editing?.id || 0) {
   if (!router || !state.me) return;
-  router.writeRoute(mode, view, currentBoardId(), ticketId, view === 'timeline' ? timelineFocusSprint : 0);
+  router.writeRoute(mode, view, selectedBoardId || currentBoardId(), ticketId, view === 'timeline' ? timelineFocusSprint : 0);
 }
 
 // Applies a parsed URL hash route to the in-memory UI state.
 function applyRoute(route) {
+  if (!canLeaveDrawer()) { syncRoute('replace'); return; }
+  closeDrawer(false);
+  const requestedBoardId = route.boardId || currentBoardId() || selectedBoardId;
+  if (requestedBoardId !== selectedBoardId) loadGeneration++;
+  selectedBoardId = requestedBoardId;
+  if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
   view = route.view || 'board';
   pendingTicketId = route.ticketId || 0;
   timelineFocusSprint = view === 'timeline' ? +(route.sprintNumber || 0) : 0;
   timelineCenterDate = null;
   if (route.boardId && route.boardId !== currentBoardId()) {
-    selectedBoardId = route.boardId;
-    localStorage.setItem('kanbanodon.boardId', selectedBoardId);
-    closeDrawer(false);
-    load();
-    return;
+    return load();
   }
-  closeDrawer(false);
   render();
 }
 
@@ -250,12 +285,12 @@ function isBacklogTicket(t) {
 
 // Delivery views contain only tickets that have been promoted onto the board.
 function workTickets() {
-  return state.tickets.filter(t => !isBacklogTicket(t));
+  return state.tickets.filter(t => !t.archivedAt && !t.deletedAt && !isBacklogTicket(t));
 }
 
 // Lists all tickets waiting in the product backlog.
 function backlogTickets() {
-  return state.tickets.filter(isBacklogTicket);
+  return state.tickets.filter(t => !t.archivedAt && !t.deletedAt && isBacklogTicket(t));
 }
 
 // Keeps the legacy helper available for old exports and focused unit tests.
@@ -337,6 +372,8 @@ function hasLoadedState() {
 
 // Resets in-memory data and optionally forgets the selected board.
 function resetClientState(clearBoardSelection) {
+  invalidateSessionRequests();
+  resetDrawer();
   state = emptyState();
   if (!clearBoardSelection) return;
   selectedBoardId = 0;
@@ -346,8 +383,9 @@ function resetClientState(clearBoardSelection) {
 // Shows the login panel after the server reports an expired or missing session.
 function showLoginRequired() {
   const hadState = hasLoadedState();
+  invalidateSessionRequests();
+  resetDrawer();
   state = { ...state, me: null };
-  $('#mode').textContent = 'login';
   $('#me').innerHTML = '';
   $('.tools').classList.add('hidden');
   $('#login').classList.remove('hidden');
@@ -355,13 +393,14 @@ function showLoginRequired() {
   $('#app').classList.add('hidden');
   $('#loginError').textContent = hadState ? 'Session expired. Please log in again.' : '';
   $('#signupError').textContent = '';
+  $('#loginBtn').disabled = false;
+  $('#signupBtn').disabled = false;
   $('#loginUsername').focus();
 }
 
 // Switches the UI into explicit logged-out mode.
 function showLoggedOut() {
   resetClientState(true);
-  $('#mode').textContent = 'login';
   $('#me').innerHTML = '';
   $('.tools').classList.add('hidden');
   $('#login').classList.remove('hidden');
@@ -369,6 +408,8 @@ function showLoggedOut() {
   $('#app').classList.add('hidden');
   $('#loginError').textContent = '';
   $('#signupError').textContent = '';
+  $('#loginBtn').disabled = false;
+  $('#signupBtn').disabled = false;
   $('#loginUsername').focus();
 }
 
@@ -381,10 +422,20 @@ function hideLogin() {
 
 // Logs out through the API and resets local UI state.
 async function logout() {
+  if (!canLeaveDrawer()) return;
+  showLoggedOut();
+  const isCurrent = currentSessionGuard();
+  $('#loginBtn').disabled = true;
+  $('#signupBtn').disabled = true;
   try {
-    await api('/api/logout', { method: 'POST', body: '{}' });
+    await api('/api/logout', { method: 'POST', body: '{}' }, isCurrent);
+  } catch (err) {
+    if (isCurrent()) $('#loginError').textContent = (err.message || 'Logout failed.').trim();
   } finally {
-    showLoggedOut();
+    if (isCurrent()) {
+      $('#loginBtn').disabled = false;
+      $('#signupBtn').disabled = false;
+    }
   }
 }
 
@@ -485,11 +536,11 @@ function clearPasswordInputs(...selectors) {
 
 // Builds the avatar markup for a user or generated dinosaur avatar.
 function avatar(name, title = '') {
+  if (window.KanbanodonDinoCreator?.parse(name)) {
+    return '<span class="avatar dinoAvatar" title="' + escAttr(title) + '">' + window.KanbanodonDinoCreator.createSVG(name, { size: 48 }) + '</span>';
+  }
   const seed = name || 'dino';
   const tooltip = title || seed;
-  if (window.KanbanodonDinoAvatars) {
-    return '<span class="avatar dinoAvatar" title="' + escAttr(tooltip) + '">' + window.KanbanodonDinoAvatars.createDinoAvatar(seed, { template: seed, size: 48, palette: 'Original' }) + '</span>';
-  }
   return '<span class="avatar" title="' + escAttr(tooltip) + '">' + esc(seed.slice(0, 2).toUpperCase()) + '</span>';
 }
 
@@ -502,12 +553,13 @@ function renderBoardSelect() {
   select.disabled = boards.length === 0;
   select.value = String(currentBoardId());
   select.onchange = () => {
+    if (!canLeaveDrawer()) { select.value = String(currentBoardId()); return; }
     selectedBoardId = +select.value;
     sprintSettingsStatus = '';
     timelineFocusSprint = 0;
     timelineCenterDate = null;
     localStorage.setItem('kanbanodon.boardId', selectedBoardId);
-    closeDrawer();
+    closeDrawer(false);
     if (router) router.writeRoute('push', view, selectedBoardId, 0);
     load();
   };
@@ -536,17 +588,22 @@ function hideNewBoardForm() {
 
 // Creates a board through the API and selects it.
 async function createBoard() {
+  if (!canLeaveDrawer()) return;
   const input = $('#newBoardName');
   const payload = { Name: (input.value || '').trim() || 'New Board' };
+  closeDrawer(false);
+  const generation = editorGeneration;
+  const isCurrent = currentSessionGuard();
   const res = await api('/api/boards', { method: 'POST', body: JSON.stringify(payload) });
+  if (!isCurrent()) return;
+  if (generation !== editorGeneration) { await load(); return; }
   selectedBoardId = +(res.id || res.ID);
   localStorage.setItem('kanbanodon.boardId', selectedBoardId);
   hideNewBoardForm();
-  closeDrawer();
   view = 'board';
   timelineFocusSprint = 0;
   timelineCenterDate = null;
-  syncRoute('push', 0);
+  if (router) router.writeRoute('push', view, selectedBoardId, 0);
   await load();
 }
 
@@ -622,6 +679,7 @@ function filtered() {
   const dep = $('#dependencyFilter')?.value || '';
   const blockers = dep === 'blocking' ? blockingTicketIds() : null;
   return state.tickets.filter(t =>
+    !t.archivedAt && !t.deletedAt &&
     (!q || (t.title + t.body).toLowerCase().includes(q)) &&
     (!typ || t.type === typ) &&
     (!lab || t.labels.includes(lab)) &&
@@ -660,15 +718,23 @@ function setHeader(title, subtitle) {
 
 // Shows and renders the currently active workspace view.
 function renderView() {
-  $$('#board,#overview,#list,#timeline,#admin,#config').forEach(x => x.classList.add('hidden'));
+  $$('#board,#overview,#list,#timeline,#admin,#config,#stash').forEach(x => x.classList.add('hidden'));
   $('.composer').classList.toggle('hidden', view !== 'board');
   renderNav();
+  if (selectedBoardId && currentBoardId() && selectedBoardId !== currentBoardId()) {
+    $('.composer').classList.add('hidden');
+    setHeader('Loading board', 'Please wait while the selected board loads.');
+    if (typeof renderTaskTools === 'function') renderTaskTools();
+    return;
+  }
   if (view === 'board') renderBoard();
   if (view === 'overview') renderOverview();
   if (view === 'backlog') renderBacklog();
   if (view === 'timeline') renderTimeline();
   if (view === 'admin') renderAdmin();
   if (view === 'config') renderConfig();
+  if (view === 'archive' || view === 'trash') renderStash();
+  if (typeof renderTaskTools === 'function') renderTaskTools();
 }
 
 // Renders the kanban board with Epic swimlanes.
@@ -677,11 +743,12 @@ function renderBoard() {
   const root = $('#board');
   root.classList.remove('hidden');
   if (!currentBoardId()) {
-    root.innerHTML = '<section class="panel emptyBoard"><h2>No board access yet</h2><p class="muted">Ask someone with full access to assign a board, or create a new board from the sidebar.</p></section>';
+    root.innerHTML = '<section class="panel emptyBoard"><h2>Welcome to Kanbanodon</h2><p class="muted">Create your first board to start organizing tasks, or ask a colleague to share theirs.</p><button type="button" id="firstBoardBtn">Create first board</button></section>';
+    $('#firstBoardBtn').onclick = () => $('#newBoardBtn').click();
     return;
   }
   const tickets = filteredWork();
-  root.innerHTML = sprintPlannerHtml(workTickets()) + boardBacklogPickerHtml() + boardSwimlanes(tickets);
+  root.innerHTML = '<details class="optionalPlanning"><summary>Sprint planning</summary>' + sprintPlannerHtml(workTickets()) + '</details>' + (backlogTickets().length ? boardBacklogPickerHtml() : '') + boardSwimlanes(tickets);
   wireSprintPlanner();
   wireBoardBacklogPicker();
   wireDnD();
@@ -726,15 +793,17 @@ function sprintPreviewCardHtml(sprint) {
 // Builds a compact board control for promoting work from Backlog into an Epic lane.
 function boardBacklogPickerHtml() {
   const backlog = backlogTickets().sort(ticketOrder);
-  if (!backlog.length) return '<section class="panel boardBacklogPicker empty"><div><h2>Backlog</h2><p>Everything is already on the board.</p></div><button type="button" onclick="openBacklogView()">Open Backlog</button></section>';
+  if (!backlog.length) return '<section class="panel boardBacklogPicker empty"><div><h2>Backlog</h2><p>Everything is already on the board.</p></div><button type="button" id="boardBacklogOpen">Open Backlog</button></section>';
   const ticketOptions = backlog.map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + normalizePromotionType(t) + ' · ' + ticketLabel(t)) + '</option>').join('');
   const epicOptions = state.tickets.filter(t => normalizeTicketType(t.type) === 'epic').sort(ticketOrder).map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + ticketLabel(t)) + (isBacklogTicket(t) ? ' (Backlog)' : '') + '</option>').join('');
-  return '<section class="panel boardBacklogPicker"><div><h2>Add from Backlog</h2><p>Select work and place it in an Epic lane.</p></div><select id="boardBacklogTicket" aria-label="Backlog ticket">' + ticketOptions + '</select><select id="boardBacklogEpic" aria-label="Target Epic"><option value="0">No Epic</option>' + epicOptions + '</select><button id="boardBacklogAdd" type="button">Add to board</button><button class="ghost" type="button" onclick="openBacklogView()">Open Backlog</button><p id="boardBacklogError" class="formError" role="alert"></p></section>';
+  return '<section class="panel boardBacklogPicker"><div><h2>Add from Backlog</h2><p>Select work and place it in an Epic lane.</p></div><select id="boardBacklogTicket" aria-label="Backlog ticket">' + ticketOptions + '</select><select id="boardBacklogEpic" aria-label="Target Epic"><option value="0">No Epic</option>' + epicOptions + '</select><button id="boardBacklogAdd" type="button">Add to board</button><button class="ghost" type="button" id="boardBacklogOpen">Open Backlog</button><p id="boardBacklogError" class="formError" role="alert"></p></section>';
 }
 
 // Opens the Backlog workspace from a compact board action.
 function openBacklogView() {
+  if (!canLeaveDrawer()) return;
   view = 'backlog';
+  closeDrawer(false);
   renderView();
   syncRoute('push', 0);
 }
@@ -842,17 +911,20 @@ async function saveSprintName(input) {
 function jumpToSprint(number) {
   const range = sprintByNumber(number);
   if (!range) return;
+  if (!canLeaveDrawer()) return;
   timelineFocusSprint = number;
   timelineCenterDate = addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2));
   timelineHighlightId = 0;
   view = 'timeline';
-  closeDrawer();
+  closeDrawer(false);
   renderView();
   syncRoute('push', 0);
 }
 
 // Keeps the target Epic selector useful for both Epic and regular backlog items.
 function wireBoardBacklogPicker() {
+  const openButton = $('#boardBacklogOpen');
+  if (openButton) openButton.onclick = openBacklogView;
   const ticketSelect = $('#boardBacklogTicket');
   const epicSelect = $('#boardBacklogEpic');
   const button = $('#boardBacklogAdd');
@@ -882,8 +954,8 @@ function wireBoardBacklogPicker() {
 // Builds the full swimlane board for the filtered tickets.
 function boardSwimlanes(tickets) {
   const lanes = boardSwimlaneData(tickets);
-  if (!lanes.length) return '<section class="panel emptyBoard"><h2>No matching tickets</h2><p class="muted">Try a different search, type, or label filter.</p></section>';
-  const colClass = 'cols' + Math.max(1, Math.min(8, state.columns.length || 1));
+  if (!lanes.length) return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + (workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.') + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section><section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
+  const colClass = 'cols' + Math.max(1, Math.min(8, state.columns.length || 1)) + (lanes.every(lane => !lane.epic) ? ' simpleBoard' : '');
   const counts = state.columns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
   return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + state.columns.map((c, index) => '<div class="boardLaneColumnHead">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(boardSwimlane).join('') + '</section>';
 }
@@ -952,7 +1024,7 @@ function doneColumn() {
 
 // Resolves dependency ids into ticket objects.
 function dependencyTickets(t) {
-  return (t.links || []).map(id => state.tickets.find(x => x.id == id)).filter(Boolean);
+  return (t.links || []).map(id => state.tickets.find(x => x.id == id)).filter(item => item && !item.deletedAt);
 }
 
 // Returns work items that directly depend on the given ticket.
@@ -987,7 +1059,7 @@ function card(t) {
   const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
   const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
   const sprint = ticketSprint(t);
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + '<span class="pill">' + durationLabel(t) + '</span>' + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + (ticketDuration(t) ? '<span class="pill">' + durationLabel(t) + '</span>' : '') + (checklistProgress(t) ? '<span class="pill checklistPill" title="Checklist progress">' + checklistProgress(t) + ' steps</span>' : '') + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
 }
 
 // Renders compact dependency direction hints on a board card.
@@ -1023,7 +1095,12 @@ function boardCardDepth(ticket) {
 
 // Attaches board card drag-and-drop and card click handlers.
 function wireDnD() {
+  const emptyAction = $('#boardEmptyAction');
+  if (emptyAction) emptyAction.onclick = () => { if (workTickets().length) resetTaskFilters(); else $('#newTitle').focus(); };
   $$('.card').forEach(c => {
+    c.tabIndex = 0;
+    c.setAttribute('role', 'button');
+    c.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTicket(+c.dataset.id); } };
     c.ondragstart = e => e.dataTransfer.setData('text/plain', c.dataset.id);
     c.onclick = () => openTicket(+c.dataset.id);
   });
@@ -1063,8 +1140,16 @@ function renderOverview() {
   const open = ts.length - done.length;
   const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
-  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-work-id="' + t.id + '"' + (t.type === 'epic' ? ' data-hover-scope="epic"' : '') + ' onclick="openTicket(' + t.id + ')"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
+  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-work-id="' + t.id + '"' + (t.type === 'epic' ? ' data-hover-scope="epic"' : '') + ' data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
   wireOverviewControls(ts);
+  if (root.querySelector('.ticketTable')) {
+    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'overviewColumnsToggle'; toggle.textContent = 'Show planning columns';
+    toggle.onclick = () => { const expanded = root.querySelector('.ticketTable').classList.toggle('showAllColumns'); toggle.textContent = expanded ? 'Show simple table' : 'Show planning columns'; };
+    root.querySelector('.tableScroll').before(toggle);
+  }
+  root.querySelectorAll('[data-open-ticket]').forEach(node => {
+    node.onclick = () => openTicket(+node.dataset.openTicket);
+  });
   wireWorkHover(root, ts);
 }
 
@@ -1139,7 +1224,7 @@ function overviewRow(row) {
   const parent = parentTicket(t.parentId);
   const sprint = ticketSprint(t);
   const depthClass = ' overviewDepth' + Math.max(0, Math.min(4, +(row.depth || 0)));
-  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" onclick="openTicket(' + t.id + ')"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" data-open-ticket="' + t.id + '"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
 }
 
 // Builds the compact Sprint label shown in Overview.
@@ -1159,7 +1244,7 @@ function sprintName(sprint) {
 // Builds the overview table group header for an Epic.
 function overviewEpicRow(epic, childCount) {
   const sprint = ticketSprint(epic);
-  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-hover-scope="epic" onclick="openTicket(' + epic.id + ')"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span></div></td></tr>';
+  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-hover-scope="epic" data-open-ticket="' + epic.id + '"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span></div></td></tr>';
 }
 
 // Builds searchable text for an overview row.
@@ -1455,9 +1540,9 @@ function renderBacklog() {
 
 // Builds the compact backlog composer with an optional Epic assignment.
 function backlogComposerHtml() {
-  const epics = state.tickets.filter(t => normalizeTicketType(t.type) === 'epic').sort(ticketOrder);
+  const epics = state.tickets.filter(t => !t.deletedAt && !t.archivedAt && normalizeTicketType(t.type) === 'epic').sort(ticketOrder);
   const epicOptions = epics.map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + ticketLabel(t)) + (isBacklogTicket(t) ? '' : ' (on board)') + '</option>').join('');
-  return '<section class="panel backlogComposer"><div class="backlogComposerHeader"><div><h2>Add backlog item</h2><p>Capture just enough detail to make the work actionable.</p></div><span>' + esc(state.board?.name || 'Board') + '</span></div><div class="backlogComposerGrid"><label>Type<select id="backlogType"><option value="task">Task</option><option value="story">Story</option><option value="bug">Bug</option><option value="epic">Epic</option></select></label><label class="backlogTitle">Title<input id="backlogTitle" placeholder="What should be done?"></label><label>Epic<select id="backlogParent"><option value="0">No Epic</option>' + epicOptions + '</select></label><label>Estimate<input id="backlogDuration" type="number" min="0" max="365" placeholder="Days"></label><label>Target date<input id="backlogDue" type="date"></label><label class="backlogNotes">Notes<textarea id="backlogBody" placeholder="Context or acceptance notes"></textarea></label><button id="backlogCreateBtn" type="button">Add to Backlog</button></div><p id="backlogError" class="formError" role="alert"></p></section>';
+  return '<section class="panel backlogComposer"><div class="backlogComposerHeader"><div><h2>Add backlog item</h2><p>Capture a task now; add details when you need them.</p></div><span>' + esc(state.board?.name || 'Board') + '</span></div><div class="backlogQuickAdd"><label>Title<input id="backlogTitle" placeholder="What should be done?"></label><button id="backlogCreateBtn" class="primaryAction" type="button">Add to Backlog</button></div><details class="editorMore"><summary>More details</summary><div class="backlogComposerGrid"><label>Type<select id="backlogType"><option value="task">Task</option><option value="story">Story</option><option value="bug">Bug</option><option value="epic">Epic</option></select></label><label>Epic<select id="backlogParent"><option value="0">No Epic</option>' + epicOptions + '</select></label><label>Duration (days)<input id="backlogDuration" type="number" min="0" max="365" placeholder="Days"></label><label>Due date<input id="backlogDue" type="date"></label><label class="backlogNotes">Notes<textarea id="backlogBody" placeholder="Context or acceptance notes"></textarea></label></div></details><p id="backlogError" class="formError" role="alert"></p></section>';
 }
 
 // Disables Epic assignment when the backlog item itself is an Epic.
@@ -1528,6 +1613,7 @@ function renderTimeline() {
   root.classList.remove('hidden');
   try {
     renderGantt(root);
+    root.insertAdjacentHTML('afterbegin', '<p class="timelineAssumptionHint">Missing start dates are calculated from a saved due date, or use the creation date (today if unknown). Missing duration defaults to three days, or one day for an Epic. Calculated dates are estimates, not saved deadlines.</p>');
   } catch (err) {
     root.innerHTML = '<div class="event muted">Timeline could not be calculated: ' + esc(err.message || err) + '</div>';
   }
@@ -2519,7 +2605,9 @@ function renderAdmin() {
   root.classList.remove('hidden');
   root.innerHTML = (isAdmin ? adminCreateSection() + userManagementSection() : '') + boardSharingSection(boards);
   enhancePasswordReveals(root);
-  if (isAdmin) $('#createUserBtn').onclick = createUser;
+  if (isAdmin) {
+    $('#createUserBtn').onclick = createUser;
+  }
   $$('.userAdminToggle').forEach(input => input.onchange = updateUserAdmin);
   $$('.resetPasswordBtn').forEach(button => button.onclick = resetUserPassword);
   $$('.deleteUserBtn').forEach(button => button.onclick = deleteUser);
@@ -2712,23 +2800,80 @@ async function deleteUser(e) {
 
 // Renders the current configuration summary.
 function renderConfig() {
-  setHeader('Configuration', 'Board and system options.');
+  setHeader('Board information', 'A summary of your current board.');
   const root = $('#config');
   root.classList.remove('hidden');
-  root.innerHTML = '<section class="panel"><h2>Current board</h2><div class="configGrid"><span>Name</span><strong>' + esc(state.board?.name || 'Board') + '</strong><span>Owner</span><strong>' + esc(assigneeName(currentBoardOwnerId())) + '</strong><span>Mode</span><strong>' + esc(state.authMode) + '</strong><span>Columns</span><strong>' + state.columns.length + '</strong><span>Labels</span><strong>' + state.labels.length + '</strong><span>Milestones</span><strong>' + state.milestones.length + '</strong><span>Tickets</span><strong>' + state.tickets.length + '</strong></div></section><section class="panel"><h2>Local data</h2><div class="configGrid"><span>Storage</span><strong>SQLite in the data volume</strong><span>Runtime network</span><strong>No outbound app calls</strong><span>Users</span><strong>' + state.users.length + '</strong><span>Export format</span><strong>Kanbanodon JSON</strong></div></section>';
+  root.innerHTML = '<section class="panel"><h2>Current board</h2><div class="configGrid"><span>Name</span><strong>' + esc(state.board?.name || 'Board') + '</strong><span>Owner</span><strong>' + esc(assigneeName(currentBoardOwnerId())) + '</strong><span>Columns</span><strong>' + state.columns.length + '</strong><span>Labels</span><strong>' + state.labels.length + '</strong><span>Milestones</span><strong>' + state.milestones.length + '</strong><span>Tickets</span><strong>' + state.tickets.length + '</strong><span>Users</span><strong>' + state.users.length + '</strong></div></section>';
+}
+
+// The editor owns its draft; dependency and checklist edits never mutate loaded tickets.
+function cloneTicketForEditing(ticket) {
+  const draft = JSON.parse(JSON.stringify(ticket));
+  draft.boardId = ticket.boardId || currentBoardId();
+  draft.labels = [...(draft.labels || [])];
+  draft.links = [...(draft.links || [])];
+  return draft;
+}
+
+function resetDrawer() {
+  editorGeneration++;
+  editing = null;
+  drawerMutation = null;
+  drawerSnapshot = '';
+  drawerDraftId = 0;
+  pendingTicketId = 0;
+  const drawer = $('#drawer');
+  drawer.classList.add('hidden');
+  drawer.innerHTML = '';
+}
+
+function isCurrentDrawer(binding) {
+  return binding && binding.session === sessionGeneration && binding.generation === editorGeneration && editing?.id === binding.id;
+}
+
+function beginDrawerMutation() {
+  if (!editing || drawerMutation || pendingTicketMutations.get(editing.id)?.session === sessionGeneration) return null;
+  const binding = { id: editing.id, session: sessionGeneration, generation: editorGeneration, snapshot: currentDrawerSnapshot(), controls: [] };
+  // Keep Close available, so users may navigate while a request completes.
+  $('#drawer').querySelectorAll('input,select,textarea,button').forEach(field => {
+    if (field.id === 'drawerCloseBtn' || field.id === 'closeBtn') return;
+    binding.controls.push([field, field.disabled]);
+    field.disabled = true;
+  });
+  drawerMutation = binding;
+  pendingTicketMutations.set(binding.id, binding);
+  return binding;
+}
+
+function finishDrawerMutation(binding) {
+  if (pendingTicketMutations.get(binding.id) === binding) pendingTicketMutations.delete(binding.id);
+  if (drawerMutation !== binding) return;
+  if (binding.generation === editorGeneration && editing?.id === binding.id) {
+    binding.controls.forEach(([field, disabled]) => { field.disabled = disabled; });
+  }
+  drawerMutation = null;
 }
 
 // Closes the ticket drawer and optionally updates the route.
 function closeDrawer(updateRoute = true) {
-  editing = null;
-  $('#drawer').classList.add('hidden');
+  if (!canLeaveDrawer()) return false;
+  resetDrawer();
   if (updateRoute) syncRoute('replace', 0);
+  return true;
 }
 
 // Opens the ticket drawer for editing one ticket.
 function openTicket(id, updateRoute = true) {
-  editing = state.tickets.find(t => t.id === id);
-  if (!editing) return;
+  if (selectedBoardId && selectedBoardId !== currentBoardId()) return;
+  if (pendingTicketMutations.get(id)?.session === sessionGeneration) {
+    $('#viewSubtitle').textContent = 'This task is still being updated. Please wait before reopening it.';
+    return;
+  }
+  const ticket = state.tickets.find(t => t.id === id);
+  if (!ticket) return;
+  if (editing && !canLeaveDrawer()) return;
+  resetDrawer();
+  editing = cloneTicketForEditing(ticket);
   if (updateRoute) syncRoute('push', editing.id);
   const users = state.users.map(u => '<option value="' + u.id + '">' + esc(u.name) + '</option>').join('');
   const miles = '<option value="0">No milestone</option>' + state.milestones.map(m => '<option value="' + m.id + '">' + esc(m.name) + '</option>').join('');
@@ -2753,12 +2898,20 @@ function openTicket(id, updateRoute = true) {
   $('#commentBtn').onclick = addComment;
   setupDependencyPicker();
   renderComments();
+  enhanceTaskDrawer();
+  drawerDraftId = editing.id;
+  drawerSnapshot = currentDrawerSnapshot();
 }
 
 // Renders comments for the currently edited ticket.
 function renderComments() {
+  if (!editing) return;
   const list = state.comments.filter(c => (c.ticketId ?? c.ticket_id) == editing.id);
-  $('#commentList').innerHTML = list.map(c => '<p class="row">' + esc(c.body) + '<br><span class="muted">' + (c.createdAt ?? c.created_at) + '</span></p>').join('') || '<p class="muted">No comments yet</p>';
+  $('#commentList').innerHTML = list.map(c => {
+    const userId = +(c.userId ?? c.user_id ?? 0);
+    const author = c.authorName || userById(userId)?.name || 'Former colleague';
+    return '<p class="row"><strong>' + esc(author) + (!userId && c.authorName ? ' (imported)' : '') + '</strong><br>' + esc(c.body) + '<br><span class="muted">' + esc(c.createdAt ?? c.created_at) + '</span></p>';
+  }).join('') || '<p class="muted">No comments yet</p>';
 }
 
 // Displays an error message inside the ticket drawer.
@@ -2847,9 +3000,11 @@ function renderNewDependencyOptions() {
 
 // Persists changes from the ticket drawer.
 async function saveDrawer() {
+  const binding = beginDrawerMutation();
+  if (!binding) return;
   const nextType = normalizeTicketType($('#dType').value);
   const idea = nextType === 'idea';
-  Object.assign(editing, {
+  const next = { ...editing,
     title: $('#dTitle').value,
     body: $('#dBody').value,
     type: nextType,
@@ -2861,24 +3016,37 @@ async function saveDrawer() {
     parentId: idea ? 0 : (+($('#dParent')?.value || 0)),
     labels: $('#dLabels').value.split(',').map(x => x.trim()).filter(Boolean),
     links: idea ? [] : (editing.links || []).map(Number).filter(Boolean),
-  });
+    columnId: +($('#dStatus')?.value || editing.columnId),
+    extras: collectTaskExtras(),
+  };
   try {
-    await saveTicket(editing);
-    closeDrawer();
+    await putTicket(next);
+    if (binding.session !== sessionGeneration) return;
+    if (isCurrentDrawer(binding)) {
+      // Saving the task does not post a comment draft.
+      const savedFields = JSON.parse(binding.snapshot);
+      savedFields.forEach(field => { if (field[0] === 'commentBody') field[1] = ''; });
+      drawerSnapshot = JSON.stringify(savedFields);
+      if (currentDrawerSnapshot() === drawerSnapshot) closeDrawer();
+    }
+    await load();
   } catch (e) {
-    showDrawerError((e.message || 'Ticket could not be saved.').trim());
+    if (isCurrentDrawer(binding)) showDrawerError((e.message || 'Ticket could not be saved.').trim());
+  } finally {
+    finishDrawerMutation(binding);
   }
 }
 
 // Saves a ticket through the API.
 async function saveTicket(t) {
+  const isCurrent = currentSessionGuard();
   await putTicket(t);
-  await load();
+  if (isCurrent()) await load();
 }
 
 // Builds and sends the complete ticket payload without forcing an intermediate refresh.
 async function putTicket(t) {
-  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId || state.columns[0]?.id, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body || '', Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate || '', DueDate: t.dueDate || '', MilestoneID: t.milestoneId || 0, AssigneeID: t.assigneeId || 0, Position: t.position || 0, Labels: t.labels || [], Links: t.links || [], IsBacklog: !!t.isBacklog }) });
+  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId || state.columns[0]?.id, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body || '', Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate || '', DueDate: t.dueDate || '', MilestoneID: t.milestoneId || 0, AssigneeID: t.assigneeId || 0, Position: t.position || 0, Labels: t.labels || [], Links: t.links || [], IsBacklog: !!t.isBacklog, Extras: t.extras || {Checklist: [], RepeatDays: 0} }) });
 }
 
 // Converts legacy idea notes into a supported delivery type when promoted.
@@ -2918,19 +3086,37 @@ async function promoteBacklogTicket(ticket, epicId = 0) {
 
 // Deletes the currently edited ticket through the API.
 async function deleteTicket() {
-  if (!editing) return;
-  await api('/api/tickets/' + editing.id, { method: 'DELETE', body: '{}' });
-  closeDrawer();
-  await load();
+  await taskDrawerAction('trash');
 }
 
 // Adds a comment to the currently edited ticket.
 async function addComment() {
-  const body = $('#commentBody').value.trim();
+  if (!editing || drawerMutation) return;
+  const commentDraft = $('#commentBody').value;
+  const body = commentDraft.trim();
   if (!body) return;
-  await api('/api/tickets/' + editing.id + '/comments', { method: 'POST', body: JSON.stringify({ Body: body }) });
-  await load();
-  openTicket(editing.id);
+  const binding = beginDrawerMutation();
+  if (!binding) return;
+  try {
+    await api('/api/tickets/' + binding.id + '/comments', { method: 'POST', body: JSON.stringify({ Body: body }) });
+    if (binding.session !== sessionGeneration) return;
+    if (isCurrentDrawer(binding)) {
+      if ($('#commentBody').value === commentDraft) $('#commentBody').value = '';
+      // Keep the original task-field baseline, so posting does not save task edits.
+      const snapshotFields = JSON.parse(drawerSnapshot || '[]');
+      snapshotFields.forEach(field => { if (field[0] === 'commentBody') field[1] = ''; });
+      drawerSnapshot = JSON.stringify(snapshotFields);
+    }
+    await load();
+    if (isCurrentDrawer(binding)) {
+      renderComments();
+      if ($('#taskActivityList')) $('#taskActivityList').innerHTML = taskActivityHTML(binding.id);
+    }
+  } catch (err) {
+    if (isCurrentDrawer(binding)) showDrawerError((err.message || 'Comment could not be posted.').trim());
+  } finally {
+    finishDrawerMutation(binding);
+  }
 }
 
 // Shows a board composer error message.
@@ -2988,20 +3174,23 @@ async function createBacklogTicket() {
 }
 
 $$('.navButton').forEach(b => b.onclick = () => {
+  if (!canLeaveDrawer()) return;
+  $$('.toolsMenu').forEach(menu => menu.open = false);
   view = b.dataset.view;
   timelineFocusSprint = 0;
   timelineCenterDate = null;
-  closeDrawer();
+  closeDrawer(false);
   renderView();
   syncRoute('push', 0);
 });
 
 $('#homeLink').onclick = e => {
   e.preventDefault();
+  if (!canLeaveDrawer()) return;
   view = 'board';
   timelineFocusSprint = 0;
   timelineCenterDate = null;
-  closeDrawer();
+  closeDrawer(false);
   renderView();
   syncRoute('push', 0);
 };
@@ -3014,24 +3203,50 @@ $('#homeLink').onclick = e => {
   }
 });
 $('#newType').onchange = renderNewParentSelect;
+$('#newTitle').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); $('#addBtn').click(); } };
 $('#exportBtn').onclick = () => location.href = '/api/export' + boardQuery();
-$('#importFile').onchange = async e => {
+async function importBoardFile(e) {
   const f = e.target.files[0];
-  if (f) {
-    await fetch('/api/import' + boardQuery(), { method: 'POST', body: await f.text() });
-    await load();
+  if (!f) return;
+  if (!canLeaveDrawer()) { e.target.value = ''; return; }
+  const url = '/api/import' + boardQuery();
+  const isCurrent = currentSessionGuard();
+  closeDrawer();
+  try {
+    const body = await f.text();
+    if (!isCurrent()) return;
+    await api(url, { method: 'POST', body }, isCurrent);
+    if (isCurrent()) await load();
+  } catch (err) {
+    if (isCurrent()) showLoadError(err);
+  } finally {
+    e.target.value = '';
   }
-};
+}
+$('#importFile').onchange = importBoardFile;
+function restoreLoginRoute() {
+  if (!router) return;
+  const route = router.parseRoute();
+  view = route.view;
+  selectedBoardId = route.boardId || selectedBoardId;
+  pendingTicketId = route.ticketId;
+  timelineFocusSprint = route.sprintNumber;
+}
 $('#loginBtn').onclick = async () => {
+  invalidateSessionRequests();
+  resetDrawer();
+  restoreLoginRoute();
+  const isCurrent = currentSessionGuard();
   try {
     $('#loginError').textContent = '';
     await api('/api/login', { method: 'POST', body: JSON.stringify({ Login: $('#loginUsername').value, Password: $('#password').value }) });
-    await load();
+    if (isCurrent()) await load();
   } catch (e) {
-    $('#loginError').textContent = (e.message || 'Login failed.').trim();
+    if (isCurrent()) $('#loginError').textContent = (e.message || 'Login failed.').trim();
   }
 };
 $('#signupBtn').onclick = async () => {
+  let isCurrent = currentSessionGuard();
   try {
     $('#signupError').textContent = '';
     const username = $('#signupUsername').value.trim();
@@ -3042,24 +3257,31 @@ $('#signupBtn').onclick = async () => {
       return;
     }
     if (!password) return;
+    invalidateSessionRequests();
+    resetDrawer();
+    restoreLoginRoute();
+    isCurrent = currentSessionGuard();
     await api('/api/signup', { method: 'POST', body: JSON.stringify({ Username: username, Password: password }) });
-    await load();
+    if (isCurrent()) await load();
   } catch (e) {
-    $('#signupError').textContent = (e.message || 'Signup failed.').trim();
+    if (isCurrent()) $('#signupError').textContent = (e.message || 'Signup failed.').trim();
   }
 };
 $('#forgotPasswordBtn').onclick = () => {
   $('#loginError').textContent = 'Please contact an admin to set a new password.';
 };
 $('#savePasswordBtn').onclick = async () => {
+  const isCurrent = currentSessionGuard();
   try {
     $('#passwordError').textContent = '';
     const newPassword = confirmedPassword('#newPassword', '#confirmPassword', '#passwordError', 'Please enter a new password.');
     if (!newPassword) return;
     await api('/api/password', { method: 'POST', body: JSON.stringify({ CurrentPassword: $('#currentPassword').value, NewPassword: newPassword }) });
+    if (!isCurrent()) return;
+    invalidateSessionRequests();
     await load();
   } catch (e) {
-    $('#passwordError').textContent = (e.message || 'Password could not be changed.').trim();
+    if (isCurrent()) $('#passwordError').textContent = (e.message || 'Password could not be changed.').trim();
   }
 };
 $('#cancelPasswordBtn').onclick = hidePasswordChange;
@@ -3078,6 +3300,9 @@ window.addEventListener('hashchange', () => {
 });
 
 window.openTicket = openTicket;
+window.addEventListener('beforeunload', event => {
+  if (editing && drawerSnapshot && currentDrawerSnapshot() !== drawerSnapshot) { event.preventDefault(); event.returnValue = ''; }
+});
 window.selectTimelineTask = selectTimelineTask;
 
 // Escapes text for safe HTML content.

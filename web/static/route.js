@@ -1,6 +1,6 @@
 // Wraps route helpers in a small module and exposes them on window.KanbanodonRoute.
 (function () {
-  const views = new Set(['board', 'overview', 'timeline', 'backlog', 'admin', 'config']);
+  const views = new Set(['board', 'overview', 'timeline', 'backlog', 'admin', 'config', 'archive', 'trash']);
 
   function positiveId(value) {
     const id = Number(value);
