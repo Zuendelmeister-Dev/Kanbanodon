@@ -1,153 +1,163 @@
 # Kanbanodon
 
-Kanbanodon ist eine schlanke, selbst betriebene Kanban-Anwendung für Einzelpersonen und kleine Teams. Aufgaben lassen sich mit einem Titel anlegen, auf dem Board bearbeiten und abschließen. Backlog, Checklisten, Zuständigkeiten und Kommentare ergänzen den einfachen Arbeitsablauf. Epics, Abhängigkeiten, Sprints und Timeline stehen bei Bedarf zur Verfügung.
+Kanbanodon is a small, private Kanban board for people who want to structure their work without starting a large project-management platform.
 
-Die Anwendung läuft als einzelner Go-Dienst mit einer statischen Browseroberfläche und lokalen SQLite-Datenbanken. Ein zusätzlicher Datenbankserver oder ein Cloudkonto ist nicht erforderlich. Die Oberfläche und ihre Bilddateien werden mitgeliefert; im Betrieb gibt es keine Abhängigkeit von externen Schrift-, Bild- oder Analysediensten.
+The project exists for three simple reasons:
 
-## Erste Schritte
+1. I wanted something fast to start and stop, with a minimal footprint. Kanbanodon should run as one container, with one local data volume, and no extra database server to operate.
+2. I did not want my work data to leave my machine or server. Kanbanodon has no telemetry, no cloud sync, no external fonts, no CDN assets, and no runtime calls to third-party services.
+3. My son is in his dinosaur phase, so the name and visual style became dinosaur-shaped on purpose.
 
-1. Registrieren oder mit einem vorhandenen Konto anmelden.
-2. Mit „Create first board“ ein Board anlegen oder ein freigegebenes Board auswählen.
-3. Einen Titel in „New ticket“ eingeben und mit „Create task“ oder Enter bestätigen.
-4. Die Karte öffnen und unter „Status“ den Arbeitsstand ändern. Alternativ die Karte in eine andere Spalte ziehen.
-5. Zum Abschließen „Done“ wählen und speichern.
+Kanbanodon is free to run, uses local SQLite files, and is designed for personal work or a small trusted team.
 
-Die Standardspalten sind „To Do“, „Ready“, „In Progress“, „Review“ und „Done“. Für diesen Ablauf sind weder Sprintplanung noch Epics, Dauer oder Termine nötig. Karten können mit Tab und Enter geöffnet werden. Ungespeicherte Editoränderungen werden beim Schließen, Wechseln und Abmelden durch eine Rückfrage geschützt.
+Tasks can be created with a title, moved across the board, and completed. Backlog, checklists, assignments, and comments support everyday work. Epics, dependencies, Sprints, and Timeline are available when more planning is useful.
 
-Weitere Bedienhinweise stehen unter [Aufgaben organisieren](docs/task-tools.md). Die [Dino-Avatare](docs/avatars.md) werden Konten automatisch zugewiesen.
+The application runs as one Go service with a static browser interface and local SQLite databases. No separate database server or cloud account is required. The interface and its images are bundled with the application.
 
-## Ansichten und Aufgaben
+## Getting started
 
-| Bereich | Verwendung |
+1. Sign up or log in with an existing account.
+2. Select "Create first board" to create a board, or choose a board shared with you.
+3. Enter a title in "New ticket" and select "Create task" or press Enter.
+4. Open the card and change its "Status", or drag it to another column.
+5. Select "Done" and save to complete the task.
+
+The default columns are "To Do", "Ready", "In Progress", "Review", and "Done". This workflow does not require Sprint planning, Epics, durations, or dates. Cards can be opened with Tab and Enter. Closing, switching away from, or logging out with an unsaved editor prompts you before discarding changes.
+
+See [Organizing tasks](docs/task-tools.md) for more detailed instructions. [Dinosaur avatars](docs/avatars.md) are assigned to accounts automatically.
+
+## Views and tasks
+
+| Area | Purpose |
 | --- | --- |
-| Board | Aktive Aufgaben anlegen und durch die Arbeitsspalten bewegen; Epics können Aufgaben in Zeilen gruppieren |
-| Backlog | Bevorstehende Arbeit sammeln und einzelne Aufgaben oder ein vollständiges Epic auf das Board übernehmen |
-| Overview | Status, Zuständigkeiten und anstehende Termine prüfen; Aufgaben filtern und sortieren |
-| Timeline | Zeiträume, Abhängigkeiten, Epic-Summen und Terminüberschreitungen auf einer Zeitachse betrachten |
-| Board-Menü | Archiv, Papierkorb, Freigabe und JSON-Import/-Export aufrufen |
+| Board | Create active tasks and move them through workflow columns; Epics can group tasks into lanes |
+| Backlog | Collect upcoming work and promote individual tasks or a complete Epic to the board |
+| Overview | Review status, assignments, and upcoming dates; filter and sort tasks |
+| Timeline | View scheduled work, dependencies, Epic totals, and delays on a shared timeline |
+| Board menu | Open Archive, Trash, Sharing, and JSON import/export |
 
-Eine Aufgabe kann Beschreibung, Checkliste, Zuständigkeit, Fälligkeit, Labels, Dauer, Startdatum, Meilenstein, übergeordnete Aufgabe und Abhängigkeiten enthalten. Kommentare ergänzen die Zusammenarbeit. Erwähnungen und Zuweisungen durch andere Benutzer erzeugen Benachrichtigungen innerhalb der Anwendung.
+A task can contain a description, checklist, assignee, due date, labels, duration, start date, milestone, parent, and dependencies. Comments support collaboration. Mentions and assignments by other users create notifications inside the application.
 
-„Duplicate“ erstellt eine Kopie mit zurückgesetztem Arbeitsstand. Archiv und Papierkorb entfernen Aufgaben aus den aktiven Ansichten; beide erlauben die Wiederherstellung. Wiederkehrende Aufgaben erzeugen ihren Nachfolger beim Abschluss, nicht nach einem unabhängigen Kalender.
+"Duplicate" creates a copy with a fresh work state. Archive and Trash remove tasks from active views and allow restoration. Recurring tasks create their successor when completed.
 
-## Optionale Planung
+## Optional planning
 
-### Epics und Abhängigkeiten
+### Epics and dependencies
 
-Epics bündeln größere Vorhaben. Stories können einem Epic untergeordnet sein; Tasks und Bugs können zu einem Epic oder einer Story gehören. Ein Board ohne Epics verwendet die verfügbare Breite für seine Arbeitsspalten.
+Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs can belong to an Epic or Story. A board without Epics uses the available width for its workflow columns.
 
-Abhängigkeiten zeigen, welche Aufgaben zuerst erledigt werden müssen und welche Arbeit dadurch ermöglicht wird. Offene Abhängigkeiten verhindern den Wechsel in „In Progress“ und nachfolgende Spalten. Abhängigkeitszyklen werden vom Server abgewiesen. Ziehen einer Karte ändert ihren Status; eine andere Zuordnung wird im Editor über „Parent“ vorgenommen.
+Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
 ### Sprints
 
-„Sprint planning“ lässt sich auf dem Board öffnen. Ein Board speichert den ersten Sprintbeginn und eine Dauer von 1 bis 52 ganzen Wochen. Weitere Sprints werden daraus berechnet. Angezeigt werden der aktuelle und die nächsten fünf Sprints; vor dem ersten Beginn erscheinen die ersten sechs.
+Open "Sprint planning" on the board to configure the first Sprint start date and a duration of 1 to 52 whole weeks. Following Sprints are calculated from this cadence. The board shows the current Sprint and the next five; before the cadence starts, it shows the first six.
 
-Sprintnamen können direkt bearbeitet werden. Ohne eigenen Namen erscheint „Sprint N“. Die Fokusaktion öffnet den jeweiligen Sprint in Timeline.
+Sprint names can be edited directly. Without a custom name, a Sprint is called "Sprint N". The focus action opens that Sprint in Timeline.
 
-Die Sprintzuordnung einer Aufgabe folgt ihrem geplanten Abschluss: Fälligkeit, falls vorhanden, sonst Startdatum plus Dauer. Aufgaben ohne brauchbares Datum bleiben ungeplant. Die Zuordnung berechnet keine Teamkapazität.
+A task belongs to the Sprint in which it is planned to finish: its due date, when available, otherwise its start date plus duration. Tasks without a usable date remain unscheduled. Sprint assignment does not calculate team capacity.
 
-### Overview und Timeline
+### Overview and Timeline
 
-Overview und Timeline sind unter „Planning“ erreichbar. Overview zeigt zunächst fünf zentrale Tabellenspalten; zusätzliche Planungsspalten lassen sich einblenden.
+Overview and Timeline are available under "Planning". Overview initially shows five main table columns; additional planning columns can be enabled.
 
-Timeline verwendet gespeicherte Dauer und Termine. Bei fehlender Dauer nimmt sie drei Tage für normale Aufgaben und einen Tag für Epics an. Ohne Startdatum wird der Beginn aus der Fälligkeit und Dauer oder aus dem Erstellungsdatum hergeleitet. Die Oberfläche weist auf diese Annahmen hin; sie werden nicht als Termine in der Aufgabe gespeichert.
+Timeline uses stored durations and dates. When duration is missing, it assumes three days for ordinary tasks and one day for Epics. When the start date is missing, it derives the start from the due date and duration, or from the creation date. The interface explains these assumptions; they are not saved as task dates.
 
-Nicht erledigte Aufgaben können eine rote Verzögerung bis zum aktuellen Datum und danach eine gestrichelte Schätzung anzeigen. Abhängigkeiten und Epic-Summen erscheinen im selben Zeitraster. Zoom verändert die Dichte; Ziehen bewegt die Zeitachse horizontal. Der Datumszeiger zeigt den Kalendertag unter dem Mauszeiger.
+Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Dependencies and Epic totals use the same time grid. Zoom changes its density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
 
-## Konten und Berechtigungen
+## Accounts and permissions
 
-| Rolle | Aufgaben |
+| Role | Responsibilities |
 | --- | --- |
-| Benutzer | Aufgaben auf zugänglichen Boards anlegen, bearbeiten und abschließen |
-| Board-Eigentümer | Zugriff auf eigene Boards verwalten |
-| Administrator | Konten, Rollen, Passwortzurücksetzungen und Zugriffe auf alle Boards verwalten |
-| Betreiber | Dienst konfigurieren, Transport absichern und Daten sichern |
+| User | Create, edit, and complete tasks on accessible boards |
+| Board owner | Manage access to owned boards |
+| Administrator | Manage accounts, roles, password resets, and access to all boards |
+| Operator | Configure the service, secure transport, and back up data |
 
-Die Registrierung kann über `KANBANODON_ALLOW_SIGNUP` abgeschaltet werden. Administratoren können weiterhin Konten anlegen. Avatare werden auf dem Server automatisch vergeben.
+Registration can be disabled with `KANBANODON_ALLOW_SIGNUP`. Administrators can still create accounts. Avatars are assigned automatically by the server.
 
-Ein Administrator-Passwortreset meldet das betroffene Konto auf allen Geräten ab. Ein eigener Passwortwechsel erhält die aktuelle Sitzung und meldet andere Sitzungen ab. Passwortwiederherstellung erfolgt über einen Administrator; eine E-Mail-Wiederherstellung ist nicht vorhanden.
+An administrator password reset signs the affected account out on all devices. Changing your own password keeps the current session and signs out other sessions. Password recovery is handled by an administrator; email-based recovery is not available.
 
-## Installation und Betrieb
+## Installation and operation
 
 ### Docker Compose
 
-Voraussetzungen sind Docker mit Docker Compose und ein moderner Browser.
+Docker with Docker Compose and a modern browser are required.
 
-1. In `docker-compose.yml` den Wert für `KANBANODON_SESSION_SECRET` durch einen eigenen, langen Zufallswert ersetzen.
-2. Die Anwendung starten:
+1. Replace `KANBANODON_SESSION_SECRET` in `docker-compose.yml` with a long, random value of your own.
+2. Start the application:
 
    ```sh
    docker compose up -d --build
    ```
 
-3. Im Browser [localhost:8080](http://localhost:8080) öffnen.
-4. Bei einer frischen Installation mit dem Administratorkonto anmelden:
+3. Open [localhost:8080](http://localhost:8080) in your browser.
+4. On a fresh installation, log in with the initial administrator account:
 
    ```text
-   Benutzername: kanbanoadmin
-   Passwort: kanbanopw
+   Username: kanbanoadmin
+   Password: kanbanopw
    ```
 
-5. Das angeforderte neue Administratorpasswort setzen.
+5. Set the new administrator password when prompted.
 
-Die mitgelieferte Compose-Konfiguration bindet den Dienst an `127.0.0.1:8080`. Damit ist er zunächst nur auf demselben Rechner erreichbar. Für den Zugriff über ein Netzwerk sind eine passende Veröffentlichung des Ports und ein Reverse Proxy mit TLS erforderlich.
+The supplied Compose configuration binds the service to `127.0.0.1:8080`, making it accessible only from the same machine. Network access requires appropriate port exposure and a reverse proxy with TLS.
 
-Stoppen:
+Stop the application:
 
 ```sh
 docker compose down
 ```
 
-### Konfiguration
+### Configuration
 
-| Variable | Standardwert des Dienstes | Bedeutung |
+| Variable | Service default | Purpose |
 | --- | --- | --- |
-| `KANBANODON_ADDR` | `:8080` | HTTP-Listenadresse |
-| `KANBANODON_DATA_DIR` | `data` | Verzeichnis für die Datenbanken; im Docker-Container `/data` |
-| `KANBANODON_AUTH_MODE` | `local` | Authentifizierungsmodus; für den normalen Betrieb `local` verwenden |
-| `KANBANODON_ALLOW_SIGNUP` | `true` | Erlaubt die Registrierung |
-| `KANBANODON_SESSION_SECRET` | `change-me-kanbanodon` | Geheimnis zum Signieren von Sitzungstokens; für den Betrieb ersetzen |
+| `KANBANODON_ADDR` | `:8080` | HTTP listen address |
+| `KANBANODON_DATA_DIR` | `data` | Database directory; `/data` inside the Docker container |
+| `KANBANODON_AUTH_MODE` | `local` | Authentication mode; use `local` for normal operation |
+| `KANBANODON_ALLOW_SIGNUP` | `true` | Allows account registration |
+| `KANBANODON_SESSION_SECRET` | `change-me-kanbanodon` | Secret used to sign session tokens; replace it for real use |
 
-### Datenhaltung und Sicherung
+### Storage and backups
 
-Docker Compose verwendet das benannte Volume `kanbanodon-data`. Darin liegen `app.db` mit Anwendungsdaten und `config.db` mit Konfiguration und dem Initialisierungsstatus. Beide Dateien gehören zu einer vollständigen Sicherung. Für eine konsistente Dateisicherung den Dienst vorher stoppen oder ein für SQLite geeignetes Sicherungsverfahren verwenden.
+Docker Compose uses the named volume `kanbanodon-data`. It contains `app.db` for application data and `config.db` for configuration and initialization state. Both files belong in a complete backup. For a consistent file backup, stop the service first or use a backup method designed for SQLite.
 
-Datenbankmigrationen laufen beim Start automatisch und erhalten vorhandene Daten. Das anfängliche Administratorkonto wird nur bei einer frischen Installation eingerichtet. Seine Löschung oder Herabstufung bleibt nach einem Neustart wirksam. Eine bereits eingerichtete Installation ohne Administrator benötigt eine Wiederherstellung aus einer geeigneten Sicherung; der Start stellt kein bekanntes Standardpasswort wieder her.
+Database migrations run automatically at startup and retain existing data. The initial administrator account is created only for a fresh installation. Deleting or demoting it remains effective after a restart. An established installation without an administrator requires recovery from a suitable backup; startup does not restore a known default password.
 
-### Export und Import
+### Export and import
 
-Das Board-Menü exportiert ein Board als JSON. Ein Import fügt die enthaltenen Aufgaben dem ausgewählten Zielboard hinzu. Wiederholter Import erzeugt weitere Kopien. Konten und Zugriffsrechte werden nicht übertragen; Zuständigkeiten werden beim Import zurückgesetzt.
+The board menu exports a board as JSON. Import adds the contained tasks to the selected destination board. Repeating an import creates additional copies. Accounts and access rights are not transferred; assignments are reset during import.
 
-Checklisten, Wiederholungen, Archiv- und Papierkorbstatus sowie Kommentare mit Zeitpunkt und Autorname werden übertragen. Kommentarautoren werden als importiert gekennzeichnet und nicht mit gleich nummerierten Konten der Zielinstallation verbunden. Aktivitätsprotokolle und Benachrichtigungen gehören nicht zum Board-Export.
+Checklists, recurrence, Archive and Trash status, and comments with timestamps and author names are transferred. Comment authors are marked as imported instead of being associated with unrelated accounts that have the same numeric IDs in the destination. Activity logs and notifications are not part of a board export.
 
-Ein Board-Export ergänzt die Datensicherung, ersetzt aber keine Sicherung der vollständigen Installation.
+A board export supplements backups but does not replace a backup of the entire installation.
 
-## Architektur
+## Architecture
 
 ```mermaid
 flowchart LR
-    Browser["Browseroberfläche"] -->|HTTP und JSON| Server["Go-Dienst"]
-    Server --> Daten[("app.db")]
-    Server --> Konfiguration[("config.db")]
-    Browser --> Datei["Board-Export als JSON"]
+    Browser["Browser interface"] -->|HTTP and JSON| Server["Go service"]
+    Server --> Data[("app.db")]
+    Server --> Configuration[("config.db")]
+    Browser --> File["Board export as JSON"]
 ```
 
-Der Go-Dienst liefert Oberfläche und API unter derselben Adresse aus. Er prüft Sitzungen, Boardzugriffe, Eingaben und Aufgabenbeziehungen vor dem Speichern. Die Datenhaltung verwendet SQLite über `modernc.org/sqlite`; ein separater Datenbankdienst ist nicht nötig.
+The Go service serves the interface and API from the same address. It validates sessions, board access, input, and task relationships before saving. Persistence uses SQLite through `modernc.org/sqlite`; no separate database service is needed.
 
-Die Browseroberfläche besteht aus HTML, CSS und JavaScript. Hash-Routen halten Ansicht, Board, Aufgabe und Sprintfokus in der URL fest. Einlesen und Darstellen der Daten erfolgen im Browser; der Server bleibt für Berechtigungen und persistente Validierung zuständig.
+The browser interface consists of HTML, CSS, and JavaScript. Hash routes preserve the selected view, board, task, and Sprint focus in the URL. Data loading and rendering happen in the browser; the server enforces permissions and persistent validation.
 
-| Bestandteil | Inhalt |
+| Component | Contents |
 | --- | --- |
-| `cmd/server/main.go` | Dienstkonfiguration und HTTP-Routen |
-| `cmd/server/auth.go`, `users.go` | Konten, Sitzungen und Passwörter |
-| `cmd/server/boards.go` | Boards, Freigaben und Sprintplanung |
-| `cmd/server/tickets.go`, `task_features.go` | Aufgaben, Beziehungen, Kommentare, Wiederholungen und Datenaustausch |
-| `cmd/server/migrate.go` | Aufbau und Migration der Datenbanken |
-| `web/static/` | Browseroberfläche, Routing, Stile und mitgelieferte Bilder |
-| `Dockerfile`, `docker-compose.yml` | Container und Betriebskonfiguration |
+| `cmd/server/main.go` | Service configuration and HTTP routes |
+| `cmd/server/auth.go`, `users.go` | Accounts, sessions, and passwords |
+| `cmd/server/boards.go` | Boards, sharing, and Sprint planning |
+| `cmd/server/tickets.go`, `task_features.go` | Tasks, relationships, comments, recurrence, and data exchange |
+| `cmd/server/migrate.go` | Database setup and migrations |
+| `web/static/` | Browser interface, routing, styles, and bundled images |
+| `Dockerfile`, `docker-compose.yml` | Container and runtime configuration |
 
-`app.db` enthält Konten, Sitzungen, Boards, Zugriffe, Aufgaben, Spalten, Sprintdaten, Labels, Abhängigkeiten, Kommentare, Meilensteine, Aktivität und Benachrichtigungen. `config.db` enthält Dienstkonfiguration und Initialisierungsstatus.
+`app.db` contains accounts, sessions, boards, access rules, tasks, columns, Sprint data, labels, dependencies, comments, milestones, activity, and notifications. `config.db` contains service configuration and initialization state.
 
-## Grenzen
+## Limitations
 
-Kanbanodon verwendet einen einzelnen Anwendungsprozess mit lokalen SQLite-Dateien. TLS-Terminierung und vollständige Datensicherungen übernimmt die Betriebsumgebung. Es gibt keine Cloud-Synchronisation oder E-Mail-Integration. Sprintplanung ordnet nach geplanten Abschlussdaten zu; sie berechnet weder Kapazitäten noch eine automatische Auslastungsplanung.
+Kanbanodon uses one application process with local SQLite files. TLS termination and complete backups are handled by the deployment environment. Cloud synchronization and email integration are not available. Sprint planning assigns work by planned completion dates; it does not calculate capacity or balance workloads automatically.

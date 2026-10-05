@@ -1,45 +1,45 @@
-# Aufgaben organisieren
+# Organizing tasks
 
-Die Standardansicht zeigt das Board und die schnelle Aufgabenanlage. Backlog, Suche und Filter helfen beim Ordnen der Arbeit. Planung und Verwaltungsaktionen lassen sich bei Bedarf öffnen; für ein einfaches Board sind weder Epics noch Sprints oder Termine erforderlich.
+The default view shows the board and quick task creation. The backlog, search, and filters help organize work. Planning and administrative actions can be opened when needed; a simple board does not require epics, sprints, or dates.
 
-## Aufgaben anlegen und bearbeiten
+## Creating and editing tasks
 
-Auf dem Board einen Titel in „New ticket“ eingeben und mit „Create task“ oder Enter bestätigen. Weitere Angaben sind optional. Im Backlog sammelt „Add to Backlog“ Aufgaben, die noch nicht auf dem Board bearbeitet werden sollen. Mit „Add to board“ werden sie in die erste Board-Spalte übernommen.
+On the board, enter a title in “New ticket” and confirm with “Create task” or Enter. Additional fields are optional. In the backlog, “Add to Backlog” collects tasks that are not yet ready for work on the board. “Add to board” moves them into the first board column.
 
-Eine Karte per Klick oder mit Tab und Enter öffnen. Im Editor lassen sich Titel, Beschreibung, Status, Fälligkeit und Zuständigkeit ändern. „Planning and details“ enthält Typ, Dauer, Startdatum, Meilenstein, übergeordnete Aufgabe, Labels, Abhängigkeiten und Wiederholung. „Save“ speichert die Aufgabe. Ungespeicherte Änderungen lösen beim Schließen, Wechseln und Abmelden eine Rückfrage aus; „Cancel“ setzt die Bearbeitung fort.
+Open a card by clicking it or using Tab and Enter. The editor lets you change its title, description, status, due date, and assignee. “Planning and details” contains the type, duration, start date, milestone, parent task, labels, dependencies, and repeat settings. “Save” saves the task. Unsaved changes trigger a confirmation when closing the editor, navigating away, or logging out; “Cancel” lets you continue editing.
 
-Der Status kann im Editor oder durch Ziehen der Karte geändert werden. Offene Abhängigkeiten verhindern den Wechsel in die aktive Bearbeitung und in nachfolgende Spalten. Zum Abschließen die Aufgabe nach „Done“ verschieben.
+Change the status in the editor or by dragging the card. Unfinished dependencies prevent moving into active work and later columns. Move the task to “Done” to complete it.
 
-## Checklisten und Filter
+## Checklists and filters
 
-Mit „Add step“ Schritte zur Checkliste hinzufügen und einzelne Schritte abhaken. Änderungen mit „Save“ speichern. Die Karte zeigt die Zahl erledigter und vorhandener Schritte.
+Use “Add step” to add checklist items and check off individual steps. Save changes with “Save”. The card shows the number of completed and total steps.
 
-„My tasks“ zeigt Aufgaben des aktuellen Boards, die dem angemeldeten Konto zugewiesen sind. Die Suche berücksichtigt Titel und Beschreibung. Unter „Filters“ stehen Typ, Zuständigkeit, Abhängigkeiten und Labels zur Verfügung. „Reset filters“ setzt Suche und Filter zurück.
+“My tasks” shows tasks on the current board assigned to the signed-in account. Search matches titles and descriptions. “Filters” offers type, assignee, dependency, and label filters. “Reset filters” clears search and filters.
 
-## Duplizieren, Archiv und Papierkorb
+## Duplicating, archiving, and trash
 
-„Duplicate“ erstellt eine Kopie mit Beschreibung, Labels und Checkliste. Die Kopie beginnt in der ersten Spalte. Zuständigkeit, Termine, übergeordnete Aufgabe, Abhängigkeiten, Wiederholung und erledigte Checklistenpunkte werden zurückgesetzt.
+“Duplicate” creates a copy with its description, labels, and checklist. The copy starts in the first column. The assignee, dates, parent task, dependencies, repeat settings, and completed checklist items are reset.
 
-„Archive“ entfernt eine Aufgabe aus der aktiven Arbeit. „Move to trash“ verschiebt sie in den Papierkorb. Beide Bereiche sind über „Board menu“ erreichbar. „Restore“ stellt eine Aufgabe mit ihren Kommentaren und ihrer Checkliste wieder her. Ihr bisheriger Status bleibt dabei erhalten.
+“Archive” removes a task from active work. “Move to trash” moves it to the trash. Both areas are available through “Board menu”. “Restore” restores a task with its comments and checklist. Its previous status is retained.
 
-## Kommentare, Aktivität und Benachrichtigungen
+## Comments, activity, and notifications
 
-Kommentare werden mit „Comment“ veröffentlicht. Das Speichern einer Aufgabe veröffentlicht keinen Kommentarentwurf. Unter „Activity“ stehen Erstellung, Änderungen, Kommentare und Wiederherstellungen mit Benutzer und Zeitpunkt.
+Publish a comment with “Comment”. Saving a task does not publish a comment draft. “Activity” lists creation, changes, comments, and restorations with the user and time.
 
-Eine Erwähnung wie `@benutzername` in einem Kommentar benachrichtigt den anderen Benutzer, wenn dieser auf das Board zugreifen darf. Auch eine neue Zuweisung durch einen anderen Benutzer erzeugt eine Benachrichtigung. Das Menü „Notifications“ aktualisiert sich bei geöffneter, sichtbarer Seite alle 30 Sekunden. Einzelne Nachrichten oder alle Nachrichten können als gelesen markiert werden. Es werden keine E-Mails verschickt.
+A mention such as `@username` in a comment notifies the other user if they can access the board. A new assignment by another user also creates a notification. The “Notifications” menu refreshes every 30 seconds while the page is open and visible. Individual notifications or all notifications can be marked as read. No emails are sent.
 
-## Wiederkehrende Aufgaben
+## Recurring tasks
 
-Unter „Repeat after completion“ stehen Abstände von 1, 7 oder 30 Tagen zur Auswahl. Beim Wechsel nach „Done“ entsteht genau ein Nachfolger in der ersten Spalte, mit zurückgesetzter Checkliste und einem Fälligkeitstermin im gewählten Abstand zur Fertigstellung. Die Datumsberechnung verwendet das UTC-Datum.
+“Repeat after completion” offers intervals of 1, 7, or 30 days. Moving a task to “Done” creates exactly one next occurrence in the first column, with an unchecked checklist and a due date the selected number of days after completion. Dates are calculated using the UTC date.
 
-Ein erneutes Öffnen und Abschließen der ursprünglichen Aufgabe erzeugt einen weiteren Nachfolger. Mehrfaches Speichern einer bereits erledigten Aufgabe erzeugt keinen weiteren. Ohne Abschluss werden keine Aufgaben automatisch nach Kalender angelegt.
+Moving the original task out of “Done” and completing it again creates another next occurrence. Saving an already completed task multiple times does not create another one. Tasks are not created automatically on a calendar without completion.
 
-## Planung und Datenaustausch
+## Planning and data exchange
 
-„Sprint planning“ lässt sich auf dem Board öffnen. Overview und Timeline sind unter „Planning“ erreichbar. Timeline kennzeichnet rechnerisch angenommene Termine als Schätzungen. Die vereinfachte Overview zeigt die wichtigsten fünf Spalten; „Show planning columns“ blendet zusätzliche Angaben ein.
+“Sprint planning” can be opened on the board. Overview and Timeline are available under “Planning”. Timeline identifies assumed dates as estimates. The simplified Overview shows the five main columns; “Show planning columns” displays additional fields.
 
-„Export“ und „Import“ im Board-Menü übertragen ein Board als JSON. Der Import fügt Aufgaben zum ausgewählten Zielboard hinzu; wiederholter Import erzeugt weitere Kopien. Konten und Zugriffsrechte werden nicht übertragen, Zuständigkeiten werden zurückgesetzt.
+“Export” and “Import” in the board menu transfer a board as JSON. Import adds tasks to the selected destination board; importing again creates additional copies. Accounts and access permissions are not transferred, and assignees are reset.
 
-Enthalten sind Aufgaben, Checklisten, Wiederholungen, Archiv- und Papierkorbstatus sowie Kommentare mit Zeitpunkt und Autorname. Importierte Autoren werden gekennzeichnet und keinem möglicherweise gleich nummerierten Konto der Zielinstallation zugeordnet. Aktivitätsprotokolle und Benachrichtigungen sind keine Bestandteile des Board-Exports.
+The file includes tasks, checklists, repeat settings, archive and trash status, and comments with timestamps and author names. Imported authors are identified as such and are not associated with accounts that happen to have the same numeric ID in the destination installation. Activity logs and notifications are not part of the board export.
 
-Installation, Konfiguration und Architektur sind in der [README](../README.md) beschrieben.
+Installation, configuration, and architecture are described in the [README](../README.md).

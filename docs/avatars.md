@@ -1,15 +1,15 @@
-# Dino-Avatare
+# Dinosaur avatars
 
-Kanbanodon weist jedem Konto automatisch einen Dino-Avatar zu. Bei der Registrierung und beim Anlegen eines Kontos durch einen Administrator ist keine Auswahl nötig. Der Avatar erscheint im Kontomenü und auf zugewiesenen Aufgaben.
+Kanbanodon automatically assigns a dinosaur avatar to each account. No selection is needed during signup or when an administrator creates an account. The avatar appears in the account menu and on assigned tasks.
 
-## Automatische Zuweisung
+## Automatic assignment
 
-Es gibt 20 Dino-Motive. Neue Konten erhalten ein noch unbenutztes Motiv, solange eines verfügbar ist. Auf einer frischen Installation haben daher die ersten 20 Konten einschließlich des Administratorkontos unterschiedliche Motive. Erst wenn alle Motive belegt sind, sind Wiederholungen möglich.
+There are 20 dinosaur motifs. New accounts receive an unused motif while one is available. On a fresh installation, the first 20 accounts, including the administrator account, therefore have different motifs. Repeated motifs are allowed only after all motifs are occupied.
 
-Gelöschte Konten geben ihr Motiv wieder frei. Bestehende gültige Avatare bleiben erhalten. Die Zuweisung und das Anlegen des Kontos erfolgen gemeinsam auf dem Server, damit gleichzeitige Registrierungen kein verfügbares Motiv doppelt belegen. Eine fehlgeschlagene Registrierung belegt kein Motiv.
+Deleting an account releases its motif. Existing valid avatars are preserved. Assignment and account creation happen together on the server, so concurrent registrations cannot reserve the same available motif. A failed registration does not occupy a motif.
 
-## Lokale Darstellung
+## Local display
 
-Die Bilder werden mit der Anwendung ausgeliefert. Ein Konto erhält bei jedem Aufruf denselben Avatar. Ein externer Bilddienst oder eine Internetverbindung zu Drittanbietern ist dafür nicht erforderlich.
+The images are bundled with the application. An account displays the same avatar on each visit. No external image service or connection to third-party services is required.
 
-Zur allgemeinen Bedienung siehe [Kanbanodon](../README.md).
+For general usage, see [Kanbanodon](../README.md).
