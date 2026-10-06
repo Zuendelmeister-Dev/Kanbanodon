@@ -36,7 +36,11 @@ Moving the original task out of “Done” and completing it again creates anoth
 
 ## Planning and data exchange
 
-“Sprint planning” can be opened on the board. Overview and Timeline are available under “Planning”. Timeline identifies assumed dates as estimates. The simplified Overview shows the five main columns; “Show planning columns” displays additional fields.
+The "Sprints" panel is visible on the board. Set the first Sprint start date and its length in weeks, then save. The panel shows the current Sprint and the next five, or the first six before the cadence begins. Sprint names can be edited directly, and the focus action opens the selected Sprint in Timeline.
+
+Overview and Timeline are directly available in the sidebar. The simplified Overview shows five main columns; "Show planning columns" displays additional fields. Timeline identifies assumed dates as estimates. Saved time, delays, and completion estimates appear on thin rails below the task bars, keeping task names readable.
+
+Select "Show dependencies" on a task to see its direct prerequisites and dependents in a separate panel. Tasks are shown with their names and statuses, and can be opened from the panel. Arrows point from prerequisite to dependent and stay within the panel. Tasks outside the current filters are identified there. "Clear selection" closes the selection.
 
 “Export” and “Import” in the board menu transfer a board as JSON. Import adds tasks to the selected destination board; importing again creates additional copies. Accounts and access permissions are not transferred, and assignees are reset.
 

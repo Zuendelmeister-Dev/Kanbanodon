@@ -80,6 +80,7 @@ function loadApp(options = {}) {
     Date,
     Map,
     Set,
+    setTimeout, clearTimeout,
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'task-tools.js'), 'utf8'), context);
@@ -87,7 +88,7 @@ function loadApp(options = {}) {
   let source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
   source = source.replace(/\nload\(\);\s*$/, '\n');
   source += `\nwindow.__appTest = {
-    load, resetClientState, renderView, boardBacklogPickerHtml, wireBoardBacklogPicker, overviewTable,
+    load, resetClientState, renderView, renderBoard, boardBacklogPickerHtml, wireBoardBacklogPicker, backlogRowHtml, overviewTable,
     applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
@@ -104,20 +105,22 @@ function loadApp(options = {}) {
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
-    boardDependencyHtml, workHoverRelatedIds, epicHoverRelatedIds, standaloneHoverRelatedIds, dependencyComponentIds,
-    workDependencyEdges, workDependencyArrowGeometry,
+    boardDependencyHtml, dependencySelectionModel, dependencySelectionHtml, wireDependencySelection, wireWorkDependencies,
+    getDependencySelectionId() { return boardDependencySelectionId; },
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    timelineHighlight, timelineTaskHighlightClass, timelineHoverRelatedIds, timelineEpicHoverRelatedIds,
-    ganttDelayText, ganttEstimateText, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
-    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttArrowMidPoints, ganttSvgSprintBands,
+    renderGantt, timelineHighlight, timelineTaskHighlightClass, ganttTaskLabel,
+    ganttDelayText, ganttEstimateText, ganttSvg, ganttSvgTask, ganttSvgBarLabel, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
+    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
-    calculatedSprints, sprintName, sprintPreviewHtml, sprintPreviewCardHtml, shortRange,
+    calculatedSprints, sprintName, sprintPlannerHtml, sprintPreviewHtml, sprintPreviewCardHtml, shortRange,
+    wireSprintPlanner, wireSprintCards, saveSprintName, currentSessionGuard,
     wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
     setOverviewSort(value) { overviewSort = value; },
     setTimelineHighlightId(value) { timelineHighlightId = value; },
+    setTimelineEpicFilter(value) { timelineEpicFilter = value; },
   };`;
   vm.runInContext(source, context);
   Object.assign(window.__appTest, { elements, navButtons, historyCalls, document, window });
@@ -678,27 +681,102 @@ test('dependency and duration helpers reflect workflow state', () => {
   assert.equal(app.durationLabel({ duration: 2 }), '2d');
 });
 
-test('board dependency hints and shared hover scopes expose useful context', () => {
+test('board dependency summaries lead to an explicit named dependency panel', () => {
   const app = loadApp();
   const state = stateWithHierarchy();
   app.setState(state);
-  const work = state.tickets.filter(ticket => ticket.type !== 'idea');
-
-  assert.deepEqual([...app.workHoverRelatedIds(work, [12])].sort((a, b) => a - b), [12, 13]);
-  assert.deepEqual([...app.epicHoverRelatedIds(work, 10)].sort((a, b) => a - b), [10, 11, 12]);
-  assert.deepEqual([...app.standaloneHoverRelatedIds(work)].sort((a, b) => a - b), [0, 13]);
-  assert.deepEqual([...app.workDependencyEdges(work, new Set([12, 13])).map(edge => edge.from + '>' + edge.to)], ['13>12']);
-  assert.match(app.boardDependencyHtml(state.tickets[2]), /Depends on #2/);
-  assert.match(app.boardDependencyHtml(state.tickets[3]), /Enables #10\.1\.1/);
+  assert.match(app.boardDependencyHtml(state.tickets[2]), /Prerequisites done/);
+  assert.match(app.boardDependencyHtml(state.tickets[3]), /Required by 1 task/);
   assert.match(app.card(state.tickets[2]), /data-work-id="12"/);
+  assert.match(app.card(state.tickets[2]), /data-show-dependencies="12"/);
+  assert.match(app.overviewTable(state.tickets), /data-show-dependencies="12"/);
+  assert.doesNotMatch(app.boardDependencyHtml(state.tickets[2]), /&larr;|&rarr;|Enables #|Depends on #/);
 
   state.tickets[3].columnId = 1;
-  assert.match(app.boardDependencyHtml(state.tickets[2]), /Waiting for #2/);
+  assert.match(app.boardDependencyHtml(state.tickets[2]), /Waiting for 1 task/);
+  assert.match(app.dependencySelectionHtml(12, [12, 13]), /Dependency<\/strong><span class="dependencySelectionStatus">To Do/);
+});
 
-  const from = { left: 10, right: 110, top: 10, bottom: 60, width: 100, height: 50, centerX: 60, centerY: 35, anchorX: 70 };
-  const to = { left: 220, right: 320, top: 90, bottom: 140, width: 100, height: 50, centerX: 270, centerY: 115, anchorX: 70 };
-  assert.match(app.workDependencyArrowGeometry(from, to, 'board').path, /^M 110 35 C /);
-  assert.equal(app.workDependencyArrowGeometry(from, to, 'overview').path, 'M 70 35 H 54 V 115 H 80');
+test('selected dependency context includes only immediate edges and explains filtered neighbors', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  const task = (id, title, links = [], extra = {}) => ({ id, title, links, type:'task', columnId:1, labels:[], position:id, ...extra });
+  state.tickets = [task(1,'Selected task',[2]), task(2,'Prerequisite',[4]), task(3,'Dependent',[1]), task(4,'Indirect prerequisite'), task(5,'Indirect dependent',[3]), task(6,'Unrelated'), task(7,'Archived dependent',[1],{archivedAt:'2026-10-06'}), task(8,'Deleted dependent',[1],{deletedAt:'2026-10-06'}), task(9,'Backlog dependent',[1],{isBacklog:true})];
+  app.setState(state);
+  const model = app.dependencySelectionModel(1,[1,3]);
+  assert.deepEqual(Array.from(model.prerequisites,t=>t.id),[2]);
+  assert.deepEqual(Array.from(model.dependents,t=>t.id),[3,9]);
+  assert.deepEqual(Array.from(model.outsideView,t=>t.id),[2,9]);
+  const html = app.dependencySelectionHtml(1,[1,3]);
+  assert.match(html,/Prerequisite<\/strong>/); assert.match(html,/Dependent<\/strong>/);
+  assert.match(html,/Backlog · To Do/); assert.match(html,/Outside current view/);
+  assert.doesNotMatch(html,/Indirect prerequisite|Indirect dependent|Unrelated|Archived dependent|Deleted dependent/);
+  assert.equal((html.match(/<svg /g)||[]).length,2);
+  assert.equal(app.dependencySelectionHtml(0,[1,3]),'');
+});
+
+test('dependency panel escapes names and shows no connectors for isolated tasks', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  state.tickets = [{id:1,title:'<script>alert(1)</script>',type:'task',columnId:1,links:[],labels:[]}]; app.setState(state);
+  const html = app.dependencySelectionHtml(1,[1]);
+  assert.match(html,/&lt;script&gt;/); assert.doesNotMatch(html,/<script>|<svg /);
+  assert.match(html,/No prerequisites/); assert.match(html,/No dependent tasks/);
+});
+
+function dependencySurface(app) {
+  const host = fakeElement(); const clear = fakeElement(); const buttons = [12,13].map(id=>{const button=fakeElement();button.dataset.showDependencies=id;return button;});
+  const nodes = buttons.map(button=>{const node=fakeElement();node.dataset.workId=button.dataset.showDependencies;return node;});
+  const panel = fakeElement(); panel.querySelector = selector=>selector==='[data-dependency-clear]'?clear:null;
+  host.querySelector = selector=>selector==='.dependencySelection'&&host.innerHTML?panel:selector==='[data-dependency-clear]'&&host.innerHTML?clear:null;
+  const root = fakeElement(); root.id='board';
+  root.querySelector = selector=>selector==='.workDependencySelection'?host:buttons.find(button=>selector==='[data-show-dependencies="'+button.dataset.showDependencies+'"]')||null;
+  root.querySelectorAll = selector=>selector==='[data-show-dependencies]'?buttons:selector==='[data-work-id]'?nodes:[];
+  app.wireWorkDependencies(root,app.workTickets());
+  return {host,clear,buttons,nodes,root};
+}
+
+test('dependency context starts empty, requires deliberate selection, and clears without dimming', () => {
+  const app=loadApp(); app.setState(stateWithHierarchy()); const {host,clear,buttons,nodes}=dependencySurface(app);
+  assert.equal(host.innerHTML,''); assert.equal(app.getDependencySelectionId(),0);
+  assert.equal(nodes[0].onmouseenter,undefined); assert.equal(nodes[0].onfocus,undefined);
+  let prevented=false, stopped=false;
+  buttons[0].onclick({preventDefault(){prevented=true},stopPropagation(){stopped=true}});
+  assert.equal(prevented,true); assert.equal(stopped,true); assert.equal(app.getDependencySelectionId(),12);
+  assert.match(host.innerHTML,/Only direct connections for Task/);
+  assert.equal(buttons[0]['aria-pressed'],'true'); assert.equal(nodes[0].classList.contains('dependencySelected'),true);
+  assert.equal(nodes[1].classList.contains('workHoverDimmed'),false);
+  clear.onclick({stopPropagation(){}});
+  assert.equal(host.innerHTML,''); assert.equal(app.getDependencySelectionId(),0);
+  assert.equal(buttons[0]['aria-pressed'],'false'); assert.equal(nodes[0].classList.contains('dependencySelected'),false);
+});
+
+test('dependency selection resets on session and board changes', () => {
+  const app=loadApp(); const state=stateWithHierarchy(); app.setState(state); const surface=dependencySurface(app);
+  surface.buttons[0].onclick({preventDefault(){},stopPropagation(){}});
+  state.board.id=2; app.wireWorkDependencies(surface.root,app.workTickets());
+  assert.equal(surface.host.innerHTML,''); assert.equal(app.getDependencySelectionId(),0);
+  surface.buttons[0].onclick({preventDefault(){},stopPropagation(){}});
+  assert.equal(app.getDependencySelectionId(),12); app.resetClientState(true);
+  assert.equal(app.getDependencySelectionId(),0);
+});
+
+test('Board shows full Sprint planning without a disclosure and keeps backlog promotion available', () => {
+  const app=loadApp(); app.setState(stateWithHierarchy()); app.renderBoard();
+  const html=app.elements.get('#board').innerHTML;
+  assert.match(html,/<section class="panel sprintPlanner">/);
+  assert.doesNotMatch(html,/<details class="panel sprintPlanner"|<summary>|workDependencyOverlay/);
+  assert.match(html,/id="sprintStartDate"/); assert.match(html,/id="sprintWeeks"/);
+  assert.match(html,/id="saveSprintSettings"/); assert.match(html,/data-sprint-name=/); assert.match(html,/data-sprint-jump=/);
+  assert.equal((html.match(/data-sprint-card=/g)||[]).length,6);
+  assert.match(html,/id="boardBacklogAdd"/);
+});
+
+test('promotion selectors do not offer deleted or archived Epics', () => {
+  const app=loadApp(); const state=stateWithHierarchy();
+  state.tickets.push({...state.tickets[0],id:20,title:'Archived Epic',archivedAt:'2026-10-06'},{...state.tickets[0],id:21,title:'Deleted Epic',deletedAt:'2026-10-06'});
+  app.setState(state);
+  assert.doesNotMatch(app.boardBacklogPickerHtml(),/Archived Epic|Deleted Epic/);
+  assert.doesNotMatch(app.backlogRowHtml(state.tickets[4]),/Archived Epic|Deleted Epic/);
+  assert.match(app.boardBacklogPickerHtml(),/value="10"/);
 });
 
 test('date helpers reject rollover dates and calculate stable local days', () => {
@@ -876,25 +954,112 @@ test('timeline shows live delay for overdue work and actual delay for late compl
   assert.match(app.ganttDelayText(aggregate), /days over target$/);
 });
 
-test('timeline hover keeps dependency components visible in either direction', () => {
-  const app = loadApp();
-  const state = stateWithHierarchy();
+test('timeline explicit selection includes direct neighbors without following the chain or dimming unrelated work', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  state.tickets.find(ticket => ticket.id === 13).links = [11];
+  state.tickets.push({...state.tickets[2], id:15, title:'Immediate dependent', links:[12], parentId:0});
+  state.tickets.push({...state.tickets[2], id:16, title:'Indirect dependent', links:[15], parentId:0});
   app.setState(state);
-  const task1 = { ticket: { id: 1 }, deps: [{ id: 2 }] };
-  const task2 = { ticket: { id: 2 }, deps: [] };
-  const task3 = { ticket: { id: 3 }, deps: [] };
-  const tasks = [task1, task2, task3];
-
-  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [1])].sort(), [1, 2]);
-  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [2])].sort(), [1, 2]);
-  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [1, 2])].sort(), [1, 2]);
-  assert.deepEqual([...app.timelineHoverRelatedIds(tasks, [3])], [3]);
-
-  const epicTasks = state.tickets.slice(0, 4).map(ticket => ({ ticket, deps: [] }));
-  assert.deepEqual([...app.timelineEpicHoverRelatedIds(epicTasks, 10)].sort((a, b) => a - b), [10, 11, 12]);
+  const tasks = state.tickets.filter(ticket => ticket.type !== 'idea').map(ticket => ({ticket,deps:[]}));
+  assert.equal(app.timelineHighlight(tasks).active,false);
+  app.setTimelineHighlightId(12);
+  const highlight = app.timelineHighlight(tasks);
+  assert.deepEqual([...highlight.ids].sort((a,b)=>a-b),[12,13,15]);
+  assert.deepEqual([...highlight.direct].sort(),['12>15','13>12']);
+  assert.equal(app.timelineTaskHighlightClass(tasks.find(task => task.ticket.id === 16),highlight),'');
+  app.setTimelineHighlightId(999);
+  assert.equal(app.timelineHighlight(tasks).active,false);
 });
 
-test('timeline cursor snaps to days and dependency midpoint arrows preserve direction', () => {
+test('Sprint cadence saves remain bound to the original board and ignore late results', async () => {
+  const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
+  app.setState(stateWithHierarchy()); app.wireSprintPlanner();
+  app.elements.get('#sprintStartDate').value='2026-01-01';
+  app.elements.get('#sprintWeeks').value='2';
+  const pending=app.elements.get('#saveSprintSettings').onclick();
+  assert.equal(queue.pending[0].url,'/api/board-settings?boardId=1');
+  assert.equal(app.elements.get('#sprintStartDate').disabled,true);
+  const original=app.getState();
+  app.selectBoard(2); queue.respond(0,{ok:true}); await pending;
+  assert.equal(queue.pending.length,1);
+  assert.equal(app.getState(),original);
+});
+
+test('delayed Sprint name handlers cannot save to a different board', () => {
+  const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
+  app.setState(stateWithHierarchy());
+  const input=fakeElement(); input.dataset={sprintName:'1',originalDisplay:'Sprint 1'}; input.value='Launch';
+  const original=app.document.querySelectorAll;
+  app.document.querySelectorAll=selector => selector === '.sprintNameInput' ? [input] : original(selector);
+  app.wireSprintCards(true);
+  app.selectBoard(2);
+  input.onchange();
+  assert.equal(queue.pending.length,0);
+});
+
+test('late Sprint name success or authentication errors cannot affect another board or session', async () => {
+  for (const status of [200,401]) {
+    const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
+    app.setState(stateWithHierarchy());
+    const input=fakeElement(); input.dataset={sprintName:'1',originalDisplay:'Sprint 1'}; input.value='Launch';
+    const pending=app.saveSprintName(input);
+    assert.equal(queue.pending[0].url,'/api/sprint-names?boardId=1');
+    app.resetClientState();
+    const next={...stateWithHierarchy(),board:{id:2},me:{id:9},sprintNames:[{sprintNumber:1,name:'Other board'}]};
+    app.setState(next); queue.respond(0,status === 200 ? {ok:true} : 'login required',status); await pending;
+    assert.equal(app.getState(),next);
+    assert.equal(app.getState().sprintNames[0].name,'Other board');
+    assert.equal(queue.pending.length,1);
+  }
+});
+
+test('a Sprint name response cannot redraw old work while the requested board is loading', async () => {
+  const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
+  app.setState(stateWithHierarchy());
+  const input=fakeElement(); input.dataset={sprintName:'1',originalDisplay:'Sprint 1'}; input.value='Launch';
+  const pending=app.saveSprintName(input);
+  const original=app.getState(); app.selectBoard(2);
+  app.document.querySelector('#board').innerHTML='Loading board';
+  queue.respond(0,{ok:true}); await pending;
+  assert.equal(app.getState(),original);
+  assert.equal(app.getState().sprintNames.length,0);
+  assert.equal(app.elements.get('#board').innerHTML,'Loading board');
+});
+
+test('changing boards clears an unavailable Epic filter before calculating Timeline rows', () => {
+  const app=loadApp(); const first=stateWithHierarchy(); app.setState(first);
+  app.setTimelineEpicFilter('10');
+  const next={...stateWithHierarchy(),board:{id:2},tickets:[{...first.tickets[3],id:22,title:'Work on the new board',links:[]}]};
+  app.setState(next); app.selectBoard(2);
+  const root=app.document.querySelector('#timeline'); root.clientWidth=1000;
+  app.renderGantt(root);
+  assert.match(root.innerHTML,/Work on the new board/);
+  assert.doesNotMatch(root.innerHTML,/No tickets with schedulable dates yet/);
+  assert.match(root.innerHTML,/<option value="all">All epics<\/option>/);
+});
+
+test('timeline keeps delay and estimate rails separate from clipped task labels and dependency diagrams', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); app.setState(state);
+  const ticket = {...state.tickets[2], title:'A long task title that must stay inside its planned bar', links:[], startDate:'2000-01-01',dueDate:'2000-01-03'};
+  const task = app.ganttTask(ticket); task.row=0;
+  const start=app.parseDate('1999-12-31');
+  const svg=app.ganttSvg([task],start,10,10,400,56,98,98,62,app.timelineHighlight([task]));
+  assert.doesNotMatch(svg,/ganttSvgArrow/);
+  assert.match(svg,/class="ganttSvgLate"[^>]*y="122"[^>]*height="7"/);
+  assert.match(svg,/class="ganttSvgEstimate"[^>]*y="122"[^>]*height="7"/);
+  assert.doesNotMatch(svg,/class="ganttSvgBarText"/);
+  const wide=app.ganttSvgTask(task,start,100,56,98,app.timelineHighlight([task]));
+  assert.match(wide,/clip-path="url\(#ganttTaskClip12\)"/);
+  assert.equal(app.ganttSvgBarLabel(task,42),'');
+  assert.ok(app.ganttSvgBarLabel(task,120).length <= Math.floor((120-18)/7));
+  assert.match(app.ganttTaskLabel(task,98,{}),/A long task title that must stay inside its planned bar/);
+  const root=app.document.querySelector('#timeline'); root.clientWidth=1000;
+  app.setTimelineHighlightId(12); app.renderGantt(root);
+  assert.match(root.innerHTML,/dependencySelection/);
+  assert.doesNotMatch(root.innerHTML,/ganttSvgArrow|pathDimmed|hoverDimmed/);
+});
+
+test('timeline cursor snaps to days and keeps its date label in view', () => {
   const app = loadApp();
   const rangeStart = app.parseDate('2026-08-01');
   const cursor = app.ganttCursorAtX(152, rangeStart, 31, 10, 400);
@@ -906,8 +1071,6 @@ test('timeline cursor snaps to days and dependency midpoint arrows preserve dire
   const edgeCursor = app.ganttCursorAtX(296, rangeStart, 31, 10, 400, 100, 300);
   assert.equal(edgeCursor.tagX + edgeCursor.tagWidth <= 296, true);
   assert.match(app.ganttSvgCursor(300), /class="ganttSvgCursorLine"/);
-  assert.equal(app.ganttArrowMidPoints(20, 10, 50), '20,38 13,24 27,24');
-  assert.equal(app.ganttArrowMidPoints(20, 50, 10), '20,22 13,36 27,36');
 });
 
 test('sorting, grouping, and labels remain deterministic', () => {
@@ -933,7 +1096,9 @@ test('HTML-producing helpers escape user-controlled text', () => {
   app.setState(state);
   const markup = app.card(state.tickets[2]);
   assert.equal(markup.includes('<img src=x onerror=alert(1)>'), false);
-  assert.equal(markup.includes('&lt;img src=x onerror=alert(1)&gt;'), true);
+  const dependencyMarkup = app.dependencySelectionHtml(12, [12, 13]);
+  assert.equal(dependencyMarkup.includes('<img src=x onerror=alert(1)>'), false);
+  assert.equal(dependencyMarkup.includes('&lt;img src=x onerror=alert(1)&gt;'), true);
   assert.equal(markup.includes('&lt;b&gt;Task&lt;/b&gt;'), true);
   assert.equal(app.escAttr('"<&'), '&quot;&lt;&amp;');
   assert.equal(app.avatar('<x').includes('&lt;X'), true);

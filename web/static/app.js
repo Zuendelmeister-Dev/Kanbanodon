@@ -15,6 +15,8 @@ let overviewSort = { key: 'dueDate', dir: 'asc' };
 let overviewFilters = { type: '', status: '', q: '' };
 let boardAccessSaveStatus = {};
 let sprintSettingsStatus = '';
+let boardDependencySelectionId = 0;
+let workDependencyBoardId = 0;
 let timelineZoom = 1;
 let timelineEpicFilter = 'all';
 let timelineHighlightId = 0;
@@ -57,6 +59,9 @@ function currentSessionGuard() {
 function invalidateSessionRequests() {
   sessionGeneration++;
   loadGeneration++;
+  boardDependencySelectionId = 0;
+  workDependencyBoardId = 0;
+  timelineHighlightId = 0;
 }
 
 // Returns the currently selected board id, falling back to the first accessible board.
@@ -127,7 +132,9 @@ async function load() {
     const url = '/api/state' + (selectedBoardId ? ('?boardId=' + encodeURIComponent(selectedBoardId)) : '');
     const s = await api(url, {}, isCurrent);
     if (!isCurrent()) return;
+    const previousBoardId = currentBoardId();
     state = { ...s, tickets: (s.tickets || []).map(normTicket), sprintNames: (s.sprintNames || s.sprint_names || []).map(normSprintName).filter(item => item.sprintNumber > 0 && item.name), boards: s.boards || [], boardAccess: s.boardAccess || [], allBoardAccess: s.allBoardAccess || [] };
+    if (previousBoardId !== currentBoardId()) boardDependencySelectionId = 0;
     selectedBoardId = currentBoardId();
     if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
     hideLogin();
@@ -748,11 +755,11 @@ function renderBoard() {
     return;
   }
   const tickets = filteredWork();
-  root.innerHTML = '<details class="optionalPlanning"><summary>Sprint planning</summary>' + sprintPlannerHtml(workTickets()) + '</details>' + (backlogTickets().length ? boardBacklogPickerHtml() : '') + boardSwimlanes(tickets);
+  root.innerHTML = sprintPlannerHtml(workTickets()) + (backlogTickets().length ? boardBacklogPickerHtml() : '') + '<div class="workDependencySelection"></div>' + boardSwimlanes(tickets);
   wireSprintPlanner();
   wireBoardBacklogPicker();
   wireDnD();
-  wireWorkHover(root, tickets);
+  wireWorkDependencies(root, tickets);
 }
 
 // Builds the board-level sprint cadence editor and its calculated sprint preview.
@@ -795,7 +802,7 @@ function boardBacklogPickerHtml() {
   const backlog = backlogTickets().sort(ticketOrder);
   if (!backlog.length) return '<section class="panel boardBacklogPicker empty"><div><h2>Backlog</h2><p>Everything is already on the board.</p></div><button type="button" id="boardBacklogOpen">Open Backlog</button></section>';
   const ticketOptions = backlog.map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + normalizePromotionType(t) + ' · ' + ticketLabel(t)) + '</option>').join('');
-  const epicOptions = state.tickets.filter(t => normalizeTicketType(t.type) === 'epic').sort(ticketOrder).map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + ticketLabel(t)) + (isBacklogTicket(t) ? ' (Backlog)' : '') + '</option>').join('');
+  const epicOptions = state.tickets.filter(t => !t.deletedAt && !t.archivedAt && normalizeTicketType(t.type) === 'epic').sort(ticketOrder).map(t => '<option value="' + t.id + '">' + esc(ticketRef(t) + ' · ' + ticketLabel(t)) + (isBacklogTicket(t) ? ' (Backlog)' : '') + '</option>').join('');
   return '<section class="panel boardBacklogPicker"><div><h2>Add from Backlog</h2><p>Select work and place it in an Epic lane.</p></div><select id="boardBacklogTicket" aria-label="Backlog ticket">' + ticketOptions + '</select><select id="boardBacklogEpic" aria-label="Target Epic"><option value="0">No Epic</option>' + epicOptions + '</select><button id="boardBacklogAdd" type="button">Add to board</button><button class="ghost" type="button" id="boardBacklogOpen">Open Backlog</button><p id="boardBacklogError" class="formError" role="alert"></p></section>';
 }
 
@@ -812,6 +819,9 @@ function openBacklogView() {
 function wireSprintPlanner() {
   const button = $('#saveSprintSettings');
   if (!button) return;
+  const boardId = currentBoardId();
+  const sessionCurrent = currentSessionGuard();
+  const isCurrent = () => sessionCurrent() && boardId === currentBoardId() && (!selectedBoardId || boardId === selectedBoardId);
   const startInput = $('#sprintStartDate');
   const weeksInput = $('#sprintWeeks');
   const updatePreview = () => {
@@ -823,6 +833,7 @@ function wireSprintPlanner() {
   startInput.oninput = updatePreview;
   weeksInput.oninput = updatePreview;
   button.onclick = async () => {
+    if (!isCurrent() || button.disabled) return;
     const start = startInput.value;
     const weeks = +weeksInput.value;
     const error = $('#sprintSettingsError');
@@ -837,12 +848,18 @@ function wireSprintPlanner() {
     }
     try {
       button.disabled = true;
+      startInput.disabled = true;
+      weeksInput.disabled = true;
       button.textContent = 'Saving...';
-      await api('/api/board-settings' + boardQuery(), { method: 'PUT', body: JSON.stringify({ BoardID: currentBoardId(), SprintStartDate: start, SprintWeeks: weeks }) });
+      await api('/api/board-settings?boardId=' + encodeURIComponent(boardId), { method: 'PUT', body: JSON.stringify({ BoardID: boardId, SprintStartDate: start, SprintWeeks: weeks }) }, isCurrent);
+      if (!isCurrent()) return;
       sprintSettingsStatus = 'Cadence saved';
       await load();
     } catch (err) {
+      if (!isCurrent()) return;
       button.disabled = false;
+      startInput.disabled = false;
+      weeksInput.disabled = false;
       button.textContent = 'Save Sprint plan';
       sprintSettingsStatus = '';
       error.textContent = (err.message || 'Sprint cadence could not be saved.').trim();
@@ -853,6 +870,8 @@ function wireSprintPlanner() {
 
 // Attaches editable Sprint names and the icon-only Timeline jump actions.
 function wireSprintCards(jumpEnabled) {
+  const boardId = currentBoardId();
+  const sessionCurrent = currentSessionGuard();
   $$('.sprintJump').forEach(button => {
     button.disabled = !jumpEnabled;
     if (!jumpEnabled) button.title = 'Save the Sprint plan before opening it in Timeline';
@@ -864,12 +883,12 @@ function wireSprintCards(jumpEnabled) {
       clearTimeout(saveTimer);
       const status = document.querySelector('[data-sprint-name-status="' + input.dataset.sprintName + '"]');
       if (status) status.textContent = 'Unsaved';
-      saveTimer = setTimeout(() => saveSprintName(input), 450);
+      saveTimer = setTimeout(() => saveSprintName(input, boardId, sessionCurrent), 450);
     };
     input.onkeydown = event => {
       if (event.key === 'Enter') {
         clearTimeout(saveTimer);
-        saveSprintName(input);
+        saveSprintName(input, boardId, sessionCurrent);
       }
       if (event.key === 'Escape') {
         clearTimeout(saveTimer);
@@ -879,13 +898,15 @@ function wireSprintCards(jumpEnabled) {
     };
     input.onchange = () => {
       clearTimeout(saveTimer);
-      saveSprintName(input);
+      saveSprintName(input, boardId, sessionCurrent);
     };
   });
 }
 
 // Persists one inline Sprint name and refreshes all visible Sprint labels.
-async function saveSprintName(input) {
+async function saveSprintName(input, boardId = currentBoardId(), sessionCurrent = currentSessionGuard()) {
+  const isCurrent = () => sessionCurrent() && boardId === currentBoardId() && (!selectedBoardId || boardId === selectedBoardId);
+  if (!isCurrent() || input.disabled) return;
   const number = +input.dataset.sprintName;
   const fallback = defaultSprintName(number);
   const display = input.value.trim() || fallback;
@@ -895,12 +916,14 @@ async function saveSprintName(input) {
   input.disabled = true;
   if (status) status.textContent = 'Saving…';
   try {
-    await api('/api/sprint-names' + boardQuery(), { method: 'PUT', body: JSON.stringify({ BoardID: currentBoardId(), SprintNumber: number, Name: name }) });
+    await api('/api/sprint-names?boardId=' + encodeURIComponent(boardId), { method: 'PUT', body: JSON.stringify({ BoardID: boardId, SprintNumber: number, Name: name }) }, isCurrent);
+    if (!isCurrent()) return;
     state.sprintNames = (state.sprintNames || []).filter(item => +item.sprintNumber !== number);
     if (name) state.sprintNames.push({ sprintNumber: number, name });
     sprintSettingsStatus = 'Sprint name saved';
     if (view === 'board') renderBoard();
   } catch (err) {
+    if (!isCurrent()) return;
     input.disabled = false;
     input.value = input.dataset.originalDisplay || fallback;
     if (status) status.textContent = (err.message || 'Could not save').trim();
@@ -992,9 +1015,9 @@ function boardSwimlane(lane) {
 // Builds the sticky Epic cell at the left of a swimlane.
 function boardLaneEpicCell(lane) {
   if (!lane.epic) {
-    return '<div class="boardLaneEpic boardLaneStandalone" data-work-id="0" data-hover-scope="standalone" tabindex="0"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
+    return '<div class="boardLaneEpic boardLaneStandalone"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
   }
-  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '" data-work-id="' + lane.epic.id + '" data-hover-scope="epic"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
+  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '" data-work-id="' + lane.epic.id + '"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
 }
 
 // Returns the cards that belong in one swimlane column.
@@ -1029,7 +1052,7 @@ function dependencyTickets(t) {
 
 // Returns work items that directly depend on the given ticket.
 function dependentTickets(t) {
-  return workTickets().filter(candidate => (candidate.links || []).some(id => +id === +t.id)).sort(ticketOrder);
+  return state.tickets.filter(candidate => !candidate.deletedAt && !candidate.archivedAt && !isIdea(candidate) && (candidate.links || []).some(id => +id === +t.id)).sort(ticketOrder);
 }
 
 // Returns dependencies that are not yet in the Done column.
@@ -1062,19 +1085,21 @@ function card(t) {
   return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + (ticketDuration(t) ? '<span class="pill">' + durationLabel(t) + '</span>' : '') + (checklistProgress(t) ? '<span class="pill checklistPill" title="Checklist progress">' + checklistProgress(t) + ' steps</span>' : '') + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
 }
 
-// Renders compact dependency direction hints on a board card.
+// Shows a short dependency summary and an explicit action for its detail panel.
 function boardDependencyHtml(ticket, blocked = unfinishedDependencies(ticket)) {
   const dependencies = dependencyTickets(ticket);
   const dependents = dependentTickets(ticket);
   if (!dependencies.length && !dependents.length) return '';
-  const needsText = blocked.length ? 'Waiting for ' : 'Depends on ';
-  const needs = dependencies.length
-    ? '<span class="cardDependency needs' + (blocked.length ? ' pending' : ' resolved') + '" title="' + escAttr(needsText + dependencies.map(ticketLabel).join(', ')) + '"><b aria-hidden="true">&larr;</b> ' + needsText + esc(dependencies.map(ticketRef).join(', ')) + '</span>'
-    : '';
-  const enables = dependents.length
-    ? '<span class="cardDependency enables" title="' + escAttr('Enables ' + dependents.map(ticketLabel).join(', ')) + '"><b aria-hidden="true">&rarr;</b> Enables ' + esc(dependents.map(ticketRef).join(', ')) + '</span>'
-    : '';
-  return '<div class="cardDependencies" aria-label="Dependencies">' + needs + enables + '</div>';
+  const count = value => value + ' task' + (value === 1 ? '' : 's');
+  const needs = dependencies.length ? (blocked.length ? 'Waiting for ' + count(blocked.length) : 'Prerequisites done') : '';
+  const enables = dependents.length ? 'Required by ' + count(dependents.length) : '';
+  return '<div class="cardDependencyHints"><span>' + esc([needs, enables].filter(Boolean).join(' · ')) + '</span>' + dependencySelectionButtonHtml(ticket) + '</div>';
+}
+
+// Builds a keyboard-accessible action without opening the task editor.
+function dependencySelectionButtonHtml(ticket) {
+  if (!dependencyTickets(ticket).length && !dependentTickets(ticket).length) return '';
+  return '<button class="showDependencies" type="button" draggable="false" data-show-dependencies="' + ticket.id + '" aria-label="Show dependencies for ' + escAttr(ticketLabel(ticket)) + '">Show dependencies</button>';
 }
 
 // Calculates card indentation based on nested non-Epic parents.
@@ -1099,8 +1124,8 @@ function wireDnD() {
   if (emptyAction) emptyAction.onclick = () => { if (workTickets().length) resetTaskFilters(); else $('#newTitle').focus(); };
   $$('.card').forEach(c => {
     c.tabIndex = 0;
-    c.setAttribute('role', 'button');
-    c.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTicket(+c.dataset.id); } };
+    c.setAttribute('role', 'group');
+    c.onkeydown = event => { if (event.target === c && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openTicket(+c.dataset.id); } };
     c.ondragstart = e => e.dataTransfer.setData('text/plain', c.dataset.id);
     c.onclick = () => openTicket(+c.dataset.id);
   });
@@ -1140,7 +1165,7 @@ function renderOverview() {
   const open = ts.length - done.length;
   const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
-  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-work-id="' + t.id + '"' + (t.type === 'epic' ? ' data-hover-scope="epic"' : '') + ' data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
+  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-work-id="' + t.id + '" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section><div class="workDependencySelection"></div>' + overviewTable(ts);
   wireOverviewControls(ts);
   if (root.querySelector('.ticketTable')) {
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'overviewColumnsToggle'; toggle.textContent = 'Show planning columns';
@@ -1150,7 +1175,7 @@ function renderOverview() {
   root.querySelectorAll('[data-open-ticket]').forEach(node => {
     node.onclick = () => openTicket(+node.dataset.openTicket);
   });
-  wireWorkHover(root, ts);
+  wireWorkDependencies(root, overviewRows(ts).map(row => row.ticket));
 }
 
 // Builds the filterable overview ticket table.
@@ -1219,12 +1244,12 @@ function overviewHierarchyDepth(ticket, epicId) {
 function overviewRow(row) {
   if (row.kind === 'epic') return overviewEpicRow(row.ticket, row.count);
   const t = row.ticket || row;
-  const deps = dependencyTickets(t).map(ticketRef).join(', ') || 'None';
+  const deps = dependencyTickets(t).map(ticketLabel).join(', ') || 'None';
   const labels = (t.labels || []).map(l => '<span class="tableTag">' + esc(l) + '</span>').join('') || '<span class="muted">None</span>';
   const parent = parentTicket(t.parentId);
   const sprint = ticketSprint(t);
   const depthClass = ' overviewDepth' + Math.max(0, Math.min(4, +(row.depth || 0)));
-  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" data-open-ticket="' + t.id + '"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" data-open-ticket="' + t.id + '"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span>' + dependencySelectionButtonHtml(t) + '</td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
 }
 
 // Builds the compact Sprint label shown in Overview.
@@ -1244,7 +1269,7 @@ function sprintName(sprint) {
 // Builds the overview table group header for an Epic.
 function overviewEpicRow(epic, childCount) {
   const sprint = ticketSprint(epic);
-  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-hover-scope="epic" data-open-ticket="' + epic.id + '"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span></div></td></tr>';
+  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-open-ticket="' + epic.id + '"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span>' + dependencySelectionButtonHtml(epic) + '</div></td></tr>';
 }
 
 // Builds searchable text for an overview row.
@@ -1307,197 +1332,88 @@ function wireOverviewControls(tickets) {
   });
 }
 
-// Fades unrelated work in board and overview while preserving dependency context.
-function wireWorkHover(root, tickets) {
-  const nodes = [...root.querySelectorAll('[data-work-id]')];
-  if (!nodes.length) return;
-  const apply = node => {
-    const id = +node.dataset.workId;
-    const scope = node.dataset.hoverScope;
-    const related = scope === 'epic'
-      ? epicHoverRelatedIds(tickets, id)
-      : scope === 'standalone'
-        ? standaloneHoverRelatedIds(tickets)
-        : workHoverRelatedIds(tickets, [id]);
-    root.classList.add('workHoverActive');
-    nodes.forEach(candidate => {
-      const isRelated = related.has(+candidate.dataset.workId);
-      candidate.classList.toggle('workHoverRelated', isRelated);
-      candidate.classList.toggle('workHoverDimmed', !isRelated);
-    });
-    renderWorkDependencyArrows(root, tickets, related);
+// Resolves only the selected task and its immediate prerequisites and dependents.
+function dependencySelectionModel(ticketId, visibleIds) {
+  const selected = state.tickets.find(ticket => +ticket.id === +ticketId && !ticket.deletedAt && !ticket.archivedAt);
+  if (!selected) return null;
+  const visible = visibleIds == null ? null : new Set([...visibleIds].map(Number));
+  const prerequisites = dependencyTickets(selected).sort(ticketOrder);
+  const dependents = dependentTickets(selected);
+  const outsideView = [...prerequisites, selected, ...dependents].filter(ticket => visible && !visible.has(+ticket.id));
+  return { selected, prerequisites, dependents, outsideView };
+}
+
+// Builds the same compact dependency panel for Board, Overview, and Timeline.
+function dependencySelectionHtml(ticketId, visibleIds) {
+  const model = dependencySelectionModel(ticketId, visibleIds);
+  if (!model) return '';
+  const column = (title, tickets, empty, selected = false) => '<div class="dependencySelectionColumn' + (selected ? ' dependencySelectionSelected' : '') + '"><h3>' + title + '</h3><div>' + (tickets.map(ticket => dependencySelectionNodeHtml(ticket, model.outsideView)).join('') || '<p class="dependencySelectionEmpty">' + empty + '</p>') + '</div></div>';
+  const connector = '<span class="dependencySelectionConnector" aria-hidden="true"><svg viewBox="0 0 32 24"><path d="M2 12 H28 M21 5 L28 12 L21 19"></path></svg></span>';
+  const note = model.outsideView.length ? '<p class="dependencySelectionNote">Some related tasks are outside the current view. They are shown here so the dependency is complete.</p>' : '';
+  const emptyConnector = '<span class="dependencySelectionConnector" aria-hidden="true"></span>';
+  return '<section class="panel dependencySelection" aria-label="Dependencies for ' + escAttr(ticketLabel(model.selected)) + '"><div class="dependencySelectionHeader"><div><h2>Dependencies</h2><p>Only direct connections for ' + esc(ticketLabel(model.selected)) + '. Prerequisites must finish first.</p></div><button type="button" class="ghost" data-dependency-clear>Clear selection</button></div><div class="dependencySelectionFlow">' + column('Must finish first', model.prerequisites, 'No prerequisites') + (model.prerequisites.length ? connector : emptyConnector) + column('Selected task', [model.selected], '', true) + (model.dependents.length ? connector : emptyConnector) + column('Can start afterwards', model.dependents, 'No dependent tasks') + '</div>' + note + '</section>';
+}
+
+// Uses task names and workflow status instead of unexplained numeric references.
+function dependencySelectionNodeHtml(ticket, outsideView) {
+  const outside = outsideView.some(item => +item.id === +ticket.id);
+  const location = (ticket.archivedAt ? 'Archived · ' : isBacklogTicket(ticket) ? 'Backlog · ' : '') + columnName(ticket.columnId);
+  return '<button type="button" class="dependencySelectionNode" data-open-ticket="' + ticket.id + '"><strong>' + esc(ticketLabel(ticket)) + '</strong><span class="dependencySelectionStatus">' + esc(location) + '</span>' + (outside ? '<small>Outside current view</small>' : '') + '</button>';
+}
+
+// Wires only deliberate panel actions; hover and focus never select dependencies.
+function wireDependencySelection(root, onClear) {
+  const panel = root.querySelector('.dependencySelection');
+  if (!panel) return;
+  panel.querySelectorAll('[data-open-ticket]').forEach(button => {
+    button.onclick = event => {
+      event?.stopPropagation();
+      openTicket(+button.dataset.openTicket);
+    };
+  });
+  const clear = panel.querySelector('[data-dependency-clear]');
+  if (clear) clear.onclick = event => {
+    event?.stopPropagation();
+    onClear();
   };
-  const clear = () => {
-    root.classList.remove('workHoverActive');
-    nodes.forEach(node => node.classList.remove('workHoverDimmed', 'workHoverRelated'));
-    clearWorkDependencyArrows(root);
-  };
-  nodes.forEach(node => {
-    node.onmouseenter = () => apply(node);
-    node.onmouseleave = clear;
-    node.onfocus = () => apply(node);
-    node.onblur = clear;
-  });
 }
 
-// Returns the visible undirected dependency component for hovered work items.
-function workHoverRelatedIds(tickets, seedIds) {
-  return dependencyComponentIds(tickets.map(ticket => ({ id: +ticket.id, links: (ticket.links || []).map(Number) })), seedIds);
-}
-
-// Returns the hovered Epic and all currently visible work assigned to it.
-function epicHoverRelatedIds(tickets, epicId) {
-  const related = new Set([+epicId]);
-  tickets.forEach(ticket => {
-    const epic = topEpicFor(ticket);
-    if (epic && +epic.id === +epicId) related.add(+ticket.id);
-  });
-  return related;
-}
-
-// Returns the visible work items that are not assigned to an Epic swimlane.
-function standaloneHoverRelatedIds(tickets) {
-  const related = new Set([0]);
-  tickets.forEach(ticket => {
-    if (!topEpicFor(ticket)) related.add(+ticket.id);
-  });
-  return related;
-}
-
-// Walks dependency links in both directions for a visible set of tickets.
-function dependencyComponentIds(tickets, seedIds) {
-  const visibleIds = new Set(tickets.map(ticket => +ticket.id));
-  const adjacency = new Map([...visibleIds].map(id => [id, new Set()]));
-  tickets.forEach(ticket => (ticket.links || []).forEach(depId => {
-    const from = +depId;
-    const to = +ticket.id;
-    if (!visibleIds.has(from) || !visibleIds.has(to)) return;
-    adjacency.get(from).add(to);
-    adjacency.get(to).add(from);
-  }));
-  const related = new Set(seedIds.map(Number).filter(id => visibleIds.has(id)));
-  const queue = [...related];
-  while (queue.length) {
-    const id = queue.shift();
-    adjacency.get(id)?.forEach(next => {
-      if (related.has(next)) return;
-      related.add(next);
-      queue.push(next);
-    });
-  }
-  return related;
-}
-
-// Returns visible dependency edges directed from prerequisite to dependent work.
-function workDependencyEdges(tickets, relatedIds = null) {
-  const byId = new Map(tickets.map(ticket => [+ticket.id, ticket]));
-  const edges = [];
-  tickets.forEach(target => (target.links || []).forEach(depId => {
-    const from = +depId;
-    const to = +target.id;
-    const source = byId.get(from);
-    if (source && (!relatedIds || (relatedIds.has(from) && relatedIds.has(to)))) edges.push({ from, to, source, target });
-  }));
-  return edges;
-}
-
-// Draws the currently relevant dependency arrows over Board cards or Overview rows.
-function renderWorkDependencyArrows(root, tickets, relatedIds) {
-  clearWorkDependencyArrows(root);
-  const isBoard = root.id === 'board';
-  const host = root.querySelector(isBoard ? '.boardSwimlanes' : '.tableScroll');
+// Shows a selected task's direct connections in its own panel, never over work.
+function wireWorkDependencies(root, tickets) {
+  const host = root.querySelector('.workDependencySelection');
   if (!host) return;
-  const itemSelector = id => isBoard
-    ? '.card[data-work-id="' + id + '"]'
-    : '.ticketRow[data-work-id="' + id + '"]';
-  const markerId = 'workDependencyArrowHead-' + root.id;
-  const arrows = workDependencyEdges(tickets, relatedIds).map(edge => {
-    const sourceNode = root.querySelector(itemSelector(edge.from));
-    const targetNode = root.querySelector(itemSelector(edge.to));
-    if (!sourceNode || !targetNode) return '';
-    const from = workElementBox(sourceNode, host, !isBoard);
-    const to = workElementBox(targetNode, host, !isBoard);
-    const geometry = workDependencyArrowGeometry(from, to, isBoard ? 'board' : 'overview');
-    const title = ticketRef(edge.source) + ' enables ' + ticketRef(edge.target);
-    return '<g class="workDependencyArrowGroup" data-from-id="' + edge.from + '" data-to-id="' + edge.to + '"><title>' + esc(title) + '</title><path class="workDependencyArrowOutline" d="' + geometry.path + '"></path><path class="workDependencyArrow" d="' + geometry.path + '" marker-end="url(#' + markerId + ')"></path><circle class="workDependencyArrowSource" cx="' + geometry.startX + '" cy="' + geometry.startY + '" r="4"></circle></g>';
-  }).filter(Boolean);
-  if (!arrows.length) return;
-  host.classList.add('dependencyOverlayHost');
-  const width = Math.max(host.scrollWidth, host.clientWidth);
-  const height = Math.max(host.scrollHeight, host.clientHeight);
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'workDependencyOverlay ' + (isBoard ? 'boardDependencyOverlay' : 'overviewDependencyOverlay'));
-  svg.setAttribute('width', width);
-  svg.setAttribute('height', height);
-  svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
-  svg.setAttribute('aria-hidden', 'true');
-  svg.innerHTML = '<defs><marker id="' + markerId + '" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path class="workDependencyArrowHead" d="M0,0 L12,6 L0,12 Z"></path></marker></defs>' + arrows.join('');
-  host.appendChild(svg);
-}
-
-// Removes a dependency overlay after the pointer leaves its active work item.
-function clearWorkDependencyArrows(root) {
-  root.querySelectorAll('.workDependencyOverlay').forEach(overlay => overlay.remove());
-  root.querySelectorAll('.dependencyOverlayHost').forEach(host => host.classList.remove('dependencyOverlayHost'));
-}
-
-// Converts an element rectangle into coordinates within its overlay host.
-function workElementBox(element, host, useFirstCell = false) {
-  const rect = element.getBoundingClientRect();
-  const hostRect = host.getBoundingClientRect();
-  const firstCellRect = useFirstCell ? element.querySelector('td')?.getBoundingClientRect() : null;
-  const left = rect.left - hostRect.left + host.scrollLeft;
-  const top = rect.top - hostRect.top + host.scrollTop;
-  return {
-    left,
-    top,
-    right: left + rect.width,
-    bottom: top + rect.height,
-    width: rect.width,
-    height: rect.height,
-    centerX: left + rect.width / 2,
-    centerY: top + rect.height / 2,
-    anchorX: firstCellRect ? firstCellRect.right - hostRect.left + host.scrollLeft - 8 : left + 18,
-  };
-}
-
-// Builds a readable arrow route for cards or table rows.
-function workDependencyArrowGeometry(from, to, surface) {
-  const n = value => Math.round(value * 10) / 10;
-  if (surface === 'overview') {
-    const laneX = Math.min(from.anchorX, to.anchorX) - 16;
-    const endX = to.anchorX + 10;
-    return {
-      path: 'M ' + n(from.anchorX) + ' ' + n(from.centerY) + ' H ' + n(laneX) + ' V ' + n(to.centerY) + ' H ' + n(endX),
-      startX: n(from.anchorX),
-      startY: n(from.centerY),
-    };
+  if (workDependencyBoardId !== currentBoardId()) {
+    boardDependencySelectionId = 0;
+    workDependencyBoardId = currentBoardId();
   }
-  const mostlyVertical = Math.abs(to.centerX - from.centerX) < Math.max(from.width, to.width) * 0.65;
-  if (mostlyVertical) {
-    const direction = to.centerY >= from.centerY ? 1 : -1;
-    const startX = from.centerX;
-    const startY = direction > 0 ? from.bottom : from.top;
-    const endX = to.centerX;
-    const endY = direction > 0 ? to.top : to.bottom;
-    const curve = Math.max(36, Math.abs(endY - startY) * 0.45);
-    return {
-      path: 'M ' + n(startX) + ' ' + n(startY) + ' C ' + n(startX) + ' ' + n(startY + direction * curve) + ', ' + n(endX) + ' ' + n(endY - direction * curve) + ', ' + n(endX) + ' ' + n(endY),
-      startX: n(startX),
-      startY: n(startY),
-    };
-  }
-  const direction = to.centerX >= from.centerX ? 1 : -1;
-  const startX = direction > 0 ? from.right : from.left;
-  const startY = from.centerY;
-  const endX = direction > 0 ? to.left : to.right;
-  const endY = to.centerY;
-  const curve = Math.max(48, Math.abs(endX - startX) * 0.45);
-  return {
-    path: 'M ' + n(startX) + ' ' + n(startY) + ' C ' + n(startX + direction * curve) + ' ' + n(startY) + ', ' + n(endX - direction * curve) + ' ' + n(endY) + ', ' + n(endX) + ' ' + n(endY),
-    startX: n(startX),
-    startY: n(startY),
+  const visibleIds = tickets.map(ticket => +ticket.id);
+  const update = () => {
+    host.innerHTML = dependencySelectionHtml(boardDependencySelectionId, visibleIds);
+    if (!host.innerHTML) boardDependencySelectionId = 0;
+    root.querySelectorAll('[data-show-dependencies]').forEach(button => {
+      button.setAttribute('aria-pressed', +button.dataset.showDependencies === boardDependencySelectionId ? 'true' : 'false');
+    });
+    root.querySelectorAll('[data-work-id]').forEach(node => node.classList.toggle('dependencySelected', +node.dataset.workId === boardDependencySelectionId && boardDependencySelectionId > 0));
+    wireDependencySelection(host, () => {
+      const selectedId = boardDependencySelectionId;
+      boardDependencySelectionId = 0;
+      update();
+      root.querySelector('[data-show-dependencies="' + selectedId + '"]')?.focus();
+    });
   };
+  root.querySelectorAll('[data-show-dependencies]').forEach(button => {
+    button.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      boardDependencySelectionId = +button.dataset.showDependencies;
+      update();
+      host.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+      const clear = host.querySelector('[data-dependency-clear]');
+      clear?.focus({ preventScroll: true });
+    };
+    button.onkeydown = event => event.stopPropagation();
+  });
+  update();
 }
 
 // Returns the display name for a column id.
@@ -1582,7 +1498,7 @@ function backlogEpicGroupHtml(group, visibleIds) {
 
 // Builds one slim Jira-style backlog row with inline Epic placement.
 function backlogRowHtml(t) {
-  const epics = state.tickets.filter(epic => epic.type === 'epic' && +epic.id !== +t.id).sort(ticketOrder);
+  const epics = state.tickets.filter(epic => !epic.deletedAt && !epic.archivedAt && epic.type === 'epic' && +epic.id !== +t.id).sort(ticketOrder);
   const currentEpicId = +(topEpicFor(t)?.id || 0);
   const options = '<option value="0">No Epic</option>' + epics.map(epic => '<option value="' + epic.id + '"' + (currentEpicId === +epic.id ? ' selected' : '') + '>' + esc(ticketLabel(epic)) + (isBacklogTicket(epic) ? ' (Backlog)' : '') + '</option>').join('');
   const type = normalizePromotionType(t);
@@ -1608,12 +1524,11 @@ const GANTT_LEFT_PAD = 28;
 
 // Renders the Timeline view or an error message.
 function renderTimeline() {
-  setHeader('Timeline', 'Gantt chart with scheduled work, dependencies, and live delay status.');
+  setHeader('Timeline', 'Scheduled work, deadlines, and sprint planning.');
   const root = $('#timeline');
   root.classList.remove('hidden');
   try {
     renderGantt(root);
-    root.insertAdjacentHTML('afterbegin', '<p class="timelineAssumptionHint">Missing start dates are calculated from a saved due date, or use the creation date (today if unknown). Missing duration defaults to three days, or one day for an Epic. Calculated dates are estimates, not saved deadlines.</p>');
   } catch (err) {
     root.innerHTML = '<div class="event muted">Timeline could not be calculated: ' + esc(err.message || err) + '</div>';
   }
@@ -1622,10 +1537,12 @@ function renderTimeline() {
 // Calculates and renders the Gantt chart for scheduled work.
 function renderGantt(root) {
   // Only promoted, scheduled delivery work reaches the timeline.
+  const controls = timelineControlsHtml();
   const tasks = buildGanttRows();
+  if (timelineHighlightId && !workTickets().some(ticket => +ticket.id === +timelineHighlightId)) timelineHighlightId = 0;
   const focusRange = sprintByNumber(timelineFocusSprint);
   if (!tasks.length && !focusRange) {
-    root.innerHTML = timelineControlsHtml() + '<div class="event muted">No tickets with schedulable dates yet</div>';
+    root.innerHTML = controls + '<div class="event muted">No tickets with schedulable dates yet</div>';
     wireTimelineControls(root);
     return;
   }
@@ -1644,7 +1561,7 @@ function renderGantt(root) {
   const rangeStart = addDays(minDate, -1);
   const rangeEnd = addDays(maxDate, 2);
   const totalDays = Math.max(1, dayDiff(rangeStart, rangeEnd));
-  const rowHeight = 78;
+  const rowHeight = 98;
   const headHeight = 56;
   const axisHeight = 62;
   const fittedDayWidth = (availableTimelineWidth - GANTT_LEFT_PAD * 2) / totalDays;
@@ -1656,13 +1573,20 @@ function renderGantt(root) {
   const labels = tasks.map(task => ganttTaskLabel(task, rowHeight, highlight)).join('');
   const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, highlight);
 
-  root.innerHTML = '<section class="ganttFlow">' + timelineControlsHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="arrowKey">Arrow = dependency</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  root.innerHTML = '<section class="ganttFlow">' + controls + dependencySelectionHtml(timelineHighlightId, tasks.map(task => +task.ticket.id)) + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '</div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   wireTimelineControls(root);
-  wireTimelineHover(root, tasks);
+  wireDependencySelection(root, () => {
+    const selectedId = timelineHighlightId;
+    rememberTimelineCenter(root);
+    timelineHighlightId = 0;
+    renderTimeline();
+    root.querySelector('.ganttShowDependencies[data-timeline-id="' + selectedId + '"]')?.focus();
+  });
   wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth);
   wireTimelinePan(root);
   const requestedCenter = validDate(timelineCenterDate) ? timelineCenterDate : focusCenter;
   if (requestedCenter) centerTimelineOnDate(root, requestedCenter);
+  root.insertAdjacentHTML('beforeend', '<details class="timelineAssumptionHint"><summary>About estimated dates</summary><p>Without a start date, work is estimated from its deadline or creation date. Missing duration uses three days, or one day for an Epic. These estimates do not change saved deadlines.</p></details>');
 }
 
 // Builds ordered Gantt rows from tickets, Epics, and dependencies.
@@ -1723,7 +1647,7 @@ function timelineControlsHtml() {
   const options = '<option value="all">All epics</option>' + epics.map(t => '<option value="' + t.id + '"' + (String(timelineEpicFilter) === String(t.id) ? ' selected' : '') + '>' + esc(ticketLabel(t)) + '</option>').join('');
   const focused = sprintByNumber(timelineFocusSprint);
   const focusHtml = focused ? '<span class="timelineFocusBadge"><b aria-hidden="true">⌖</b>' + esc(sprintName(focused)) + '</span><button id="timelineClearFocus" class="ghost" type="button">Show full timeline</button>' : '';
-  return '<div class="ganttControls"><label>Epic<select id="timelineEpicFilter">' + options + '</select></label><label class="zoomControl">Zoom<input id="timelineZoom" type="range" min="0.65" max="3" step="0.05" value="' + escAttr(String(timelineZoom)) + '"><span>' + Math.round(timelineZoom * 100) + '%</span></label><span class="timelinePanHint">Hold and drag to move</span>' + focusHtml + (timelineHighlightId ? '<button id="timelineClearPath" class="ghost" type="button">Clear path</button>' : '') + '</div>';
+  return '<div class="ganttControls"><label>Epic<select id="timelineEpicFilter">' + options + '</select></label><label class="zoomControl">Zoom<input id="timelineZoom" type="range" min="0.65" max="3" step="0.05" value="' + escAttr(String(timelineZoom)) + '"><span>' + Math.round(timelineZoom * 100) + '%</span></label><span class="timelinePanHint">Hold and drag to move</span>' + focusHtml + '</div>';
 }
 
 // Attaches timeline filter, zoom, and path selection handlers.
@@ -1748,14 +1672,17 @@ function wireTimelineControls(root) {
     syncRoute('replace', 0);
     renderGantt(root);
   };
-  const clear = $('#timelineClearPath');
-  if (clear) clear.onclick = () => {
-    rememberTimelineCenter(root);
-    timelineHighlightId = 0;
-    renderGantt(root);
-  };
-  $$('.ganttTaskItem,.ganttSvgTask').forEach(el => {
+  root.querySelectorAll('.ganttShowDependencies').forEach(el => {
     el.onclick = () => selectTimelineTask(+el.dataset.timelineId);
+  });
+  root.querySelectorAll('.ganttTaskTitle,.ganttSvgTask').forEach(el => {
+    const open = () => openTicket(+el.dataset.openTicket);
+    el.onclick = open;
+    if (el.classList.contains('ganttSvgTask')) el.onkeydown = event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      open();
+    };
   });
 }
 
@@ -1848,59 +1775,6 @@ function timelineDateAtScrollCenter(scrollLeft, viewportWidth, rangeStart, dayWi
   return addDays(rangeStart, day);
 }
 
-// Highlights the complete visible dependency component while a task or arrow is hovered or focused.
-function wireTimelineHover(root, tasks) {
-  const flow = root.querySelector('.ganttFlow');
-  if (!flow) return;
-  const taskNodes = [...root.querySelectorAll('.ganttTaskItem,.ganttSvgTask')];
-  const arrowNodes = [...root.querySelectorAll('.ganttSvgArrowGroup')];
-  const apply = related => {
-    flow.classList.add('hoverActive');
-    taskNodes.forEach(node => {
-      const isRelated = related.has(+node.dataset.timelineId);
-      node.classList.toggle('hoverRelated', isRelated);
-      node.classList.toggle('hoverDimmed', !isRelated);
-    });
-    arrowNodes.forEach(node => {
-      const from = +node.dataset.fromId;
-      const to = +node.dataset.toId;
-      const isRelated = related.has(from) && related.has(to);
-      node.classList.toggle('hoverRelated', isRelated);
-      node.classList.toggle('hoverDimmed', !isRelated);
-    });
-  };
-  const clear = () => {
-    flow.classList.remove('hoverActive');
-    [...taskNodes, ...arrowNodes].forEach(node => node.classList.remove('hoverDimmed', 'hoverRelated'));
-  };
-  taskNodes.forEach(node => {
-    const id = +node.dataset.timelineId;
-    const task = tasks.find(candidate => +candidate.ticket.id === id);
-    const related = () => task?.isAggregate ? timelineEpicHoverRelatedIds(tasks, id) : timelineHoverRelatedIds(tasks, [id]);
-    node.onmouseenter = () => apply(related());
-    node.onmouseleave = clear;
-    node.onfocus = () => apply(related());
-    node.onblur = clear;
-  });
-  arrowNodes.forEach(node => {
-    const seedIds = [+node.dataset.fromId, +node.dataset.toId];
-    node.onmouseenter = () => apply(timelineHoverRelatedIds(tasks, seedIds));
-    node.onmouseleave = clear;
-    node.onfocus = () => apply(timelineHoverRelatedIds(tasks, seedIds));
-    node.onblur = clear;
-  });
-}
-
-// Returns the undirected dependency component containing the hovered task or arrow endpoints.
-function timelineHoverRelatedIds(tasks, seedIds) {
-  return dependencyComponentIds(tasks.map(task => ({ id: +task.ticket.id, links: task.deps.map(dep => +dep.id) })), seedIds);
-}
-
-// Returns one visible Epic group without pulling unrelated dependency components into it.
-function timelineEpicHoverRelatedIds(tasks, epicId) {
-  return epicHoverRelatedIds(tasks.map(task => task.ticket), epicId);
-}
-
 // Shows a date cursor snapped to the nearest daily grid line inside the chart.
 function wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth) {
   const svg = root.querySelector('.ganttSvg');
@@ -1958,6 +1832,9 @@ function selectTimelineTask(id) {
   rememberTimelineCenter();
   timelineHighlightId = timelineHighlightId === id ? 0 : id;
   renderTimeline();
+  const panel = $('#timeline').querySelector('.dependencySelection');
+  panel?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  panel?.querySelector('[data-dependency-clear]')?.focus({ preventScroll: true });
 }
 
 // Returns descendant Gantt tasks in tree order for a parent.
@@ -2119,25 +1996,25 @@ function ganttDependencyReady(ticket) {
   return base.actualFinish || base.due;
 }
 
-// Builds the dependency-path highlight model for the timeline.
+// Highlights only the explicitly selected task and its direct neighbors.
 function timelineHighlight(tasks) {
   if (!timelineHighlightId) return { selected: 0, ids: new Set(), direct: new Set(), ancestors: new Set(), active: false };
-  const byId = new Map(workTickets().map(t => [t.id, t]));
-  const ids = new Set();
+  const tickets = workTickets();
+  const byId = new Map(tickets.map(t => [+t.id, t]));
+  const selected = byId.get(+timelineHighlightId);
+  if (!selected) return { selected: 0, ids: new Set(), direct: new Set(), ancestors: new Set(), active: false };
+  const ids = new Set([+selected.id]);
   const direct = new Set();
   const ancestors = new Set();
-  // Walks from the selected task through dependencies and epic children.
-  const visit = id => {
-    const ticket = byId.get(+id);
-    if (!ticket || ids.has(+ticket.id)) return;
+  (selected.links || []).forEach(depId => {
+    if (!byId.has(+depId)) return;
+    ids.add(+depId);
+    direct.add(+depId + '>' + +selected.id);
+  });
+  tickets.filter(ticket => (ticket.links || []).some(id => +id === +selected.id)).forEach(ticket => {
     ids.add(+ticket.id);
-    if (ticket.type === 'epic') descendantTickets(ticket.id).forEach(child => visit(child.id));
-    (ticket.links || []).forEach(depId => {
-      direct.add(+depId + '>' + +ticket.id);
-      visit(depId);
-    });
-  };
-  visit(timelineHighlightId);
+    direct.add(+selected.id + '>' + +ticket.id);
+  });
   ids.forEach(id => {
     let current = byId.get(+id);
     const seen = new Set();
@@ -2160,17 +2037,14 @@ function timelineTaskHighlightClass(task, highlight) {
   if (id === highlight.selected) return ' selectedPath';
   if (highlight.ids.has(id)) return ' dependencyPath';
   if (highlight.ancestors.has(id)) return ' contextPath';
-  return ' pathDimmed';
+  return '';
 }
 
 // Builds the left-side text label for a Gantt row.
 function ganttTaskLabel(task, rowHeight, highlight) {
-  const depIds = task.deps.map(ticketRef).join(', ');
-  const doneText = task.deps.length > 1 ? ' are done' : ' is done';
-  const depText = task.isAggregate ? (task.childCount + ' child item' + (task.childCount === 1 ? '' : 's')) : (task.deps.length ? (task.blocked.length ? 'Can start when ' + depIds + doneText : 'Starts after ' + depIds + doneText) : 'No dependency');
+  const depText = task.isAggregate ? (task.childCount + ' child item' + (task.childCount === 1 ? '' : 's')) : (task.blocked.length ? 'Waiting for ' + task.blocked.length + ' task' + (task.blocked.length === 1 ? '' : 's') : '');
   const delayText = ganttDelayText(task);
-  const estimateText = ganttEstimateText(task);
-  const detailText = [depText, delayText, estimateText].filter(Boolean).join(' · ');
+  const detailText = [depText, delayText].filter(Boolean).join(' · ');
   const classes = ['ganttTaskItem'];
   if (task.isAggregate) classes.push('epicSummary');
   if (task.groupId && !task.isAggregate) classes.push('epicChild');
@@ -2179,7 +2053,8 @@ function ganttTaskLabel(task, rowHeight, highlight) {
   classes.push('indent' + Math.max(0, Math.min(4, +(task.depth || 0))));
   const typeLabel = task.isAggregate ? 'epic total' : task.ticket.type;
   const detailClasses = [task.blocked.length ? 'waiting' : '', delayText ? 'late' : ''].filter(Boolean).join(' ');
-  return '<button class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '"><strong>' + esc(ticketLabel(task.ticket)) + '</strong><span>' + esc(typeLabel) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span><em class="' + detailClasses + '">' + esc(detailText) + '</em></button>';
+  const hasRelations = dependencyTickets(task.ticket).length || dependentTickets(task.ticket).length;
+  return '<div class="' + classes.join(' ') + '" style="height:' + rowHeight + 'px"><button type="button" class="ganttTaskTitle" data-open-ticket="' + task.ticket.id + '">' + esc(ticketLabel(task.ticket)) + '</button><span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + (hasRelations ? '<button type="button" class="showDependencies ganttShowDependencies" data-timeline-id="' + task.ticket.id + '" aria-label="Show dependencies for ' + escAttr(ticketLabel(task.ticket)) + '" aria-pressed="' + (highlight?.selected === +task.ticket.id) + '">Show dependencies</button>' : '') + '</div>';
 }
 
 // Describes the optimistic finish projection after the live delay segment.
@@ -2205,14 +2080,13 @@ function ganttDelayText(task) {
 function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, rowHeight, bodyHeight, axisHeight, highlight) {
   const bodyTop = headHeight;
   const axisTop = headHeight + bodyHeight;
-  const defs = '<defs><marker id="ganttArrowHead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" class="ganttSvgArrowHead"></path></marker><pattern id="ganttSavedPattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgSavedBase"></rect><rect width="5" height="12" class="ganttSvgSavedStripe"></rect></pattern><pattern id="ganttLatePattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgLateBase"></rect><rect width="5" height="12" class="ganttSvgLateStripe"></rect></pattern></defs>';
+  const defs = '<defs><pattern id="ganttSavedPattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgSavedBase"></rect><rect width="5" height="12" class="ganttSvgSavedStripe"></rect></pattern><pattern id="ganttLatePattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgLateBase"></rect><rect width="5" height="12" class="ganttSvgLateStripe"></rect></pattern></defs>';
   return defs +
     '<rect class="ganttSvgPanel" x="0" y="0" width="' + width + '" height="' + (headHeight + bodyHeight + axisHeight) + '"></rect>' +
     '<rect class="ganttSvgHead" x="0" y="0" width="' + width + '" height="' + headHeight + '"></rect>' +
     '<text class="ganttSvgHeadText" x="' + GANTT_LEFT_PAD + '" y="34">Date range</text>' +
     ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks, highlight) +
     ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight) +
-    ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, highlight) +
     tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlight)).join('') +
     ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) +
     ganttSvgCursor(headHeight + bodyHeight + axisHeight);
@@ -2278,38 +2152,41 @@ function ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeigh
 // Builds the SVG bar, due marker, and label for one Gantt task.
 function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, highlight) {
   const rowTop = headHeight + task.row * rowHeight;
-  const y = rowTop + 21;
-  const h = 34;
+  const y = rowTop + 28;
+  const h = 28;
+  const railY = rowTop + 66;
+  const railHeight = 7;
   const left = ganttPx(task.start, rangeStart, dayWidth);
   const visualEnd = task.overrun ? task.due : task.end;
   const right = ganttPx(visualEnd, rangeStart, dayWidth);
-  const totalRight = ganttPx(task.estimateEnd || task.overrunEnd || task.delayEnd || task.end, rangeStart, dayWidth);
-  const width = Math.max(42, right - left);
-  const totalWidth = Math.max(width, totalRight - left);
+  const width = Math.max(6, right - left);
   const dueX = ganttPx(task.due, rangeStart, dayWidth);
+  const dueLabel = (task.ticket.dueDate ? 'Due ' : 'Est. finish ') + (task.ticket.dueDate || fmtIsoDate(task.due));
   const type = escAttr(task.ticket.type || 'task');
   const blocked = task.blocked.length ? ' blocked' : '';
   const aggregate = task.isAggregate ? ' aggregate' : '';
   const pathClass = timelineTaskHighlightClass(task, highlight);
-  const label = ganttSvgBarLabel(task, totalWidth);
-  const saved = task.saved ? ganttSvgSaved(task, rangeStart, dayWidth, y, h) : '';
-  const late = task.late ? ganttSvgLate(task, rangeStart, dayWidth, y, h) : '';
-  const overrun = task.overrun ? ganttSvgOverrun(task, rangeStart, dayWidth, y, h) : '';
+  const label = ganttSvgBarLabel(task, width);
+  const saved = task.saved ? ganttSvgSaved(task, rangeStart, dayWidth, railY, railHeight) : '';
+  const late = task.late ? ganttSvgLate(task, rangeStart, dayWidth, railY, railHeight) : '';
+  const overrun = task.overrun ? ganttSvgOverrun(task, rangeStart, dayWidth, railY, railHeight) : '';
   const delayText = ganttDelayText(task);
   const estimateText = ganttEstimateText(task);
-  return '<g class="ganttSvgTask' + pathClass + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" role="button">' +
+  const clipId = 'ganttTaskClip' + task.ticket.id;
+  return '<g class="ganttSvgTask' + pathClass + '" data-timeline-id="' + task.ticket.id + '" data-open-ticket="' + task.ticket.id + '" tabindex="0" role="button" aria-label="Open ' + escAttr(ticketLabel(task.ticket)) + '">' +
     '<title>' + esc(ticketLabel(task.ticket)) + ' | ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + (delayText ? ' | ' + delayText : '') + (estimateText ? ' | ' + estimateText : '') + '</title>' + saved +
-    '<rect class="ganttSvgBar ' + type + blocked + aggregate + pathClass + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late + ganttSvgEstimate(task, rangeStart, dayWidth, y, h) +
-    '<text class="ganttSvgBarText" x="' + (left + 9) + '" y="' + (y + 21) + '">' + esc(label) + '</text>' +
-    '<line class="ganttSvgDueLine" x1="' + dueX + '" x2="' + dueX + '" y1="' + (rowTop + 10) + '" y2="' + (rowTop + rowHeight - 10) + '"></line>' +
-    '<rect class="ganttSvgDueTagBg" x="' + (dueX + 7) + '" y="' + (rowTop + 10) + '" width="' + Math.max(82, String(task.ticket.dueDate || fmtIsoDate(task.due)).length * 7 + 28) + '" height="20" rx="5"></rect>' +
-    '<text class="ganttSvgDueTag" x="' + (dueX + 13) + '" y="' + (rowTop + 24) + '">Due ' + esc(task.ticket.dueDate || fmtIsoDate(task.due)) + '</text>' +
+    '<rect class="ganttSvgBar ' + type + blocked + aggregate + pathClass + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late + ganttSvgEstimate(task, rangeStart, dayWidth, railY, railHeight) +
+    '<clipPath id="' + clipId + '"><rect x="' + (left + 7) + '" y="' + y + '" width="' + Math.max(0, width - 14) + '" height="' + h + '"></rect></clipPath>' +
+    (label ? '<text class="ganttSvgBarText" clip-path="url(#' + clipId + ')" x="' + (left + 9) + '" y="' + (y + 19) + '">' + esc(label) + '</text>' : '') +
+    '<line class="ganttSvgDueLine" x1="' + dueX + '" x2="' + dueX + '" y1="' + (rowTop + 24) + '" y2="' + (railY + railHeight + 4) + '"></line>' +
+    '<rect class="ganttSvgDueTagBg" x="' + (dueX + 7) + '" y="' + (rowTop + 4) + '" width="' + Math.max(82, dueLabel.length * 7 + 12) + '" height="20" rx="5"></rect>' +
+    '<text class="ganttSvgDueTag" x="' + (dueX + 13) + '" y="' + (rowTop + 18) + '">' + esc(dueLabel) + '</text>' +
     '</g>';
 }
 
 // Chooses a readable label for a Gantt bar width.
 function ganttSvgBarLabel(task, width) {
-  if (width < 120) return ticketLabel(task.ticket);
+  if (width < 70) return '';
   const text = width < 260 ? ticketLabel(task.ticket) : ticketLabel(task.ticket) + ' - ' + fmtDate(task.start) + ' to ' + fmtDate(task.end);
   return truncateSvgText(text, Math.max(4, Math.floor((width - 18) / 7)));
 }
@@ -2352,38 +2229,6 @@ function ganttSvgOverrun(task, rangeStart, dayWidth, y, h) {
   const right = ganttPx(task.overrunEnd, rangeStart, dayWidth);
   const width = Math.max(0, right - left);
   return width ? '<rect class="ganttSvgLate epicOverrun" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' : '';
-}
-
-// Builds dependency arrows between visible Gantt tasks.
-function ganttSvgArrows(tasks, rangeStart, dayWidth, headHeight, rowHeight, highlight) {
-  const byId = new Map(tasks.map(task => [task.ticket.id, task]));
-  const paths = [];
-  tasks.forEach(target => target.deps.forEach(dep => {
-    const source = byId.get(dep.id);
-    if (!source) return;
-    const edge = +dep.id + '>' + +target.ticket.id;
-    const pathClass = highlight?.active ? (highlight.direct.has(edge) ? ' selectedPath' : ' pathDimmed') : '';
-    const x1 = ganttPx(source.readyAt || ganttDependencyReady(source.ticket), rangeStart, dayWidth);
-    const x2 = ganttPx(target.start, rangeStart, dayWidth);
-    const y1 = headHeight + source.row * rowHeight + rowHeight / 2;
-    const y2 = headHeight + target.row * rowHeight + rowHeight / 2;
-    const bend = Math.max(x1, x2) + 24;
-    const endX = Math.max(0, x2 - 10);
-    const d = 'M ' + x1 + ' ' + y1 + ' H ' + bend + ' V ' + y2 + ' H ' + endX;
-    const aria = ticketLabel(source.ticket) + ' enables ' + ticketLabel(target.ticket);
-    const midPoints = ganttArrowMidPoints(bend, y1, y2);
-    paths.push('<g class="ganttSvgArrowGroup' + pathClass + '" data-from-id="' + source.ticket.id + '" data-to-id="' + target.ticket.id + '" tabindex="0" role="img" aria-label="' + escAttr(aria) + '"><title>' + esc(aria) + '</title><path class="ganttSvgArrowHit" d="' + d + '"></path><path class="ganttSvgArrowOutline" d="' + d + '"></path><path class="ganttSvgArrow" d="' + d + '"></path><polygon class="ganttSvgArrowMid" points="' + midPoints + '"></polygon></g>');
-  }));
-  return paths.join('');
-}
-
-// Returns a triangle centered on the vertical segment and pointing toward the dependent task.
-function ganttArrowMidPoints(x, fromY, toY) {
-  const middleY = (fromY + toY) / 2;
-  const direction = toY >= fromY ? 1 : -1;
-  const tipY = middleY + direction * 8;
-  const baseY = middleY - direction * 6;
-  return x + ',' + tipY + ' ' + (x - 7) + ',' + baseY + ' ' + (x + 7) + ',' + baseY;
 }
 
 // Builds the Gantt date axis.
