@@ -24,6 +24,7 @@ function fakeElement() {
     setAttribute(name, value) { this[name] = value; },
     append() {}, before() {}, after() {}, insertAdjacentHTML() {},
     closest() { return this.parentElement; },
+    matches(selector) { return selector.split(',').some(part => part.startsWith('.') && classes.has(part.slice(1))); },
     get parentElement() { return parent || (parent = fakeElement()); },
     querySelector: selector => selector === '.comments' ? fakeElement() : null,
     querySelectorAll: () => [],
@@ -65,6 +66,7 @@ function loadApp(options = {}) {
     },
   };
   if (options.creator) window.KanbanodonDinoCreator = require('./dino-creator.js');
+  if (options.hover) window.KanbanodonDependencyHover = options.hover;
   const context = {
     window,
     document,
@@ -88,7 +90,7 @@ function loadApp(options = {}) {
   let source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
   source = source.replace(/\nload\(\);\s*$/, '\n');
   source += `\nwindow.__appTest = {
-    load, resetClientState, renderView, renderBoard, boardBacklogPickerHtml, wireBoardBacklogPicker, backlogRowHtml, overviewTable,
+    load, resetClientState, renderView, renderBoard, renderOverview, boardBacklogPickerHtml, wireBoardBacklogPicker, backlogRowHtml, overviewTable,
     applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
@@ -105,21 +107,19 @@ function loadApp(options = {}) {
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
-    boardDependencyHtml, dependencySelectionModel, dependencySelectionHtml, wireDependencySelection, wireWorkDependencies,
-    getDependencySelectionId() { return boardDependencySelectionId; },
+    boardDependencyHtml, dependencyHoverEdges, wireWorkDependencies, wireTimelineDependencies,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    renderGantt, timelineHighlight, timelineTaskHighlightClass, ganttTaskLabel,
+    renderGantt, ganttTaskLabel,
     ganttDelayText, ganttEstimateText, ganttSvg, ganttSvgTask, ganttSvgBarLabel, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
     ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
     calculatedSprints, sprintName, sprintPlannerHtml, sprintPreviewHtml, sprintPreviewCardHtml, shortRange,
-    wireSprintPlanner, wireSprintCards, saveSprintName, currentSessionGuard,
+    wireSprintPlanner, wireSprintCards, saveSprintName, sprintCadenceDirty, currentSessionGuard,
     wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
     setOverviewSort(value) { overviewSort = value; },
-    setTimelineHighlightId(value) { timelineHighlightId = value; },
     setTimelineEpicFilter(value) { timelineEpicFilter = value; },
   };`;
   vm.runInContext(source, context);
@@ -681,82 +681,68 @@ test('dependency and duration helpers reflect workflow state', () => {
   assert.equal(app.durationLabel({ duration: 2 }), '2d');
 });
 
-test('board dependency summaries lead to an explicit named dependency panel', () => {
+test('dependency summaries remain inline without buttons or a detached dependency panel', () => {
   const app = loadApp();
   const state = stateWithHierarchy();
   app.setState(state);
   assert.match(app.boardDependencyHtml(state.tickets[2]), /Prerequisites done/);
   assert.match(app.boardDependencyHtml(state.tickets[3]), /Required by 1 task/);
   assert.match(app.card(state.tickets[2]), /data-work-id="12"/);
-  assert.match(app.card(state.tickets[2]), /data-show-dependencies="12"/);
-  assert.match(app.overviewTable(state.tickets), /data-show-dependencies="12"/);
+  assert.match(app.overviewTable(state.tickets), /data-work-id="12"/);
+  assert.doesNotMatch(app.card(state.tickets[2]) + app.overviewTable(state.tickets), /data-show-dependencies|Show dependencies|dependencySelection/);
   assert.doesNotMatch(app.boardDependencyHtml(state.tickets[2]), /&larr;|&rarr;|Enables #|Depends on #/);
 
   state.tickets[3].columnId = 1;
   assert.match(app.boardDependencyHtml(state.tickets[2]), /Waiting for 1 task/);
-  assert.match(app.dependencySelectionHtml(12, [12, 13]), /Dependency<\/strong><span class="dependencySelectionStatus">To Do/);
 });
 
-test('selected dependency context includes only immediate edges and explains filtered neighbors', () => {
+test('dependency hover edges preserve direction and omit filtered, deleted, archived and self links', () => {
   const app = loadApp(); const state = stateWithHierarchy();
   const task = (id, title, links = [], extra = {}) => ({ id, title, links, type:'task', columnId:1, labels:[], position:id, ...extra });
-  state.tickets = [task(1,'Selected task',[2]), task(2,'Prerequisite',[4]), task(3,'Dependent',[1]), task(4,'Indirect prerequisite'), task(5,'Indirect dependent',[3]), task(6,'Unrelated'), task(7,'Archived dependent',[1],{archivedAt:'2026-10-06'}), task(8,'Deleted dependent',[1],{deletedAt:'2026-10-06'}), task(9,'Backlog dependent',[1],{isBacklog:true})];
+  state.tickets = [task(1,'Selected task',[2,1,99]), task(2,'Prerequisite',[4]), task(3,'Dependent',['1']), task(4,'Indirect prerequisite'), task(5,'Indirect dependent',[3]), task(6,'Unrelated'), task(7,'Archived dependent',[1],{archivedAt:'2026-10-06'}), task(8,'Deleted dependent',[1],{deletedAt:'2026-10-06'}), task(9,'Backlog dependent',[1],{isBacklog:true}), task(10,'Idea dependent',[1],{type:'idea'})];
   app.setState(state);
-  const model = app.dependencySelectionModel(1,[1,3]);
-  assert.deepEqual(Array.from(model.prerequisites,t=>t.id),[2]);
-  assert.deepEqual(Array.from(model.dependents,t=>t.id),[3,9]);
-  assert.deepEqual(Array.from(model.outsideView,t=>t.id),[2,9]);
-  const html = app.dependencySelectionHtml(1,[1,3]);
-  assert.match(html,/Prerequisite<\/strong>/); assert.match(html,/Dependent<\/strong>/);
-  assert.match(html,/Backlog · To Do/); assert.match(html,/Outside current view/);
-  assert.doesNotMatch(html,/Indirect prerequisite|Indirect dependent|Unrelated|Archived dependent|Deleted dependent/);
-  assert.equal((html.match(/<svg /g)||[]).length,2);
-  assert.equal(app.dependencySelectionHtml(0,[1,3]),'');
+  const pairs = tickets => Array.from(app.dependencyHoverEdges(tickets), edge => edge.from + '>' + edge.to);
+  assert.deepEqual(pairs(app.workTickets()), ['2>1','4>2','1>3','3>5']);
+  assert.deepEqual(pairs([state.tickets[0],state.tickets[2]]), ['1>3']);
+  assert.deepEqual(pairs([]), []);
 });
 
-test('dependency panel escapes names and shows no connectors for isolated tasks', () => {
-  const app = loadApp(); const state = stateWithHierarchy();
-  state.tickets = [{id:1,title:'<script>alert(1)</script>',type:'task',columnId:1,links:[],labels:[]}]; app.setState(state);
-  const html = app.dependencySelectionHtml(1,[1]);
-  assert.match(html,/&lt;script&gt;/); assert.doesNotMatch(html,/<script>|<svg /);
-  assert.match(html,/No prerequisites/); assert.match(html,/No dependent tasks/);
-});
-
-function dependencySurface(app) {
-  const host = fakeElement(); const clear = fakeElement(); const buttons = [12,13].map(id=>{const button=fakeElement();button.dataset.showDependencies=id;return button;});
-  const nodes = buttons.map(button=>{const node=fakeElement();node.dataset.workId=button.dataset.showDependencies;return node;});
-  const panel = fakeElement(); panel.querySelector = selector=>selector==='[data-dependency-clear]'?clear:null;
-  host.querySelector = selector=>selector==='.dependencySelection'&&host.innerHTML?panel:selector==='[data-dependency-clear]'&&host.innerHTML?clear:null;
-  const root = fakeElement(); root.id='board';
-  root.querySelector = selector=>selector==='.workDependencySelection'?host:buttons.find(button=>selector==='[data-show-dependencies="'+button.dataset.showDependencies+'"]')||null;
-  root.querySelectorAll = selector=>selector==='[data-show-dependencies]'?buttons:selector==='[data-work-id]'?nodes:[];
-  app.wireWorkDependencies(root,app.workTickets());
-  return {host,clear,buttons,nodes,root};
+function hoverApp() {
+  const calls = [];
+  const app = loadApp({hover: {wire(root, options) { calls.push({root, options}); }}});
+  app.setState(stateWithHierarchy());
+  return {app, calls};
 }
 
-test('dependency context starts empty, requires deliberate selection, and clears without dimming', () => {
-  const app=loadApp(); app.setState(stateWithHierarchy()); const {host,clear,buttons,nodes}=dependencySurface(app);
-  assert.equal(host.innerHTML,''); assert.equal(app.getDependencySelectionId(),0);
-  assert.equal(nodes[0].onmouseenter,undefined); assert.equal(nodes[0].onfocus,undefined);
-  let prevented=false, stopped=false;
-  buttons[0].onclick({preventDefault(){prevented=true},stopPropagation(){stopped=true}});
-  assert.equal(prevented,true); assert.equal(stopped,true); assert.equal(app.getDependencySelectionId(),12);
-  assert.match(host.innerHTML,/Only direct connections for Task/);
-  assert.equal(buttons[0]['aria-pressed'],'true'); assert.equal(nodes[0].classList.contains('dependencySelected'),true);
-  assert.equal(nodes[1].classList.contains('workHoverDimmed'),false);
-  clear.onclick({stopPropagation(){}});
-  assert.equal(host.innerHTML,''); assert.equal(app.getDependencySelectionId(),0);
-  assert.equal(buttons[0]['aria-pressed'],'false'); assert.equal(nodes[0].classList.contains('dependencySelected'),false);
+test('Board rendering wires direct hover dependencies to the card surface without changing view or route', () => {
+  const {app, calls} = hoverApp(); const root = app.document.querySelector('#board'); const layer = fakeElement();
+  root.querySelector = selector => selector === '.boardSwimlanes,.tableScroll' ? layer : null;
+  app.renderBoard();
+  assert.equal(calls.length, 1); assert.equal(calls[0].root, root);
+  const options = calls[0].options;
+  assert.equal(options.layerRoot, layer); assert.equal(options.idAttribute, 'data-work-id');
+  assert.match(options.nodesSelector, /boardSwimlanes \[data-work-id\]/);
+  assert.deepEqual(Array.from(options.edges, edge => edge.from + '>' + edge.to), ['13>12']);
+  assert.doesNotMatch(root.innerHTML, /Show dependencies|dependencySelection|pathDimmed/);
+  assert.equal(app.getView(), 'board'); assert.equal(app.getEditing(), null);
+  assert.deepEqual(app.historyCalls, []);
 });
 
-test('dependency selection resets on session and board changes', () => {
-  const app=loadApp(); const state=stateWithHierarchy(); app.setState(state); const surface=dependencySurface(app);
-  surface.buttons[0].onclick({preventDefault(){},stopPropagation(){}});
-  state.board.id=2; app.wireWorkDependencies(surface.root,app.workTickets());
-  assert.equal(surface.host.innerHTML,''); assert.equal(app.getDependencySelectionId(),0);
-  surface.buttons[0].onclick({preventDefault(){},stopPropagation(){}});
-  assert.equal(app.getDependencySelectionId(),12); app.resetClientState(true);
-  assert.equal(app.getDependencySelectionId(),0);
+test('Overview rendering wires hover dependencies in the table and keeps keyboard task opening', () => {
+  const {app, calls} = hoverApp(); const root = app.document.querySelector('#overview');
+  const table = fakeElement(); const layer = fakeElement(); const row = fakeElement();
+  row.classList.add('ticketRow'); row.dataset.openTicket = '12';
+  root.querySelector = selector => selector === '.ticketTable' ? table : selector === '.tableScroll' || selector === '.boardSwimlanes,.tableScroll' ? layer : null;
+  root.querySelectorAll = selector => selector === '[data-open-ticket]' ? [row] : [];
+  app.renderOverview();
+  assert.equal(calls.length, 1); assert.equal(calls[0].root, root);
+  assert.equal(calls[0].options.layerRoot, layer);
+  assert.match(calls[0].options.nodesSelector, /ticketTable \[data-work-id\]/);
+  assert.deepEqual(Array.from(calls[0].options.edges, edge => edge.from + '>' + edge.to), ['13>12']);
+  assert.equal(row.tabIndex, 0); assert.equal(app.getEditing(), null);
+  assert.doesNotMatch(root.innerHTML, /Show dependencies|dependencySelection|pathDimmed/);
+  let prevented = false; row.onkeydown({target: row, key: 'Enter', preventDefault() { prevented = true; }});
+  assert.equal(prevented, true); assert.equal(app.getEditing().id, 12);
 });
 
 test('Board shows full Sprint planning without a disclosure and keeps backlog promotion available', () => {
@@ -830,7 +816,7 @@ test('sprint planning explains work before the cadence without hiding a valid sa
   assert.doesNotMatch(preview, /Choose the first Sprint start date/);
 });
 
-test('sprint preview validates editable cadence values independently from stored state', () => {
+test('Sprint preview validates saved cadence values before rendering cards', () => {
   const app = loadApp();
   const state = stateWithHierarchy();
   app.setState(state);
@@ -839,6 +825,151 @@ test('sprint preview validates editable cadence values independently from stored
   assert.equal(app.validSprintWeeks(1.5), 0);
   assert.match(app.sprintPreviewHtml(app.workTickets(), '', 2), /Choose the first Sprint start date/);
   assert.match(app.sprintPreviewHtml(app.workTickets(), '2026-01-01', 0), /whole number from 1 to 52 weeks/);
+});
+
+function prepareSprintPlanner(app) {
+  app.renderBoard();
+  const start = app.document.querySelector('#sprintStartDate');
+  const weeks = app.document.querySelector('#sprintWeeks');
+  const preview = app.document.querySelector('.sprintPreview');
+  start.value = app.boardSprintStartValue();
+  weeks.value = String(app.boardSprintWeeks());
+  preview.innerHTML = app.sprintPreviewHtml(app.workTickets(), start.value, +weeks.value);
+  app.wireSprintPlanner();
+  return {start, weeks, preview, save: app.document.querySelector('#saveSprintSettings'), status: app.document.querySelector('#sprintSettingsStatus')};
+}
+
+test('a draft first Sprint date creates no cards or task Sprint assignments', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); state.board.sprint_start_date = '';
+  app.setState(state);
+  const planner = prepareSprintPlanner(app); const savedPreview = planner.preview.innerHTML;
+  assert.doesNotMatch(app.elements.get('#board').innerHTML, /data-sprint-card=|data-sprint-name=|data-sprint-jump=/);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  planner.weeks.value = '3'; planner.weeks.oninput();
+  assert.equal(planner.preview.innerHTML, savedPreview);
+  assert.doesNotMatch(planner.preview.innerHTML, /data-sprint-card=/);
+  assert.equal(planner.status.textContent, 'Unsaved changes');
+  assert.equal(planner.status.dataset.state, 'unsaved');
+  assert.equal(app.ticketSprint(state.tickets[3]), null);
+  assert.equal(app.calculatedSprints(app.workTickets()).length, 0);
+  assert.equal(state.board.sprint_start_date, '');
+  assert.equal(state.board.sprint_weeks, 2);
+});
+
+test('editing an existing Sprint cadence keeps saved cards and prevents draft name autosaves', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch}); const state = stateWithHierarchy();
+  app.setState(state);
+  const name = fakeElement(); name.dataset = {sprintName: '1', originalDisplay: 'Sprint 1'}; name.value = 'Launch';
+  const jump = fakeElement(); jump.dataset.sprintJump = '1';
+  const original = app.document.querySelectorAll;
+  app.document.querySelectorAll = selector => selector === '.sprintNameInput' ? [name] : selector === '.sprintJump' ? [jump] : original(selector);
+  const planner = prepareSprintPlanner(app); const savedPreview = planner.preview.innerHTML;
+  const savedSprintStart = app.fmtIsoDate(app.ticketSprint(state.tickets[3]).start);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  planner.weeks.value = '3'; planner.weeks.oninput();
+  assert.equal(planner.preview.innerHTML, savedPreview);
+  assert.equal(app.fmtIsoDate(app.ticketSprint(state.tickets[3]).start), savedSprintStart);
+  assert.equal(name.disabled, true); assert.equal(jump.disabled, true);
+  name.onchange(); await app.saveSprintName(name);
+  assert.equal(queue.pending.length, 0);
+  planner.start.value = '2026-01-01'; planner.weeks.value = '2'; planner.weeks.oninput();
+  assert.equal(planner.status.textContent, 'Cadence saved');
+  assert.equal(planner.status.dataset.state, 'saved');
+  assert.equal(name.disabled, false); assert.equal(jump.disabled, false);
+});
+
+test('same-board rerenders preserve cadence drafts while Sprint cards keep the saved dates', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); app.setState(state);
+  const name = fakeElement(); name.dataset = {sprintName: '1', originalDisplay: 'Sprint 1'};
+  const original = app.document.querySelectorAll;
+  app.document.querySelectorAll = selector => selector === '.sprintNameInput' ? [name] : original(selector);
+  const planner = prepareSprintPlanner(app);
+  const savedPreview = app.sprintPreviewHtml(app.workTickets(), '2026-01-01', 2);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  planner.weeks.value = '1.5'; planner.weeks.oninput();
+  app.renderOverview(); app.renderBoard();
+  const html = app.elements.get('#board').innerHTML;
+  assert.match(html, /id="sprintStartDate"[^>]*value="2026-10-22"/);
+  assert.match(html, /id="sprintWeeks"[^>]*value="1.5"/);
+  assert.ok(html.includes('<div class="sprintPreview">' + savedPreview + '</div>'));
+  assert.match(html, /data-state="unsaved">Unsaved changes/);
+  assert.equal(planner.start.value, '2026-10-22'); assert.equal(planner.weeks.value, '1.5');
+  assert.equal(name.disabled, true);
+  assert.equal(state.board.sprint_start_date, '2026-01-01');
+});
+
+test('cadence drafts do not leak into another board or a new login session', () => {
+  const app = loadApp(); const first = stateWithHierarchy(); app.setState(first);
+  let planner = prepareSprintPlanner(app);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  const second = {...stateWithHierarchy(), board: {id: 2, sprint_start_date: '2027-01-01', sprint_weeks: 1}};
+  app.setState(second); app.selectBoard(2); app.renderBoard();
+  let html = app.elements.get('#board').innerHTML;
+  assert.match(html, /id="sprintStartDate"[^>]*value="2027-01-01"/);
+  assert.match(html, /id="sprintWeeks"[^>]*value="1"/);
+  assert.doesNotMatch(html, /Unsaved changes/);
+  app.setState(first); app.selectBoard(1); planner = prepareSprintPlanner(app);
+  assert.equal(planner.start.value, '2026-01-01');
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  app.resetClientState(); app.setState(first); app.renderBoard();
+  html = app.elements.get('#board').innerHTML;
+  assert.match(html, /id="sprintStartDate"[^>]*value="2026-01-01"/);
+  assert.doesNotMatch(html, /Unsaved changes/);
+});
+
+test('the first Sprint cards appear only after Save succeeds and persisted state reloads', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch}); const state = stateWithHierarchy();
+  state.board.sprint_start_date = ''; app.setState(state);
+  const planner = prepareSprintPlanner(app);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  const saving = planner.save.onclick();
+  assert.equal(planner.status.dataset.state, 'saving');
+  assert.doesNotMatch(planner.preview.innerHTML, /data-sprint-card=/);
+  assert.equal(state.board.sprint_start_date, '');
+  queue.respond(0, {ok: true}); await nextTurn();
+  assert.equal(queue.pending[1].url, '/api/state');
+  assert.doesNotMatch(planner.preview.innerHTML, /data-sprint-card=/);
+  const loaded = stateWithHierarchy(); loaded.board.sprint_start_date = '2026-10-22';
+  queue.respond(1, loaded); await saving;
+  const html = app.elements.get('#board').innerHTML;
+  assert.equal(app.boardSprintStartValue(), '2026-10-22');
+  assert.equal((html.match(/data-sprint-card=/g) || []).length, 6);
+  assert.match(html, /data-state="saved">Cadence saved/);
+  // An unrelated later refresh must use its persisted cadence, not resurrect the saved draft.
+  const later = stateWithHierarchy(); later.board.sprint_start_date = '2027-02-01';
+  app.setState(later); app.renderBoard();
+  assert.match(app.elements.get('#board').innerHTML, /id="sprintStartDate"[^>]*value="2027-02-01"/);
+  assert.doesNotMatch(app.elements.get('#board').innerHTML, /Unsaved changes/);
+});
+
+test('a failed first Sprint save leaves the draft without cards or saved assignments', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch}); const state = stateWithHierarchy();
+  state.board.sprint_start_date = ''; app.setState(state);
+  const planner = prepareSprintPlanner(app);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  const saving = planner.save.onclick(); queue.respond(0, 'Saving failed', 500); await saving;
+  assert.doesNotMatch(planner.preview.innerHTML, /data-sprint-card=/);
+  assert.equal(state.board.sprint_start_date, '');
+  assert.equal(planner.start.value, '2026-10-22');
+  assert.equal(planner.save.disabled, false);
+  assert.equal(planner.start.disabled, false);
+  assert.equal(planner.status.dataset.state, 'unsaved');
+  assert.equal(app.elements.get('#sprintSettingsError').textContent, 'Something went wrong. Please try again.');
+  assert.equal(queue.pending.length, 1);
+});
+
+test('a successful Sprint save with a failed reload does not render draft cards and allows retry', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch, console: {error() {}}}); const state = stateWithHierarchy();
+  state.board.sprint_start_date = ''; app.setState(state);
+  const planner = prepareSprintPlanner(app);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  const saving = planner.save.onclick(); queue.respond(0, {ok: true}); await nextTurn();
+  queue.respond(1, 'Refresh failed', 500); await saving;
+  assert.doesNotMatch(planner.preview.innerHTML, /data-sprint-card=/);
+  assert.equal(state.board.sprint_start_date, '');
+  assert.equal(planner.save.disabled, false);
+  assert.equal(planner.status.dataset.state, 'unsaved');
+  assert.match(app.elements.get('#sprintSettingsError').textContent, /saved, but could not be refreshed/);
 });
 
 test('Sprint window exposes current plus five successors and applies custom names safely', () => {
@@ -905,7 +1036,7 @@ test('timeline pointer drag pans horizontally and suppresses the following task 
   assert.equal(stopped, true);
 });
 
-test('timeline scheduling waits for dependencies and builds highlight paths', () => {
+test('Timeline scheduling still waits for dependencies while its label stays inline', () => {
   const app = loadApp();
   const state = stateWithHierarchy();
   const target = state.tickets[2];
@@ -915,13 +1046,10 @@ test('timeline scheduling waits for dependencies and builds highlight paths', ()
   const task = app.ganttTask(target);
   assert.equal(app.fmtIsoDate(task.start), '2026-01-03');
   assert.equal(app.fmtIsoDate(task.due), '2026-01-06');
-  app.setTimelineHighlightId(12);
-  const highlight = app.timelineHighlight([task]);
-  assert.equal(highlight.ids.has(12), true);
-  assert.equal(highlight.ids.has(13), true);
-  assert.equal(highlight.direct.has('13>12'), true);
-  assert.equal(highlight.ancestors.has(10), true);
-  assert.equal(app.timelineTaskHighlightClass(task, highlight), ' selectedPath');
+  const label = app.ganttTaskLabel(task, 84);
+  assert.match(label, /data-timeline-id="12"/);
+  assert.match(label, /data-open-ticket="12"/);
+  assert.doesNotMatch(label, /Show dependencies|selectedPath|pathDimmed|dependencySelection/);
 });
 
 test('timeline shows live delay for overdue work and actual delay for late completion', () => {
@@ -954,21 +1082,28 @@ test('timeline shows live delay for overdue work and actual delay for late compl
   assert.match(app.ganttDelayText(aggregate), /days over target$/);
 });
 
-test('timeline explicit selection includes direct neighbors without following the chain or dimming unrelated work', () => {
-  const app = loadApp(); const state = stateWithHierarchy();
+test('Timeline labels and main bars use the same hover controller and visible directed edges', () => {
+  const {app, calls} = hoverApp(); const state = stateWithHierarchy();
   state.tickets.find(ticket => ticket.id === 13).links = [11];
   state.tickets.push({...state.tickets[2], id:15, title:'Immediate dependent', links:[12], parentId:0});
   state.tickets.push({...state.tickets[2], id:16, title:'Indirect dependent', links:[15], parentId:0});
   app.setState(state);
-  const tasks = state.tickets.filter(ticket => ticket.type !== 'idea').map(ticket => ({ticket,deps:[]}));
-  assert.equal(app.timelineHighlight(tasks).active,false);
-  app.setTimelineHighlightId(12);
-  const highlight = app.timelineHighlight(tasks);
-  assert.deepEqual([...highlight.ids].sort((a,b)=>a-b),[12,13,15]);
-  assert.deepEqual([...highlight.direct].sort(),['12>15','13>12']);
-  assert.equal(app.timelineTaskHighlightClass(tasks.find(task => task.ticket.id === 16),highlight),'');
-  app.setTimelineHighlightId(999);
-  assert.equal(app.timelineHighlight(tasks).active,false);
+  const tasks = app.workTickets().map(ticket => ({ticket}));
+  const root = fakeElement(); const layer = fakeElement();
+  root.querySelector = selector => selector === '.ganttSvgScroll' ? layer : null;
+  app.wireTimelineDependencies(root, tasks);
+  assert.equal(calls.length, 1); assert.equal(calls[0].root, root);
+  const options = calls[0].options;
+  assert.equal(options.layerRoot, layer); assert.equal(options.anchorSelector, '.ganttSvgBar');
+  assert.equal(options.obstaclesSelector, '.ganttSvgBar,.ganttSvgDueTagBg');
+  assert.equal(options.idAttribute, 'data-timeline-id');
+  assert.match(options.nodesSelector, /ganttTaskItem\[data-timeline-id\]/);
+  assert.match(options.nodesSelector, /ganttSvgTask\[data-timeline-id\]/);
+  assert.deepEqual(Array.from(options.edges, edge => edge.from + '>' + edge.to).sort(), ['11>13','12>15','13>12','15>16']);
+  const filteredTasks = tasks.filter(task => [12,15].includes(task.ticket.id));
+  app.wireTimelineDependencies(root, filteredTasks);
+  assert.deepEqual(Array.from(calls[1].options.edges, edge => edge.from + '>' + edge.to), ['12>15']);
+  assert.equal(app.getEditing(), null); assert.deepEqual(app.historyCalls, []);
 });
 
 test('Sprint cadence saves remain bound to the original board and ignore late results', async () => {
@@ -987,7 +1122,7 @@ test('Sprint cadence saves remain bound to the original board and ignore late re
 
 test('delayed Sprint name handlers cannot save to a different board', () => {
   const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
-  app.setState(stateWithHierarchy());
+  app.setState(stateWithHierarchy()); prepareSprintPlanner(app);
   const input=fakeElement(); input.dataset={sprintName:'1',originalDisplay:'Sprint 1'}; input.value='Launch';
   const original=app.document.querySelectorAll;
   app.document.querySelectorAll=selector => selector === '.sprintNameInput' ? [input] : original(selector);
@@ -1000,7 +1135,7 @@ test('delayed Sprint name handlers cannot save to a different board', () => {
 test('late Sprint name success or authentication errors cannot affect another board or session', async () => {
   for (const status of [200,401]) {
     const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
-    app.setState(stateWithHierarchy());
+    app.setState(stateWithHierarchy()); prepareSprintPlanner(app);
     const input=fakeElement(); input.dataset={sprintName:'1',originalDisplay:'Sprint 1'}; input.value='Launch';
     const pending=app.saveSprintName(input);
     assert.equal(queue.pending[0].url,'/api/sprint-names?boardId=1');
@@ -1015,7 +1150,7 @@ test('late Sprint name success or authentication errors cannot affect another bo
 
 test('a Sprint name response cannot redraw old work while the requested board is loading', async () => {
   const queue=deferredResponseQueue(); const app=loadApp({fetch:queue.fetch});
-  app.setState(stateWithHierarchy());
+  app.setState(stateWithHierarchy()); prepareSprintPlanner(app);
   const input=fakeElement(); input.dataset={sprintName:'1',originalDisplay:'Sprint 1'}; input.value='Launch';
   const pending=app.saveSprintName(input);
   const original=app.getState(); app.selectBoard(2);
@@ -1024,6 +1159,37 @@ test('a Sprint name response cannot redraw old work while the requested board is
   assert.equal(app.getState(),original);
   assert.equal(app.getState().sprintNames.length,0);
   assert.equal(app.elements.get('#board').innerHTML,'Loading board');
+});
+
+test('an already pending Sprint name save cannot discard a newer cadence draft', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch});
+  app.setState(stateWithHierarchy()); const planner = prepareSprintPlanner(app);
+  const savedPreview = planner.preview.innerHTML;
+  const name = fakeElement(); name.dataset = {sprintName: '1', originalDisplay: 'Sprint 1'}; name.value = 'Launch';
+  const pending = app.saveSprintName(name);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  queue.respond(0, {ok: true}); await pending;
+  assert.equal(planner.start.value, '2026-10-22');
+  assert.equal(planner.preview.innerHTML, savedPreview);
+  assert.equal(planner.status.textContent, 'Unsaved changes');
+  assert.equal(planner.status.dataset.state, 'unsaved');
+  assert.equal(app.getState().sprintNames[0].name, 'Launch');
+  assert.equal(name.dataset.originalDisplay, 'Launch');
+});
+
+test('a failed pending Sprint name save keeps its input disabled while cadence is dirty', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch}); app.setState(stateWithHierarchy());
+  const name = fakeElement(); name.dataset = {sprintName: '1', originalDisplay: 'Sprint 1'}; name.value = 'Launch';
+  const original = app.document.querySelectorAll;
+  app.document.querySelectorAll = selector => selector === '.sprintNameInput' ? [name] : original(selector);
+  const planner = prepareSprintPlanner(app); const pending = app.saveSprintName(name);
+  planner.start.value = '2026-10-22'; planner.start.oninput();
+  queue.respond(0, 'Name save failed', 500); await pending;
+  assert.equal(name.disabled, true); assert.equal(name.value, 'Sprint 1');
+  assert.equal(planner.status.dataset.state, 'unsaved');
+  assert.equal(planner.start.value, '2026-10-22');
+  planner.start.value = '2026-01-01'; planner.start.oninput();
+  assert.equal(name.disabled, false);
 });
 
 test('changing boards clears an unavailable Epic filter before calculating Timeline rows', () => {
@@ -1038,25 +1204,28 @@ test('changing boards clears an unavailable Epic filter before calculating Timel
   assert.match(root.innerHTML,/<option value="all">All epics<\/option>/);
 });
 
-test('timeline keeps delay and estimate rails separate from clipped task labels and dependency diagrams', () => {
-  const app = loadApp(); const state = stateWithHierarchy(); app.setState(state);
+test('Timeline keeps delay rails separate from clipped labels and draws dependency lines only through hover', () => {
+  const {app, calls} = hoverApp(); const state = stateWithHierarchy(); app.setState(state);
   const ticket = {...state.tickets[2], title:'A long task title that must stay inside its planned bar', links:[], startDate:'2000-01-01',dueDate:'2000-01-03'};
   const task = app.ganttTask(ticket); task.row=0;
   const start=app.parseDate('1999-12-31');
-  const svg=app.ganttSvg([task],start,10,10,400,56,98,98,62,app.timelineHighlight([task]));
+  const svg=app.ganttSvg([task],start,10,10,400,56,98,98,62);
   assert.doesNotMatch(svg,/ganttSvgArrow/);
   assert.match(svg,/class="ganttSvgLate"[^>]*y="122"[^>]*height="7"/);
   assert.match(svg,/class="ganttSvgEstimate"[^>]*y="122"[^>]*height="7"/);
   assert.doesNotMatch(svg,/class="ganttSvgBarText"/);
-  const wide=app.ganttSvgTask(task,start,100,56,98,app.timelineHighlight([task]));
+  const wide=app.ganttSvgTask(task,start,100,56,98);
   assert.match(wide,/clip-path="url\(#ganttTaskClip12\)"/);
   assert.equal(app.ganttSvgBarLabel(task,42),'');
   assert.ok(app.ganttSvgBarLabel(task,120).length <= Math.floor((120-18)/7));
-  assert.match(app.ganttTaskLabel(task,98,{}),/A long task title that must stay inside its planned bar/);
+  assert.match(app.ganttTaskLabel(task,98),/A long task title that must stay inside its planned bar/);
   const root=app.document.querySelector('#timeline'); root.clientWidth=1000;
-  app.setTimelineHighlightId(12); app.renderGantt(root);
-  assert.match(root.innerHTML,/dependencySelection/);
-  assert.doesNotMatch(root.innerHTML,/ganttSvgArrow|pathDimmed|hoverDimmed/);
+  const layer = fakeElement();
+  root.querySelector = selector => selector === '.ganttSvgScroll' ? layer : null;
+  app.renderGantt(root);
+  assert.equal(calls.length,1); assert.equal(calls[0].options.layerRoot,layer);
+  assert.match(root.innerHTML,/Hover a task to see direct dependencies/);
+  assert.doesNotMatch(root.innerHTML,/Show dependencies|dependencySelection|ganttSvgArrow|pathDimmed|hoverDimmed/);
 });
 
 test('timeline cursor snaps to days and keeps its date label in view', () => {
@@ -1067,7 +1236,8 @@ test('timeline cursor snaps to days and keeps its date label in view', () => {
   assert.equal(cursor.day, 12);
   assert.equal(cursor.x, 148);
   assert.equal(app.fmtIsoDate(cursor.date), '2026-08-13');
-  assert.equal(cursor.label, '13. August');
+  assert.equal(cursor.label, '13 August');
+  assert.equal(app.ganttCursorDateLabel(app.parseDate('2026-10-06')), '6 October');
   const edgeCursor = app.ganttCursorAtX(296, rangeStart, 31, 10, 400, 100, 300);
   assert.equal(edgeCursor.tagX + edgeCursor.tagWidth <= 296, true);
   assert.match(app.ganttSvgCursor(300), /class="ganttSvgCursorLine"/);
@@ -1096,7 +1266,7 @@ test('HTML-producing helpers escape user-controlled text', () => {
   app.setState(state);
   const markup = app.card(state.tickets[2]);
   assert.equal(markup.includes('<img src=x onerror=alert(1)>'), false);
-  const dependencyMarkup = app.dependencySelectionHtml(12, [12, 13]);
+  const dependencyMarkup = app.overviewTable(state.tickets);
   assert.equal(dependencyMarkup.includes('<img src=x onerror=alert(1)>'), false);
   assert.equal(dependencyMarkup.includes('&lt;img src=x onerror=alert(1)&gt;'), true);
   assert.equal(markup.includes('&lt;b&gt;Task&lt;/b&gt;'), true);

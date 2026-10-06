@@ -48,11 +48,11 @@ Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs
 
 Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
-Select "Show dependencies" for a task to open its dependency overview. It shows the direct prerequisites, the selected task, and the tasks that depend on it, with their names and current statuses. Arrows point from prerequisite to dependent and remain within this panel. "Clear selection" closes the selection.
+Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Thin blue arrows point from prerequisite to dependent. The lines disappear when the task is neither hovered nor focused. Showing dependencies does not change focus or scroll position.
 
 ### Sprints
 
-The "Sprints" panel is visible on the board. Configure the first Sprint start date and a duration of 1 to 52 whole weeks. Following Sprints are calculated from this cadence. The board shows the current Sprint and the next five; before the cadence starts, it shows the first six.
+The "Sprints" panel is visible on the board. Configure the first Sprint start date and a duration of 1 to 52 whole weeks, then save. Sprint cards appear after a successful save. Following Sprints are calculated from the saved cadence. The board shows the current Sprint and the next five; before the cadence starts, it shows the first six. Changing the cadence fields marks them as unsaved and leaves the saved cards unchanged until the next successful save.
 
 Sprint names can be edited directly. Without a custom name, a Sprint is called "Sprint N". The focus action opens that Sprint in Timeline.
 
@@ -64,7 +64,7 @@ Overview and Timeline are directly available in the sidebar. Overview initially 
 
 Timeline uses stored durations and dates. When duration is missing, it assumes three days for ordinary tasks and one day for Epics. When the start date is missing, it derives the start from the due date and duration, or from the creation date. The interface explains these assumptions; they are not saved as task dates.
 
-Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Select "Show dependencies" to see a task's direct relationships in the dependency panel. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
+Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Hover over a task's name or bar to see its direct dependencies. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
 
 ## Accounts and permissions
 
