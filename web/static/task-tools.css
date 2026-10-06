@@ -29,9 +29,11 @@
 /* Hover shows direct connections without changing the surrounding layout. */
 .dependencyHoverSurface{position:relative}
 .dependencyHoverOverlay{position:absolute;left:0;top:0;z-index:5;overflow:visible;pointer-events:none}
-.dependencyHoverLine{fill:none;stroke:#7dd3fc;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
-.dependencyHoverDot{fill:#0b1219;stroke:#7dd3fc;stroke-width:1.5;pointer-events:none}
-.dependencyHoverOverlay marker path{fill:#7dd3fc;stroke:none}
+.dependencyHoverOutline{fill:none;stroke:#07111a;stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.dependencyHoverLine{fill:none;stroke:#7dd3fc;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.dependencyHoverArrowHead{fill:none;stroke:none;pointer-events:none}
+.dependencyHoverDot{fill:#07111a;stroke:#7dd3fc;stroke-width:2;pointer-events:none}
+.dependencyHoverOverlay marker path{fill:#7dd3fc;stroke:#07111a;stroke-width:1.25;stroke-linejoin:round;paint-order:stroke fill}
 .card.dependencyHoverActive,.ganttTaskItem.dependencyHoverActive{outline:1px solid #7dd3fc;outline-offset:-1px}
 .card.dependencyHoverRelated,.ganttTaskItem.dependencyHoverRelated{outline:1px solid #42667f;outline-offset:-1px}
 .ganttSvgTask.dependencyHoverActive .ganttSvgBar{stroke:#7dd3fc;stroke-width:1.5}
@@ -39,7 +41,7 @@
 .ticketRow.dependencyHoverActive td{background:#142738}
 .ticketRow.dependencyHoverRelated td{background:#12202c}
 .boardSwimlanes{padding:6px}
-.tableScroll{padding-inline:14px}
+.tableScroll{padding-inline:22px}
 .cardDependencyHints{display:grid;gap:4px;margin-top:9px;padding-top:8px;border-top:1px solid #2b3947;color:var(--muted);font-size:11px;line-height:1.4}
 .cardDependencyHints p{margin:0;overflow-wrap:anywhere}
 .cardDependencyHints .waiting{color:#fde68a}

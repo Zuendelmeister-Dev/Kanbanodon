@@ -216,7 +216,7 @@
     layerRoot.classList.add('dependencyHoverSurface');
     layerRoot.append(overlay);
     const markerId = 'dependencyHoverArrow' + ++nextOverlayId;
-    const definitions = '<defs><marker id="' + markerId + '" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L8 4 L0 8 Z"></path></marker></defs>';
+    const definitions = '<defs><marker id="' + markerId + '" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="12" markerHeight="12" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M1 1 L11 6 L1 11 Z"></path></marker></defs>';
     let hovered = 0;
     let focused = 0;
     let frame = 0;
@@ -265,16 +265,24 @@
       overlay.setAttribute('width', String(width));
       overlay.setAttribute('height', String(height));
       overlay.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
-      let drawing = '';
+      let outlines = '';
+      let lines = '';
+      let dots = '';
+      let heads = '';
       edges.forEach(edge => {
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
         const route = routeConnection(from, to, obstacles, { left: 1, top: 1, right: width - 1, bottom: height - 1 });
         if (route.length < 2) return;
-        drawing += '<path class="dependencyHoverLine" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + pathData(route) + '" marker-end="url(#' + markerId + ')"></path><circle class="dependencyHoverDot" cx="' + route[0].x + '" cy="' + route[0].y + '" r="2.5"></circle>';
+        const path = pathData(route);
+        outlines += '<path class="dependencyHoverOutline" d="' + path + '"></path>';
+        lines += '<path class="dependencyHoverLine" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>';
+        dots += '<circle class="dependencyHoverDot" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>';
+        heads += '<path class="dependencyHoverArrowHead" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + ')"></path>';
       });
-      overlay.innerHTML = drawing ? definitions + drawing : '';
+      // Incoming arrowheads remain visible where an outgoing line shares a port.
+      overlay.innerHTML = lines ? definitions + outlines + lines + dots + heads : '';
     };
     const refresh = () => {
       if (!destroyed && !frame) frame = window.requestAnimationFrame(draw);
