@@ -125,7 +125,15 @@ test('hover keeps only the selected task and direct neighbors bright and clears 
   assert.doesNotMatch(ui.overlay().innerHTML, /data-dependency-from="3" data-dependency-to="4"/);
   assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
   assert.equal(ui.nodes[0].classList.contains('dependencyHoverRelated'), true);
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverPrerequisite'), true);
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverDependent'), false);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverPrerequisite'), false);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverDependent'), false);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverPrerequisite'), false);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverDependent'), true);
   assert.equal(ui.nodes[3].classList.contains('dependencyHoverRelated'), false);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverPrerequisite'), false);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDependent'), false);
   assert.equal(ui.nodes[0].classList.contains('dependencyHoverDimmed'), false);
   assert.equal(ui.nodes[1].classList.contains('dependencyHoverDimmed'), false);
   assert.equal(ui.nodes[2].classList.contains('dependencyHoverDimmed'), false);
@@ -137,7 +145,82 @@ test('hover keeps only the selected task and direct neighbors bright and clears 
   ui.nodes.forEach(node => {
     assert.equal(node.classList.contains('dependencyHoverActive'), false);
     assert.equal(node.classList.contains('dependencyHoverRelated'), false);
+    assert.equal(node.classList.contains('dependencyHoverPrerequisite'), false);
+    assert.equal(node.classList.contains('dependencyHoverDependent'), false);
     assert.equal(node.classList.contains('dependencyHoverDimmed'), false);
+  });
+  controller.destroy();
+});
+
+test('incoming and outgoing arrow parts use separate role markers for the red-yellow-teal sequence', () => {
+  const ui = uiFixture();
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges });
+  ui.nodes[1].fire('pointerenter', { pointerType: 'mouse' });
+  const drawing = ui.overlay().innerHTML;
+  assert.match(drawing, /class="dependencyHoverLine dependencyHoverPrerequisite" data-dependency-from="1" data-dependency-to="2"/);
+  assert.match(drawing, /class="dependencyHoverLine dependencyHoverDependent" data-dependency-from="2" data-dependency-to="3"/);
+  ['Prerequisite', 'Dependent'].forEach(role => {
+    const marker = drawing.match(new RegExp('<marker id="([^"]+)" class="dependencyHover' + role + '"[^>]+>'));
+    assert.ok(marker, 'each role has its own marker');
+    assert.match(drawing, new RegExp('class="dependencyHoverDot dependencyHover' + role + '"'));
+    const head = drawing.match(new RegExp('class="dependencyHoverArrowHead dependencyHover' + role + '"[^>]+marker-end="url\\(#' + marker[1] + '\\)"'));
+    assert.ok(head, 'the head uses the matching role marker');
+    assert.ok(drawing.lastIndexOf('dependencyHoverLine') < drawing.indexOf(head[0]));
+    assert.ok(drawing.lastIndexOf('dependencyHoverDot') < drawing.indexOf(head[0]));
+  });
+  controller.destroy();
+});
+
+test('multiple prerequisites and dependents retain roles without revealing their other relationships', () => {
+  const ui = uiFixture();
+  const extra = ui.element(5, rect(460, 20, 570, 80));
+  ui.root.append(extra);
+  const edges = [{ from: 1, to: 2 }, { from: 4, to: 2 }, { from: 2, to: 3 }, { from: 2, to: 5 }, { from: 1, to: 5 }, { from: 3, to: 4 }];
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges });
+  ui.nodes[1].fire('focusin');
+  [ui.nodes[0], ui.nodes[3]].forEach(node => {
+    assert.equal(node.classList.contains('dependencyHoverPrerequisite'), true);
+    assert.equal(node.classList.contains('dependencyHoverDependent'), false);
+    assert.equal(node.classList.contains('dependencyHoverDimmed'), false);
+  });
+  [ui.nodes[2], extra].forEach(node => {
+    assert.equal(node.classList.contains('dependencyHoverDependent'), true);
+    assert.equal(node.classList.contains('dependencyHoverPrerequisite'), false);
+    assert.equal(node.classList.contains('dependencyHoverDimmed'), false);
+  });
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
+  const drawing = ui.overlay().innerHTML;
+  assert.match(drawing, /dependencyHoverPrerequisite" data-dependency-from="1" data-dependency-to="2"/);
+  assert.match(drawing, /dependencyHoverPrerequisite" data-dependency-from="4" data-dependency-to="2"/);
+  assert.match(drawing, /dependencyHoverDependent" data-dependency-from="2" data-dependency-to="3"/);
+  assert.match(drawing, /dependencyHoverDependent" data-dependency-from="2" data-dependency-to="5"/);
+  assert.doesNotMatch(drawing, /data-dependency-from="1" data-dependency-to="5"/);
+  assert.doesNotMatch(drawing, /data-dependency-from="3" data-dependency-to="4"/);
+  controller.destroy();
+});
+
+test('moving hover updates directional roles and leaving falls back to keyboard focus', () => {
+  const ui = uiFixture();
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges });
+  ui.nodes[1].fire('focusin');
+  ui.nodes[2].fire('pointerenter', { pointerType: 'mouse' });
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverPrerequisite'), false);
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverDimmed'), true);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), false);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverPrerequisite'), true);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverActive'), true);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverDependent'), false);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDependent'), true);
+  ui.nodes[2].fire('pointerleave');
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverPrerequisite'), true);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverPrerequisite'), false);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverDependent'), true);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDependent'), false);
+  ui.nodes[1].fire('focusout', { relatedTarget: null });
+  ui.nodes.forEach(node => {
+    assert.equal(node.classList.contains('dependencyHoverPrerequisite'), false);
+    assert.equal(node.classList.contains('dependencyHoverDependent'), false);
   });
   controller.destroy();
 });
@@ -178,6 +261,9 @@ test('Timeline labels trigger arrows between main bars, without using the wider 
   assert.equal(label.classList.contains('dependencyHoverActive'), true);
   assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
   assert.equal(directLabel.classList.contains('dependencyHoverRelated'), true);
+  assert.equal(directLabel.classList.contains('dependencyHoverPrerequisite'), true);
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverPrerequisite'), true);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverDependent'), true);
   assert.equal(directLabel.classList.contains('dependencyHoverDimmed'), false);
   assert.equal(unrelatedLabel.classList.contains('dependencyHoverDimmed'), true);
   assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), true);
@@ -218,6 +304,8 @@ test('focus exit, window blur, drag and destroy restore every task brightness', 
     ui.nodes.forEach(node => {
       assert.equal(node.classList.contains('dependencyHoverActive'), false, exit);
       assert.equal(node.classList.contains('dependencyHoverRelated'), false, exit);
+      assert.equal(node.classList.contains('dependencyHoverPrerequisite'), false, exit);
+      assert.equal(node.classList.contains('dependencyHoverDependent'), false, exit);
       assert.equal(node.classList.contains('dependencyHoverDimmed'), false, exit);
     });
     if (exit !== 'destroy') assert.equal(ui.overlay().innerHTML, '');
@@ -234,10 +322,33 @@ test('wide arrowheads remain visible after all lines and fit a ten-pixel card ga
   assert.match(drawing, /markerWidth="16" markerHeight="18"/);
   assert.match(drawing, /refX="15" refY="9"/);
   assert.match(drawing, /d="M5 1 L15 9 L5 17 Z"/);
-  assert.match(drawing, /class="dependencyHoverArrowHead" d="M130\.0 50\.0 L140\.0 50\.0"/);
+  assert.match(drawing, /class="dependencyHoverArrowHead dependencyHoverDependent" d="M130\.0 50\.0 L140\.0 50\.0"/);
   assert.ok(drawing.lastIndexOf('dependencyHoverLine') < drawing.indexOf('dependencyHoverArrowHead'));
   assert.ok(drawing.lastIndexOf('dependencyHoverDot') < drawing.indexOf('dependencyHoverArrowHead'));
   controller.destroy();
+});
+
+test('a roomy board gutter routes twelve pixels clear of card edges while narrow layouts retain their default', () => {
+  const ui = uiFixture();
+  ui.nodes[1].bounds = rect(20, 200, 130, 260);
+  ui.nodes[2].bounds = rect(20, 104, 130, 176);
+  const edges = [{ from: 1, to: 2 }];
+  const first = hover.wire(ui.root, { layerRoot: ui.root, edges });
+  ui.nodes[0].fire('pointerenter', { pointerType: 'mouse' });
+  assert.match(ui.overlay().innerHTML, /d="M20\.0 50\.0 L16\.0 50\.0 L16\.0 230\.0 L20\.0 230\.0"/);
+  const roomy = hover.wire(ui.root, { layerRoot: ui.root, edges, routeClearance: 12 });
+  ui.nodes[0].fire('pointerenter', { pointerType: 'mouse' });
+  const drawing = ui.overlay().innerHTML;
+  const line = drawing.match(/class="dependencyHoverLine [^"]+"[^>]+ d="([^"]+)"/);
+  assert.ok(line);
+  const points = [...line[1].matchAll(/[ML](-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)].map(match => ({ x: +match[1], y: +match[2] }));
+  assertSafeRoute(points, ui.nodes.map(node => node.bounds));
+  assert.deepEqual(points, [{ x: 20, y: 50 }, { x: 8, y: 50 }, { x: 8, y: 230 }, { x: 20, y: 230 }]);
+  assert.match(drawing, /class="dependencyHoverArrowHead dependencyHoverDependent" d="M8\.0 230\.0 L20\.0 230\.0"/);
+  assert.equal(ui.root.scrollLeft, 0);
+  assert.equal(ui.root.scrollTop, 0);
+  roomy.destroy();
+  first.destroy();
 });
 
 test('filtered-out relationships produce no dangling line or detached focus target', () => {
@@ -266,6 +377,10 @@ test('scroll/resize refresh only geometry, and rewiring removes old listeners an
   assert.equal(ui.root.children.filter(child => child.getAttribute('class') === 'dependencyHoverOverlay').length, 1);
   assert.equal(ui.nodes[1].listenerCount('pointerenter'), 1);
   assert.equal(ui.overlay().innerHTML, '');
+  ui.nodes.forEach(node => {
+    assert.equal(node.classList.contains('dependencyHoverPrerequisite'), false);
+    assert.equal(node.classList.contains('dependencyHoverDependent'), false);
+  });
   ui.nodes[1].fire('pointerenter', { pointerType: 'mouse' });
   ui.root.fire('dragstart');
   assert.equal(ui.overlay().innerHTML, '');

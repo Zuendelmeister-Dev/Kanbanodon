@@ -206,6 +206,7 @@
     const window = document.defaultView;
     const idAttribute = options.idAttribute || 'data-work-id';
     const idOf = node => +node.getAttribute(idAttribute);
+    const routeClearance = Number.isFinite(+options.routeClearance) && +options.routeClearance > 0 ? +options.routeClearance : 4;
     const anchors = nodes.filter(node => layerRoot.contains(node)).map(node => ({ node, anchor: options.anchorSelector ? node.querySelector(options.anchorSelector) : node, id: idOf(node) })).filter(item => item.anchor && item.id > 0);
     const overlay = document.createElementNS(SVG_NS, 'svg');
     overlay.setAttribute('class', 'dependencyHoverOverlay');
@@ -216,7 +217,8 @@
     layerRoot.classList.add('dependencyHoverSurface');
     layerRoot.append(overlay);
     const markerId = 'dependencyHoverArrow' + ++nextOverlayId;
-    const definitions = '<defs><marker id="' + markerId + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker></defs>';
+    const roleClasses = { prerequisite: 'dependencyHoverPrerequisite', dependent: 'dependencyHoverDependent' };
+    const definitions = '<defs>' + Object.keys(roleClasses).map(role => '<marker id="' + markerId + role + '" class="' + roleClasses[role] + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker>').join('') + '</defs>';
     let hovered = 0;
     let focused = 0;
     let frame = 0;
@@ -240,10 +242,15 @@
       const selected = hovered || focused;
       const edges = directEdges(options.edges, selected);
       const related = new Set(edges.flatMap(edge => [edge.from, edge.to]));
+      const prerequisites = new Set(edges.filter(edge => edge.to === selected).map(edge => edge.from));
+      const dependents = new Set(edges.filter(edge => edge.from === selected).map(edge => edge.to));
       nodes.forEach(node => {
-        node.classList.toggle('dependencyHoverActive', selected > 0 && idOf(node) === selected);
-        node.classList.toggle('dependencyHoverRelated', idOf(node) !== selected && related.has(idOf(node)));
-        node.classList.toggle('dependencyHoverDimmed', selected > 0 && idOf(node) !== selected && !related.has(idOf(node)));
+        const id = idOf(node);
+        node.classList.toggle('dependencyHoverActive', selected > 0 && id === selected);
+        node.classList.toggle('dependencyHoverRelated', id !== selected && related.has(id));
+        node.classList.toggle(roleClasses.prerequisite, prerequisites.has(id));
+        node.classList.toggle(roleClasses.dependent, dependents.has(id));
+        node.classList.toggle('dependencyHoverDimmed', selected > 0 && id !== selected && !related.has(id));
       });
       resetOverlay();
       if (!selected || !edges.length || !layerRoot.isConnected) return;
@@ -274,15 +281,17 @@
         const from = positions.get(edge.from);
         const to = positions.get(edge.to);
         if (!from || !to) return;
-        const route = routeConnection(from, to, obstacles, { left: 1, top: 1, right: width - 1, bottom: height - 1 });
+        const route = routeConnection(from, to, obstacles, { left: 1, top: 1, right: width - 1, bottom: height - 1 }, routeClearance);
         if (route.length < 2) return;
         const path = pathData(route);
+        const role = edge.to === selected ? 'prerequisite' : 'dependent';
+        const roleClass = roleClasses[role];
         outlines += '<path class="dependencyHoverOutline" d="' + path + '"></path>';
-        lines += '<path class="dependencyHoverLine" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>';
-        dots += '<circle class="dependencyHoverDot" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>';
+        lines += '<path class="dependencyHoverLine ' + roleClass + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>';
+        dots += '<circle class="dependencyHoverDot ' + roleClass + '" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>';
         // The head stays wide enough to show direction even when the last bend
         // is only a few pixels away in a table gutter or between short bars.
-        heads += '<path class="dependencyHoverArrowHead" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + ')"></path>';
+        heads += '<path class="dependencyHoverArrowHead ' + roleClass + '" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + role + ')"></path>';
       });
       // Incoming arrowheads remain visible where an outgoing line shares a port.
       overlay.innerHTML = lines ? definitions + outlines + lines + dots + heads : '';
@@ -294,7 +303,7 @@
       hovered = focused = 0;
       if (frame) window.cancelAnimationFrame(frame);
       frame = 0;
-      nodes.forEach(node => node.classList.remove('dependencyHoverActive', 'dependencyHoverRelated', 'dependencyHoverDimmed'));
+      nodes.forEach(node => node.classList.remove('dependencyHoverActive', 'dependencyHoverRelated', 'dependencyHoverDimmed', roleClasses.prerequisite, roleClasses.dependent));
       resetOverlay();
     };
     nodes.forEach(node => {

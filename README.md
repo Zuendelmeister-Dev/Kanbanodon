@@ -48,7 +48,7 @@ Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs
 
 Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
-Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Blue arrows point from prerequisite to dependent, while unrelated tasks fade into the background. The lines disappear and all tasks return to full visibility when the task is neither hovered nor focused. Showing dependencies does not change focus or scroll position.
+Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Prerequisites use red borders and incoming arrows, the selected task uses yellow, and its dependents use teal borders and outgoing arrows. Arrows point from prerequisite to dependent, while unrelated tasks fade into the background. The lines disappear and all tasks return to full visibility when the task is neither hovered nor focused. Showing dependencies does not change focus or scroll position.
 
 ### Sprints
 

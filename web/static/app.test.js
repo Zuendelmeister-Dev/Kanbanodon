@@ -718,11 +718,13 @@ function hoverApp() {
 
 test('Board rendering wires direct hover dependencies to the card surface without changing view or route', () => {
   const {app, calls} = hoverApp(); const root = app.document.querySelector('#board'); const layer = fakeElement();
+  layer.classList.add('boardSwimlanes');
   root.querySelector = selector => selector === '.boardSwimlanes,.tableScroll' ? layer : null;
   app.renderBoard();
   assert.equal(calls.length, 1); assert.equal(calls[0].root, root);
   const options = calls[0].options;
   assert.equal(options.layerRoot, layer); assert.equal(options.idAttribute, 'data-work-id');
+  assert.equal(options.routeClearance, 12);
   assert.match(options.nodesSelector, /boardSwimlanes \[data-work-id\]/);
   assert.deepEqual(Array.from(options.edges, edge => edge.from + '>' + edge.to), ['13>12']);
   assert.doesNotMatch(root.innerHTML, /Show dependencies|dependencySelection|pathDimmed/);
@@ -739,6 +741,7 @@ test('Overview rendering wires hover dependencies in the table and keeps keyboar
   app.renderOverview();
   assert.equal(calls.length, 1); assert.equal(calls[0].root, root);
   assert.equal(calls[0].options.layerRoot, layer);
+  assert.equal(calls[0].options.routeClearance, 4);
   assert.match(calls[0].options.nodesSelector, /ticketTable \[data-work-id\]/);
   assert.deepEqual(Array.from(calls[0].options.edges, edge => edge.from + '>' + edge.to), ['13>12']);
   assert.equal(row.tabIndex, 0); assert.equal(app.getEditing(), null);

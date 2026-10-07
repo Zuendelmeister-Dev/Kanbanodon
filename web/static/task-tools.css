@@ -29,19 +29,40 @@
 /* Hover shows direct connections without changing the surrounding layout. */
 .dependencyHoverSurface{position:relative}
 .dependencyHoverOverlay{position:absolute;left:0;top:0;z-index:5;overflow:visible;pointer-events:none}
+.dependencyHoverPrerequisite{--dependency-color:var(--red)}
+.dependencyHoverDependent{--dependency-color:var(--teal)}
+.dependencyHoverActive{--dependency-color:var(--gold)}
 .dependencyHoverOutline{fill:none;stroke:#07111a;stroke-width:6.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
-.dependencyHoverLine{fill:none;stroke:#9be7ff;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.dependencyHoverLine{fill:none;stroke:var(--dependency-color,var(--teal));stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
 .dependencyHoverArrowHead{fill:none;stroke:none;pointer-events:none}
-.dependencyHoverDot{fill:#07111a;stroke:#9be7ff;stroke-width:2;pointer-events:none}
-.dependencyHoverOverlay marker path{fill:#9be7ff;stroke:#07111a;stroke-width:1.75;stroke-linejoin:round;paint-order:stroke fill}
+.dependencyHoverDot{fill:#07111a;stroke:var(--dependency-color,var(--teal));stroke-width:2;pointer-events:none}
+.dependencyHoverOverlay marker path{fill:var(--dependency-color,var(--teal));stroke:#07111a;stroke-width:1.75;stroke-linejoin:round;paint-order:stroke fill}
 .dependencyHoverDimmed{opacity:.22}
-.card.dependencyHoverActive,.ganttTaskItem.dependencyHoverActive{outline:2px solid #9be7ff;outline-offset:-2px}
-.card.dependencyHoverRelated,.ganttTaskItem.dependencyHoverRelated{outline:1.5px solid #7dd3fc;outline-offset:-1.5px}
-.ganttSvgTask.dependencyHoverActive .ganttSvgBar{stroke:#9be7ff;stroke-width:2.5}
-.ganttSvgTask.dependencyHoverRelated .ganttSvgBar{stroke:#7dd3fc;stroke-width:2}
-.ticketRow.dependencyHoverActive td{background:#142738}
-.ticketRow.dependencyHoverRelated td{background:#12202c}
-.boardSwimlanes{padding:6px}
+.card.dependencyHoverActive,.card.dependencyHoverRelated,.ganttTaskItem.dependencyHoverActive,.ganttTaskItem.dependencyHoverRelated,.boardLaneEpic.dependencyHoverActive,.boardLaneEpic.dependencyHoverRelated{outline:2px solid var(--dependency-color);outline-offset:-2px;border-color:var(--dependency-color)}
+.boardSwimlanes .boardLaneDrop .card.dependencyHoverActive,.boardSwimlanes .boardLaneDrop .card.dependencyHoverRelated{border-left-color:var(--dependency-color)}
+.ganttSvgTask.dependencyHoverActive .ganttSvgBar,.ganttSvgTask.dependencyHoverRelated .ganttSvgBar{stroke:var(--dependency-color);stroke-width:2.5}
+.ticketRow.dependencyHoverActive,.ticketRow.dependencyHoverRelated{outline:2px solid var(--dependency-color);outline-offset:-2px}
+.ticketRow.dependencyHoverActive td{background:#282313}
+.ticketRow.dependencyHoverPrerequisite td{background:#29181c}
+.ticketRow.dependencyHoverDependent td{background:#102a26}
+.ticketRow.dependencyHoverActive td:first-child,.ticketRow.dependencyHoverRelated td:first-child{border-left-color:var(--dependency-color)}
+
+/* Shared gutters keep column headers aligned and leave space for arrowheads. */
+.boardSwimlanes.cols1{--board-columns:1}
+.boardSwimlanes.cols2{--board-columns:2}
+.boardSwimlanes.cols3{--board-columns:3}
+.boardSwimlanes.cols4{--board-columns:4}
+.boardSwimlanes.cols5{--board-columns:5}
+.boardSwimlanes.cols6{--board-columns:6}
+.boardSwimlanes.cols7{--board-columns:7}
+.boardSwimlanes.cols8{--board-columns:8}
+.boardSwimlanes[class*="cols"]{--board-epic-width:220px;--board-task-width:220px;padding:16px;min-width:calc(var(--board-epic-width) + var(--board-columns) * (var(--board-task-width) + 24px) + 34px)}
+.boardSwimlanes.simpleBoard[class*="cols"]{min-width:calc(var(--board-columns) * 170px + (var(--board-columns) - 1) * 24px + 34px)}
+.boardLane{column-gap:24px}
+.boardLaneDrop.drop{padding:14px}
+.boardLaneDrop .card{margin-bottom:24px}
+.boardLaneDrop .card:last-child{margin-bottom:0}
+@media(max-width:820px){.boardSwimlanes.cols5:not(.simpleBoard){--board-epic-width:180px;--board-task-width:170px}}
 .tableScroll{padding-inline:22px}
 .cardDependencyHints{display:grid;gap:4px;margin-top:9px;padding-top:8px;border-top:1px solid #2b3947;color:var(--muted);font-size:11px;line-height:1.4}
 .cardDependencyHints p{margin:0;overflow-wrap:anywhere}

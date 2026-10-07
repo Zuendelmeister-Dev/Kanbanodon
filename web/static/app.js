@@ -1400,6 +1400,7 @@ function wireWorkDependencies(root, tickets) {
     nodesSelector: '.boardSwimlanes [data-work-id],.ticketTable [data-work-id]',
     idAttribute: 'data-work-id',
     layerRoot,
+    routeClearance: layerRoot?.classList.contains('boardSwimlanes') ? 12 : 4,
     edges: dependencyHoverEdges(tickets),
   });
 }
