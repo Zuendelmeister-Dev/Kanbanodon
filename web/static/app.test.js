@@ -22,6 +22,7 @@ function fakeElement() {
     },
     addEventListener() {},
     setAttribute(name, value) { this[name] = value; },
+    getAttribute(name) { return this[name] === undefined ? null : String(this[name]); },
     append() {}, before() {}, after() {}, insertAdjacentHTML() {},
     closest() { return this.parentElement; },
     matches(selector) { return selector.split(',').some(part => part.startsWith('.') && classes.has(part.slice(1))); },
@@ -67,6 +68,7 @@ function loadApp(options = {}) {
   };
   if (options.creator) window.KanbanodonDinoCreator = require('./dino-creator.js');
   if (options.hover) window.KanbanodonDependencyHover = options.hover;
+  if (options.resizeObserver) window.ResizeObserver = options.resizeObserver;
   const context = {
     window,
     document,
@@ -109,9 +111,9 @@ function loadApp(options = {}) {
     boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     boardDependencyHtml, dependencyHoverEdges, wireWorkDependencies, wireTimelineDependencies,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    renderGantt, ganttTaskLabel,
+    renderGantt, ganttTaskLabel, timelineGeometry,
     ganttDelayText, ganttEstimateText, ganttSvg, ganttSvgTask, ganttSvgBarLabel, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
-    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands,
+    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands, ganttSvgAxis,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
     calculatedSprints, sprintName, sprintPlannerHtml, sprintPreviewHtml, sprintPreviewCardHtml, shortRange,
@@ -990,6 +992,132 @@ test('Sprint window exposes current plus five successors and applies custom name
   const future = app.sprintWindow('2026-02-01', 2, app.parseDate('2026-01-20'), 6);
   assert.equal(future[0].number, 1);
   assert.equal(future[0].next, true);
+});
+
+function timelineSurface(app, viewportWidth) {
+  const root = app.document.querySelector('#timeline'); root.clientWidth = viewportWidth + 352;
+  const scroll = fakeElement(); Object.assign(scroll, {clientWidth: viewportWidth, scrollLeft: 0, isConnected: true});
+  const svg = fakeElement();
+  root.querySelector = selector => selector === '.ganttSvgScroll' ? scroll : selector === '.ganttSvg' ? svg : null;
+  return {root, scroll, svg};
+}
+
+test('focused Sprint geometry uses only its exact bounds and fits short and long Sprints on narrow viewports', () => {
+  const app = loadApp(); app.setState(stateWithHierarchy());
+  const tasks = [{start: app.parseDate('2000-01-01'), end: app.parseDate('2030-01-01'), delayEnd: app.parseDate('2031-01-01')}];
+  for (const weeks of [1, 2, 52]) {
+    const sprint = app.sprintByNumber(2, '2026-10-05', weeks);
+    for (const viewport of [160, 300, 720]) {
+      const geometry = app.timelineGeometry(tasks, sprint, viewport, 1);
+      assert.equal(app.fmtIsoDate(geometry.rangeStart), app.fmtIsoDate(sprint.start));
+      assert.equal(app.fmtIsoDate(geometry.rangeEnd), app.fmtIsoDate(sprint.endExclusive));
+      assert.equal(geometry.totalDays, weeks * 7);
+      assert.equal(geometry.timelineWidth, viewport);
+      assert.equal(app.ganttPx(sprint.start, geometry.rangeStart, geometry.dayWidth), 28);
+      assert.ok(Math.abs(app.ganttPx(sprint.endExclusive, geometry.rangeStart, geometry.dayWidth) - (viewport - 28)) < 1e-8);
+    }
+  }
+  const long = app.timelineGeometry(tasks, app.sprintByNumber(1, '2026-10-05', 52), 160, 1);
+  assert.ok(long.dayWidth < 1, 'the normal ten-pixel minimum never forces focused Sprint overflow');
+});
+
+test('opening a Sprint resets manual zoom and uses the rendered calendar viewport instead of a desktop minimum', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); state.board.sprint_start_date = '2027-03-01';
+  app.setState(state); app.selectBoard(1); const surface = timelineSurface(app, 160);
+  app.renderGantt(surface.root);
+  app.elements.get('#timelineZoom').value = '3'; app.elements.get('#timelineZoom').oninput();
+  app.jumpToSprint(2);
+  assert.equal(app.getView(), 'timeline'); assert.equal(app.window.location.hash, '#/timeline/1/sprint/2');
+  assert.equal(surface.scroll.dataset.rangeStart, '2027-03-15');
+  assert.equal(surface.scroll.dataset.rangeEnd, '2027-03-29');
+  assert.equal(+surface.svg.getAttribute('width'), 160);
+  assert.equal(+surface.scroll.dataset.timelineWidth, 160);
+  assert.ok(+surface.scroll.dataset.dayWidth < 10);
+  assert.equal(surface.scroll.scrollLeft, 0);
+  assert.match(surface.root.innerHTML, /id="timelineZoom"[^>]*value="1"/);
+  assert.match(surface.root.innerHTML, /100%/);
+  assert.equal((surface.svg.innerHTML.match(/class="ganttSvgSprintLabel focused"/g) || []).length, 1);
+  assert.doesNotMatch(surface.svg.innerHTML, /ganttSvgSprintLabel[^>]*>Sprint [13]</);
+  app.elements.get('#timelineClearFocus').onclick();
+  assert.equal(app.window.location.hash, '#/timeline/1');
+  assert.doesNotMatch(surface.root.innerHTML, /timelineFocusBadge|ganttCalendarClip/);
+  assert.doesNotMatch(surface.root.innerHTML, /<svg class="ganttSvg"[^>]*overflow="hidden"/);
+  assert.match(surface.root.innerHTML, /data-range-start="2026-/);
+  assert.match(surface.root.innerHTML, /id="timelineZoom"[^>]*value="1"/);
+});
+
+test('a focused Sprint deep link fits at 100% and refits when the calendar viewport shrinks', () => {
+  const observers = [];
+  class ResizeObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  }
+  const app = loadApp({resizeObserver: ResizeObserver}); const state = stateWithHierarchy();
+  state.board.sprint_start_date = '2026-10-05'; app.setState(state); app.selectBoard(1);
+  const surface = timelineSurface(app, 720);
+  app.applyRoute({view: 'timeline', boardId: 1, ticketId: 0, sprintNumber: 1});
+  assert.equal(surface.scroll.dataset.rangeStart, '2026-10-05');
+  assert.equal(surface.scroll.dataset.rangeEnd, '2026-10-19');
+  assert.equal(+surface.svg.getAttribute('width'), 720);
+  assert.equal(observers[0].target, surface.scroll);
+  surface.scroll.clientWidth = 160; observers[0].callback();
+  assert.equal(+surface.svg.getAttribute('width'), 160);
+  assert.ok(Math.abs(+surface.scroll.dataset.dayWidth - 104 / 14) < 1e-8);
+  assert.equal(surface.scroll.scrollLeft, 0);
+  const days = [...surface.svg.innerHTML.matchAll(/class="ganttSvgAxisDay"[^>]*>(\d+)<\/text>/g)].map(match => +match[1]);
+  assert.ok(days.every(day => day >= 5 && day <= 18));
+  assert.equal((surface.svg.innerHTML.match(/class="ganttSvgSprintLabel focused"/g) || []).length, 1);
+  const cursor = app.ganttCursorAtX(160, app.parseDate('2026-10-05'), 14, 104 / 14, 160, 0, 160, 13);
+  assert.equal(app.fmtIsoDate(cursor.date), '2026-10-18');
+  app.elements.get('#timelineClearFocus').onclick();
+  assert.equal(observers[0].disconnected, true);
+  assert.equal(app.window.location.hash, '#/timeline/1');
+});
+
+test('focused calendar clipping hides padding fragments and due tags from tasks outside the Sprint', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); state.board.sprint_start_date = '2026-10-05';
+  app.setState(state); app.jumpToSprint(1);
+  const sprint = app.sprintByNumber(1); const geometry = app.timelineGeometry([], sprint, 300, 1);
+  const history = app.ganttTask({...state.tickets[3], id: 31, startDate: '2026-10-03', dueDate: '2026-10-04', completedAt: '2026-10-04', links: []}); history.row = 0;
+  const future = app.ganttTask({...state.tickets[3], id: 32, startDate: '2026-10-20', dueDate: '2026-10-21', completedAt: '2026-10-21', links: []}); future.row = 1;
+  const html = app.ganttSvg([history, future], geometry.rangeStart, geometry.totalDays, geometry.dayWidth, 300, 56, 84, 168, 62);
+  const clip = /<clipPath id="ganttCalendarClip"><rect x="28" y="56" width="([^"]+)" height="168"/.exec(html);
+  assert.ok(clip); assert.ok(Math.abs(+clip[1] - 244) < 1e-8);
+  assert.match(html, /<g class="ganttCalendarTasks" clip-path="url\(#ganttCalendarClip\)">/);
+  const bar = app.ganttSvgTask(history, sprint.start, geometry.dayWidth, 56, 84, sprint);
+  const rect = /class="ganttSvgBar [^"]+" x="([^"]+)"[^>]*width="([^"]+)"/.exec(bar);
+  assert.ok(+rect[1] < 0);
+  assert.ok(+rect[1] + +rect[2] > 0 && +rect[1] + +rect[2] < 28, 'only the SVG padding would have shown a historical fragment without the calendar clip');
+  assert.doesNotMatch(bar, /ganttSvgDueLine|ganttSvgDueTagBg|ganttSvgDueTag"/);
+  assert.doesNotMatch(app.ganttSvgTask(future, sprint.start, geometry.dayWidth, 56, 84, sprint), /ganttSvgDueLine|ganttSvgDueTagBg|ganttSvgDueTag"/);
+  assert.match(html, /ganttSvgAxisDay/);
+});
+
+test('focused last-day due and estimated-finish badges fit inside the calendar while their marker keeps its date', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); state.board.sprint_start_date = '2026-10-05'; app.setState(state);
+  const sprint = app.sprintByNumber(1);
+  for (const viewport of [160, 300, 614]) {
+    const geometry = app.timelineGeometry([], sprint, viewport, 1);
+    for (const explicitDeadline of [true, false]) {
+      const base = app.ganttTask({...state.tickets[3], links: [], startDate: '2026-10-17', dueDate: '2026-10-18', completedAt: '2026-10-18'});
+      const task = {...base, ticket: {...base.ticket, dueDate: explicitDeadline ? '2026-10-18' : ''}, row: 0};
+      const html = app.ganttSvgTask(task, sprint.start, geometry.dayWidth, 56, 84, sprint);
+      const badge = /class="ganttSvgDueTagBg" x="([^"]+)"[^>]*width="([^"]+)"/.exec(html);
+      const text = /class="ganttSvgDueTag" x="([^"]+)"[^>]*>([^<]+)<\/text>/.exec(html);
+      const line = /class="ganttSvgDueLine" x1="([^"]+)" x2="([^"]+)"/.exec(html);
+      assert.ok(badge); assert.ok(text); assert.ok(line);
+      assert.ok(+badge[1] >= 28); assert.ok(+badge[1] + +badge[2] <= viewport - 28 + 1e-8);
+      assert.ok(+text[1] > +badge[1]); assert.ok(+text[1] + text[2].length * 7 <= +badge[1] + +badge[2]);
+      assert.equal(+line[1], app.ganttPx(task.due, sprint.start, geometry.dayWidth)); assert.equal(line[1], line[2]);
+      assert.match(text[2], viewport === 160 ? /18 Oct/ : /2026-10-18/);
+      if (viewport >= 300) assert.match(text[2], explicitDeadline ? /^Due / : /^Est\. finish /);
+      // Whole-Timeline geometry keeps its existing right-of-marker badge placement.
+      const full = app.ganttSvgTask(task, sprint.start, geometry.dayWidth, 56, 84);
+      const fullBadge = /class="ganttSvgDueTagBg" x="([^"]+)"/.exec(full);
+      assert.equal(+fullBadge[1], +line[1] + 7);
+    }
+  }
 });
 
 test('timeline centering converts dates and scroll offsets symmetrically', () => {

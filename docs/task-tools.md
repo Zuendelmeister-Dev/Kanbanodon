@@ -36,11 +36,11 @@ Moving the original task out of “Done” and completing it again creates anoth
 
 ## Planning and data exchange
 
-The "Sprints" panel is visible on the board. Set the first Sprint start date and its length in weeks, then save. Sprint cards appear after a successful save. The panel shows the current Sprint and the next five, or the first six before the saved cadence begins. Changes to the cadence fields are marked as unsaved; the saved cards and their dates remain unchanged until a successful save. Sprint names can be edited directly, and the focus action opens the selected Sprint in Timeline.
+The "Sprints" panel is visible on the board. Set the first Sprint start date and its length in weeks, then save. Sprint cards appear after a successful save. The panel shows the current Sprint and the next five, or the first six before the saved cadence begins. Changes to the cadence fields are marked as unsaved; the saved cards and their dates remain unchanged until a successful save. Sprint names can be edited directly, and the focus action fits the selected Sprint's date range to the Timeline width. "Show full timeline" restores the complete date range.
 
 Overview and Timeline are directly available in the sidebar. The simplified Overview shows five main columns; "Show planning columns" displays additional fields. Timeline identifies assumed dates as estimates. Saved time, delays, and completion estimates appear on thin rails below the task bars, keeping task names readable.
 
-Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Thin blue arrows point from prerequisite to dependent and disappear when the task is neither hovered nor focused. Showing dependencies keeps focus and scroll position unchanged. Open the task to edit its dependencies under "Planning and details".
+Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Blue arrows point from prerequisite to dependent, while unrelated tasks fade into the background. The lines disappear and all tasks return to full visibility when the task is neither hovered nor focused. Showing dependencies keeps focus and scroll position unchanged. Open the task to edit its dependencies under "Planning and details".
 
 “Export” and “Import” in the board menu transfer a board as JSON. Import adds tasks to the selected destination board; importing again creates additional copies. Accounts and access permissions are not transferred, and assignees are reset.
 

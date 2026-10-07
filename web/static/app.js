@@ -205,6 +205,7 @@ function applyRoute(route) {
   view = route.view || 'board';
   pendingTicketId = route.ticketId || 0;
   timelineFocusSprint = view === 'timeline' ? +(route.sprintNumber || 0) : 0;
+  if (timelineFocusSprint) timelineZoom = 1;
   timelineCenterDate = null;
   if (route.boardId && route.boardId !== currentBoardId()) {
     return load();
@@ -789,7 +790,7 @@ function sprintPreviewCardHtml(sprint) {
   const name = sprintName(sprint);
   const phase = sprint.current ? 'Current' : sprint.next ? 'Next' : 'Upcoming';
   const phaseClass = sprint.current ? ' current' : sprint.next ? ' next' : '';
-  const jumpLabel = 'Open ' + name + ' centered in Timeline';
+  const jumpLabel = 'Open ' + name + ' in Timeline';
   return '<article class="sprintCard' + phaseClass + '" data-sprint-card="' + sprint.number + '"><button class="sprintJump" data-sprint-jump="' + sprint.number + '" type="button" title="' + escAttr(jumpLabel) + '" aria-label="' + escAttr(jumpLabel) + '"><span aria-hidden="true">⌖</span></button><label><span>' + esc(fallback) + '<em>' + phase + '</em></span><input class="sprintNameInput" data-sprint-name="' + sprint.number + '" data-original-display="' + escAttr(name) + '" maxlength="80" value="' + escAttr(name) + '" title="Edit name · saved automatically" aria-label="Name for ' + escAttr(fallback) + '"></label><small>' + esc(shortRange(sprint.start, sprint.end)) + '</small><span class="sprintNameStatus" data-sprint-name-status="' + sprint.number + '" aria-live="polite"></span></article>';
 }
 
@@ -983,12 +984,13 @@ async function saveSprintName(input, boardId = currentBoardId(), sessionCurrent 
   }
 }
 
-// Opens the Timeline and centers the requested generated Sprint.
+// Opens a generated Sprint fitted to the visible Timeline viewport.
 function jumpToSprint(number) {
   const range = sprintByNumber(number);
   if (!range) return;
   if (!canLeaveDrawer()) return;
   timelineFocusSprint = number;
+  timelineZoom = 1;
   timelineCenterDate = addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2));
   view = 'timeline';
   closeDrawer(false);
@@ -1507,6 +1509,7 @@ function wireBacklogActions(root) {
 }
 
 const GANTT_LEFT_PAD = 28;
+const timelineFitObservers = new WeakMap();
 
 // Renders the Timeline view or an error message.
 function renderTimeline() {
@@ -1522,6 +1525,8 @@ function renderTimeline() {
 
 // Calculates and renders the Gantt chart for scheduled work.
 function renderGantt(root) {
+  timelineFitObservers.get(root)?.disconnect();
+  timelineFitObservers.delete(root);
   // Only promoted, scheduled delivery work reaches the timeline.
   const controls = timelineControlsHtml();
   const tasks = buildGanttRows();
@@ -1536,35 +1541,71 @@ function renderGantt(root) {
   const taskColumnWidth = root.clientWidth < 900 ? 230 : 320;
   const availableTimelineWidth = Math.max(520, root.clientWidth - taskColumnWidth - 32);
   const focusCenter = focusRange ? addDays(focusRange.start, Math.floor(dayDiff(focusRange.start, focusRange.endExclusive) / 2)) : null;
-  const dates = tasks.flatMap(t => [t.plannedStart, t.start, t.end, t.due, t.actualFinish, t.readyAt, t.delayEnd, t.overrunEnd, t.estimateEnd]).filter(validDate);
-  if (focusCenter) {
-    const focusPadding = Math.ceil(availableTimelineWidth / 20) + 2;
-    dates.push(addDays(focusCenter, -focusPadding), addDays(focusCenter, focusPadding));
-  }
-  const minDate = dates.length ? new Date(Math.min(...dates.map(Number))) : startOfDay(new Date());
-  const maxDate = dates.length ? new Date(Math.max(...dates.map(Number))) : addDays(startOfDay(new Date()), 14);
-  const rangeStart = addDays(minDate, -1);
-  const rangeEnd = addDays(maxDate, 2);
-  const totalDays = Math.max(1, dayDiff(rangeStart, rangeEnd));
+  let geometry = timelineGeometry(tasks, focusRange, availableTimelineWidth);
+  const {rangeStart, rangeEnd, totalDays} = geometry;
   const rowHeight = 84;
   const headHeight = 56;
   const axisHeight = 62;
-  const fittedDayWidth = (availableTimelineWidth - GANTT_LEFT_PAD * 2) / totalDays;
-  const dayWidth = Math.max(10, Math.min(90, Math.floor((fittedDayWidth || 24) * timelineZoom)));
-  const timelineWidth = Math.max(availableTimelineWidth, totalDays * dayWidth + GANTT_LEFT_PAD * 2);
+  let {dayWidth, timelineWidth} = geometry;
   const bodyHeight = tasks.length * rowHeight;
   const chartHeight = headHeight + bodyHeight + axisHeight;
   const labels = tasks.map(task => ganttTaskLabel(task, rowHeight)).join('');
   const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight);
 
-  root.innerHTML = '<section class="ganttFlow">' + controls + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Hover a task to see direct dependencies · arrows point to dependent tasks</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '" role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  root.innerHTML = '<section class="ganttFlow">' + controls + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Hover a task to see direct dependencies · arrows point to dependent tasks</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  const scroll = root.querySelector('.ganttSvgScroll');
+  const svgElement = root.querySelector('.ganttSvg');
+  const fitViewport = () => {
+    if (!focusRange || !(scroll?.clientWidth > 0) || !svgElement) return false;
+    const fitted = timelineGeometry(tasks, focusRange, scroll.clientWidth);
+    if (svgElement.getAttribute('width') === String(fitted.timelineWidth) && +scroll.dataset.dayWidth === fitted.dayWidth) return false;
+    geometry = fitted;
+    ({dayWidth, timelineWidth} = geometry);
+    scroll.dataset.rangeStart = fmtIsoDate(rangeStart);
+    scroll.dataset.rangeEnd = fmtIsoDate(rangeEnd);
+    scroll.dataset.dayWidth = String(dayWidth);
+    scroll.dataset.timelineWidth = String(timelineWidth);
+    svgElement.setAttribute('width', timelineWidth);
+    svgElement.setAttribute('viewBox', '0 0 ' + timelineWidth + ' ' + chartHeight);
+    svgElement.innerHTML = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight);
+    return true;
+  };
+  fitViewport();
   wireTimelineControls(root);
   wireTimelineDependencies(root, tasks);
-  wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth);
+  wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth, !!focusRange);
   wireTimelinePan(root);
   const requestedCenter = validDate(timelineCenterDate) ? timelineCenterDate : focusCenter;
   if (requestedCenter) centerTimelineOnDate(root, requestedCenter);
+  if (focusRange && scroll && typeof window.ResizeObserver === 'function') {
+    const sessionCurrent = currentSessionGuard();
+    const boardId = currentBoardId();
+    const observer = new window.ResizeObserver(() => {
+      if (!sessionCurrent() || currentBoardId() !== boardId || timelineFocusSprint !== focusRange.number || !scroll.isConnected || !fitViewport()) return;
+      wireTimelineControls(root);
+      wireTimelineDependencies(root, tasks);
+      wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth, true);
+      centerTimelineOnDate(root, validDate(timelineCenterDate) ? timelineCenterDate : focusCenter);
+    });
+    observer.observe(scroll);
+    timelineFitObservers.set(root, observer);
+  }
   root.insertAdjacentHTML('beforeend', '<details class="timelineAssumptionHint"><summary>About estimated dates</summary><p>Without a start date, work is estimated from its deadline or creation date. Missing duration uses three days, or one day for an Epic. These estimates do not change saved deadlines.</p></details>');
+}
+
+// A focused Sprint has exact calendar bounds and fits even below ten pixels/day.
+function timelineGeometry(tasks, focusRange, viewportWidth, zoom = timelineZoom) {
+  const dates = tasks.flatMap(task => [task.plannedStart, task.start, task.end, task.due, task.actualFinish, task.readyAt, task.delayEnd, task.overrunEnd, task.estimateEnd]).filter(validDate);
+  const minDate = dates.length ? new Date(Math.min(...dates.map(Number))) : startOfDay(new Date());
+  const maxDate = dates.length ? new Date(Math.max(...dates.map(Number))) : addDays(startOfDay(new Date()), 14);
+  const rangeStart = focusRange ? focusRange.start : addDays(minDate, -1);
+  const rangeEnd = focusRange ? focusRange.endExclusive : addDays(maxDate, 2);
+  const totalDays = Math.max(1, dayDiff(rangeStart, rangeEnd));
+  const availableWidth = Math.max(1, +viewportWidth || 520);
+  const fittedDayWidth = Math.max(1, availableWidth - GANTT_LEFT_PAD * 2) / totalDays;
+  const dayWidth = focusRange ? fittedDayWidth * zoom : Math.max(10, Math.min(90, Math.floor(fittedDayWidth * zoom)));
+  const timelineWidth = focusRange && zoom <= 1 ? availableWidth : Math.max(availableWidth, totalDays * dayWidth + GANTT_LEFT_PAD * 2);
+  return {rangeStart, rangeEnd, totalDays, dayWidth, timelineWidth};
 }
 
 // Builds ordered Gantt rows from tickets, Epics, and dependencies.
@@ -1645,6 +1686,7 @@ function wireTimelineControls(root) {
   const clearFocus = $('#timelineClearFocus');
   if (clearFocus) clearFocus.onclick = () => {
     timelineFocusSprint = 0;
+    timelineZoom = 1;
     timelineCenterDate = null;
     syncRoute('replace', 0);
     renderGantt(root);
@@ -1764,7 +1806,7 @@ function timelineDateAtScrollCenter(scrollLeft, viewportWidth, rangeStart, dayWi
 }
 
 // Shows a date cursor snapped to the nearest daily grid line inside the chart.
-function wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth) {
+function wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth, focusedSprint = false) {
   const svg = root.querySelector('.ganttSvg');
   const cursor = root.querySelector('.ganttSvgCursor');
   if (!svg || !cursor) return;
@@ -1783,7 +1825,7 @@ function wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth
     const clippedRight = Math.min(viewportWidth, scrollRect.right);
     const visibleLeft = Math.max(0, (clippedLeft - rect.left) * scale);
     const visibleRight = Math.min(timelineWidth, (clippedRight - rect.left) * scale);
-    const model = ganttCursorAtX(svgX, rangeStart, totalDays, dayWidth, timelineWidth, visibleLeft, visibleRight);
+    const model = ganttCursorAtX(svgX, rangeStart, totalDays, dayWidth, timelineWidth, visibleLeft, visibleRight, focusedSprint ? totalDays - 1 : totalDays);
     line.setAttribute('x1', model.x);
     line.setAttribute('x2', model.x);
     tag.setAttribute('x', model.tagX);
@@ -1798,8 +1840,8 @@ function wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth
 }
 
 // Calculates the nearest timeline day and a viewport-safe tooltip position.
-function ganttCursorAtX(svgX, rangeStart, totalDays, dayWidth, timelineWidth, visibleLeft = 0, visibleRight = timelineWidth) {
-  const day = Math.max(0, Math.min(totalDays, Math.round((svgX - GANTT_LEFT_PAD) / dayWidth)));
+function ganttCursorAtX(svgX, rangeStart, totalDays, dayWidth, timelineWidth, visibleLeft = 0, visibleRight = timelineWidth, lastDay = totalDays) {
+  const day = Math.max(0, Math.min(lastDay, Math.round((svgX - GANTT_LEFT_PAD) / dayWidth)));
   const x = GANTT_LEFT_PAD + day * dayWidth;
   const date = addDays(rangeStart, day);
   const label = ganttCursorDateLabel(date);
@@ -2013,14 +2055,16 @@ function ganttDelayText(task) {
 function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, rowHeight, bodyHeight, axisHeight) {
   const bodyTop = headHeight;
   const axisTop = headHeight + bodyHeight;
+  const focusRange = sprintByNumber(timelineFocusSprint);
+  const calendarClip = focusRange ? '<clipPath id="ganttCalendarClip"><rect x="' + GANTT_LEFT_PAD + '" y="' + bodyTop + '" width="' + (totalDays * dayWidth) + '" height="' + bodyHeight + '"></rect></clipPath>' : '';
   const defs = '<defs><pattern id="ganttSavedPattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgSavedBase"></rect><rect width="5" height="12" class="ganttSvgSavedStripe"></rect></pattern><pattern id="ganttLatePattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgLateBase"></rect><rect width="5" height="12" class="ganttSvgLateStripe"></rect></pattern></defs>';
-  return defs +
+  return defs + calendarClip +
     '<rect class="ganttSvgPanel" x="0" y="0" width="' + width + '" height="' + (headHeight + bodyHeight + axisHeight) + '"></rect>' +
     '<rect class="ganttSvgHead" x="0" y="0" width="' + width + '" height="' + headHeight + '"></rect>' +
     '<text class="ganttSvgHeadText" x="' + GANTT_LEFT_PAD + '" y="34">Date range</text>' +
     ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks) +
     ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight) +
-    tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight)).join('') +
+    '<g class="ganttCalendarTasks"' + (focusRange ? ' clip-path="url(#ganttCalendarClip)"' : '') + '>' + tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, focusRange)).join('') + '</g>' +
     ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) +
     ganttSvgCursor(headHeight + bodyHeight + axisHeight);
 }
@@ -2083,7 +2127,7 @@ function ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeigh
 }
 
 // Builds the SVG bar, due marker, and label for one Gantt task.
-function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight) {
+function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, focusRange = null) {
   const rowTop = headHeight + task.row * rowHeight;
   const y = rowTop + 28;
   const h = 28;
@@ -2094,7 +2138,19 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight) {
   const right = ganttPx(visualEnd, rangeStart, dayWidth);
   const width = Math.max(6, right - left);
   const dueX = ganttPx(task.due, rangeStart, dayWidth);
+  const showDue = !focusRange || (task.due >= focusRange.start && task.due < focusRange.endExclusive);
   const dueLabel = (task.ticket.dueDate ? 'Due ' : 'Est. finish ') + (task.ticket.dueDate || fmtIsoDate(task.due));
+  const calendarWidth = focusRange ? dayDiff(focusRange.start, focusRange.endExclusive) * dayWidth : Infinity;
+  let badgeLabel = dueLabel;
+  let badgeWidth = Math.max(82, dueLabel.length * 7 + 12);
+  if (focusRange && badgeWidth > calendarWidth) {
+    const compactDate = task.due.toLocaleDateString('en-GB', {day: 'numeric', month: 'short'});
+    badgeLabel = (task.ticket.dueDate ? 'Due ' : 'Est. ') + compactDate;
+    if (badgeLabel.length * 7 + 12 > calendarWidth) badgeLabel = compactDate;
+    badgeWidth = Math.max(1, Math.min(calendarWidth, Math.max(60, badgeLabel.length * 7 + 12)));
+    badgeLabel = truncateSvgText(badgeLabel, Math.max(1, Math.floor((badgeWidth - 12) / 7)));
+  }
+  const badgeX = focusRange ? Math.max(GANTT_LEFT_PAD, Math.min(dueX + 7, GANTT_LEFT_PAD + calendarWidth - badgeWidth)) : dueX + 7;
   const type = escAttr(task.ticket.type || 'task');
   const blocked = task.blocked.length ? ' blocked' : '';
   const aggregate = task.isAggregate ? ' aggregate' : '';
@@ -2110,9 +2166,9 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight) {
     '<rect class="ganttSvgBar ' + type + blocked + aggregate + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late + ganttSvgEstimate(task, rangeStart, dayWidth, railY, railHeight) +
     '<clipPath id="' + clipId + '"><rect x="' + (left + 7) + '" y="' + y + '" width="' + Math.max(0, width - 14) + '" height="' + h + '"></rect></clipPath>' +
     (label ? '<text class="ganttSvgBarText" clip-path="url(#' + clipId + ')" x="' + (left + 9) + '" y="' + (y + 19) + '">' + esc(label) + '</text>' : '') +
-    '<line class="ganttSvgDueLine" x1="' + dueX + '" x2="' + dueX + '" y1="' + (rowTop + 24) + '" y2="' + (railY + railHeight + 4) + '"></line>' +
-    '<rect class="ganttSvgDueTagBg" x="' + (dueX + 7) + '" y="' + (rowTop + 4) + '" width="' + Math.max(82, dueLabel.length * 7 + 12) + '" height="20" rx="5"></rect>' +
-    '<text class="ganttSvgDueTag" x="' + (dueX + 13) + '" y="' + (rowTop + 18) + '">' + esc(dueLabel) + '</text>' +
+    (showDue ? '<line class="ganttSvgDueLine" x1="' + dueX + '" x2="' + dueX + '" y1="' + (rowTop + 24) + '" y2="' + (railY + railHeight + 4) + '"></line>' +
+    '<rect class="ganttSvgDueTagBg" x="' + badgeX + '" y="' + (rowTop + 4) + '" width="' + badgeWidth + '" height="20" rx="5">' + (focusRange ? '<title>' + esc(dueLabel) + '</title>' : '') + '</rect>' +
+    '<text class="ganttSvgDueTag" x="' + (badgeX + 6) + '" y="' + (rowTop + 18) + '">' + esc(badgeLabel) + '</text>' : '') +
     '</g>';
 }
 
@@ -2166,8 +2222,9 @@ function ganttSvgOverrun(task, rangeStart, dayWidth, y, h) {
 // Builds the Gantt date axis.
 function ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) {
   const parts = ['<line class="ganttSvgAxisLine" x1="0" x2="' + width + '" y1="' + axisTop + '" y2="' + axisTop + '"></line>'];
-  const step = totalDays <= 45 ? 1 : totalDays <= 180 ? 7 : 14;
-  for (let i = 0; i <= totalDays; i += step) {
+  const step = Math.max(totalDays <= 45 ? 1 : totalDays <= 180 ? 7 : 14, Math.ceil(20 / dayWidth));
+  const lastDay = sprintByNumber(timelineFocusSprint) ? totalDays - 1 : totalDays;
+  for (let i = 0; i <= lastDay; i += step) {
     const d = addDays(rangeStart, i);
     const x = ganttPx(d, rangeStart, dayWidth);
     parts.push('<line class="ganttSvgAxisTickLine" x1="' + x + '" x2="' + x + '" y1="' + axisTop + '" y2="' + (axisTop + 8) + '"></line>');
@@ -2209,7 +2266,7 @@ function monthLabel(monthStart, rangeStart) {
 function ganttPx(date, rangeStart, dayWidth) {
   const diff = dayDiff(rangeStart, date);
   if (!Number.isFinite(diff)) return 0;
-  return Math.max(0, GANTT_LEFT_PAD + diff * dayWidth);
+  return GANTT_LEFT_PAD + diff * dayWidth;
 }
 
 // Returns whether a value is a usable Date object.

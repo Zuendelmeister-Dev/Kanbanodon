@@ -216,7 +216,7 @@
     layerRoot.classList.add('dependencyHoverSurface');
     layerRoot.append(overlay);
     const markerId = 'dependencyHoverArrow' + ++nextOverlayId;
-    const definitions = '<defs><marker id="' + markerId + '" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="12" markerHeight="12" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M1 1 L11 6 L1 11 Z"></path></marker></defs>';
+    const definitions = '<defs><marker id="' + markerId + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker></defs>';
     let hovered = 0;
     let focused = 0;
     let frame = 0;
@@ -241,8 +241,9 @@
       const edges = directEdges(options.edges, selected);
       const related = new Set(edges.flatMap(edge => [edge.from, edge.to]));
       nodes.forEach(node => {
-        node.classList.toggle('dependencyHoverActive', selected > 0 && idOf(node) === selected && edges.length > 0);
+        node.classList.toggle('dependencyHoverActive', selected > 0 && idOf(node) === selected);
         node.classList.toggle('dependencyHoverRelated', idOf(node) !== selected && related.has(idOf(node)));
+        node.classList.toggle('dependencyHoverDimmed', selected > 0 && idOf(node) !== selected && !related.has(idOf(node)));
       });
       resetOverlay();
       if (!selected || !edges.length || !layerRoot.isConnected) return;
@@ -279,6 +280,8 @@
         outlines += '<path class="dependencyHoverOutline" d="' + path + '"></path>';
         lines += '<path class="dependencyHoverLine" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>';
         dots += '<circle class="dependencyHoverDot" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>';
+        // The head stays wide enough to show direction even when the last bend
+        // is only a few pixels away in a table gutter or between short bars.
         heads += '<path class="dependencyHoverArrowHead" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + ')"></path>';
       });
       // Incoming arrowheads remain visible where an outgoing line shares a port.
@@ -291,7 +294,7 @@
       hovered = focused = 0;
       if (frame) window.cancelAnimationFrame(frame);
       frame = 0;
-      nodes.forEach(node => node.classList.remove('dependencyHoverActive', 'dependencyHoverRelated'));
+      nodes.forEach(node => node.classList.remove('dependencyHoverActive', 'dependencyHoverRelated', 'dependencyHoverDimmed'));
       resetOverlay();
     };
     nodes.forEach(node => {

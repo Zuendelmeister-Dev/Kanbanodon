@@ -29,15 +29,16 @@
 /* Hover shows direct connections without changing the surrounding layout. */
 .dependencyHoverSurface{position:relative}
 .dependencyHoverOverlay{position:absolute;left:0;top:0;z-index:5;overflow:visible;pointer-events:none}
-.dependencyHoverOutline{fill:none;stroke:#07111a;stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
-.dependencyHoverLine{fill:none;stroke:#7dd3fc;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.dependencyHoverOutline{fill:none;stroke:#07111a;stroke-width:6.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.dependencyHoverLine{fill:none;stroke:#9be7ff;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
 .dependencyHoverArrowHead{fill:none;stroke:none;pointer-events:none}
-.dependencyHoverDot{fill:#07111a;stroke:#7dd3fc;stroke-width:2;pointer-events:none}
-.dependencyHoverOverlay marker path{fill:#7dd3fc;stroke:#07111a;stroke-width:1.25;stroke-linejoin:round;paint-order:stroke fill}
-.card.dependencyHoverActive,.ganttTaskItem.dependencyHoverActive{outline:1px solid #7dd3fc;outline-offset:-1px}
-.card.dependencyHoverRelated,.ganttTaskItem.dependencyHoverRelated{outline:1px solid #42667f;outline-offset:-1px}
-.ganttSvgTask.dependencyHoverActive .ganttSvgBar{stroke:#7dd3fc;stroke-width:1.5}
-.ganttSvgTask.dependencyHoverRelated .ganttSvgBar{stroke:#42667f;stroke-width:1}
+.dependencyHoverDot{fill:#07111a;stroke:#9be7ff;stroke-width:2;pointer-events:none}
+.dependencyHoverOverlay marker path{fill:#9be7ff;stroke:#07111a;stroke-width:1.75;stroke-linejoin:round;paint-order:stroke fill}
+.dependencyHoverDimmed{opacity:.22}
+.card.dependencyHoverActive,.ganttTaskItem.dependencyHoverActive{outline:2px solid #9be7ff;outline-offset:-2px}
+.card.dependencyHoverRelated,.ganttTaskItem.dependencyHoverRelated{outline:1.5px solid #7dd3fc;outline-offset:-1.5px}
+.ganttSvgTask.dependencyHoverActive .ganttSvgBar{stroke:#9be7ff;stroke-width:2.5}
+.ganttSvgTask.dependencyHoverRelated .ganttSvgBar{stroke:#7dd3fc;stroke-width:2}
 .ticketRow.dependencyHoverActive td{background:#142738}
 .ticketRow.dependencyHoverRelated td{background:#12202c}
 .boardSwimlanes{padding:6px}
@@ -53,6 +54,8 @@
 .ganttTaskItem .ganttTaskTitle strong{font-size:inherit;white-space:normal}
 .ganttTaskItem .ganttTaskTitle:focus-visible{outline-offset:1px}
 .ganttSvgBar{filter:none}
+.ganttSvgScroll{min-width:0}
+.ganttSvg[overflow="hidden"]{overflow:hidden}
 .ganttSvgSaved,.ganttSvgLate,.ganttSvgEstimate{pointer-events:none}
 .ganttFlowLegend b,.ganttFlowLegend b.epic,.ganttFlowLegend b.estimate{box-shadow:none}
 .sprintSettingsStatus[data-state="saved"]{color:#86efac}

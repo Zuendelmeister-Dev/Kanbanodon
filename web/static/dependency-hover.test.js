@@ -114,10 +114,11 @@ function uiFixture() {
   return { root, nodes, window, edges, element, flush() { [...frames.values()].forEach(callback => callback()); frames.clear(); }, overlay() { return root.children.find(child => child.getAttribute('class') === 'dependencyHoverOverlay'); } };
 }
 
-test('hover is inline, one hop, leaves unrelated content readable, and clears on leave', () => {
+test('hover keeps only the selected task and direct neighbors bright and clears on leave', () => {
   const ui = uiFixture();
   const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges });
   assert.equal(ui.overlay().innerHTML, '');
+  ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
   ui.nodes[1].fire('pointerenter', { pointerType: 'mouse' });
   assert.match(ui.overlay().innerHTML, /data-dependency-from="1" data-dependency-to="2"/);
   assert.match(ui.overlay().innerHTML, /data-dependency-from="2" data-dependency-to="3"/);
@@ -125,12 +126,19 @@ test('hover is inline, one hop, leaves unrelated content readable, and clears on
   assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
   assert.equal(ui.nodes[0].classList.contains('dependencyHoverRelated'), true);
   assert.equal(ui.nodes[3].classList.contains('dependencyHoverRelated'), false);
-  ui.nodes.forEach(node => assert.equal(node.classList.contains('pathDimmed'), false));
+  assert.equal(ui.nodes[0].classList.contains('dependencyHoverDimmed'), false);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverDimmed'), false);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverDimmed'), false);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), true, 'a transitive dependent remains dimmed');
   assert.equal(ui.root.scrollLeft, 0);
   assert.equal(ui.root.scrollTop, 0);
   ui.nodes[1].fire('pointerleave');
   assert.equal(ui.overlay().innerHTML, '');
-  ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverActive'), false));
+  ui.nodes.forEach(node => {
+    assert.equal(node.classList.contains('dependencyHoverActive'), false);
+    assert.equal(node.classList.contains('dependencyHoverRelated'), false);
+    assert.equal(node.classList.contains('dependencyHoverDimmed'), false);
+  });
   controller.destroy();
 });
 
@@ -151,8 +159,12 @@ test('Timeline labels trigger arrows between main bars, without using the wider 
   const eventRoot = ui.element();
   eventRoot.append(ui.root);
   const label = ui.element(2, rect(-200, 20, -10, 80));
+  const directLabel = ui.element(1, rect(-200, 100, -10, 160));
+  const unrelatedLabel = ui.element(4, rect(-200, 180, -10, 240));
   eventRoot.append(label);
-  eventRoot.querySelectorAll = () => [...ui.nodes, label];
+  eventRoot.append(directLabel);
+  eventRoot.append(unrelatedLabel);
+  eventRoot.querySelectorAll = () => [...ui.nodes, label, directLabel, unrelatedLabel];
   const bars = ui.nodes.map(node => ui.element(null, node.bounds));
   ui.nodes.forEach((node, index) => {
     node.bounds = rect(0, 0, 640, 300);
@@ -165,9 +177,66 @@ test('Timeline labels trigger arrows between main bars, without using the wider 
   assert.match(ui.overlay().innerHTML, /data-dependency-from="2" data-dependency-to="3"/);
   assert.equal(label.classList.contains('dependencyHoverActive'), true);
   assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
+  assert.equal(directLabel.classList.contains('dependencyHoverRelated'), true);
+  assert.equal(directLabel.classList.contains('dependencyHoverDimmed'), false);
+  assert.equal(unrelatedLabel.classList.contains('dependencyHoverDimmed'), true);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), true);
   assert.equal(ui.root.scrollLeft, 0);
   label.fire('pointerleave');
   assert.equal(ui.overlay().innerHTML, '');
+  assert.equal(unrelatedLabel.classList.contains('dependencyHoverDimmed'), false);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), false);
+  controller.destroy();
+});
+
+test('an isolated hovered task stays bright while all other tasks and Epic labels dim', () => {
+  const ui = uiFixture();
+  const epic = ui.element(90, rect(20, 220, 130, 280));
+  ui.root.append(epic);
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: [] });
+  ui.nodes[1].fire('pointerenter', { pointerType: 'mouse' });
+  assert.equal(ui.overlay().innerHTML, '');
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverDimmed'), false);
+  [ui.nodes[0], ui.nodes[2], ui.nodes[3], epic].forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), true));
+  ui.nodes[1].fire('pointerleave');
+  [...ui.nodes, epic].forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
+  controller.destroy();
+});
+
+test('focus exit, window blur, drag and destroy restore every task brightness', () => {
+  ['focusout', 'blur', 'dragstart', 'destroy'].forEach(exit => {
+    const ui = uiFixture();
+    const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges });
+    if (exit === 'focusout') ui.nodes[1].fire('focusin');
+    else ui.nodes[1].fire('pointerenter', { pointerType: 'mouse' });
+    assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), true);
+    if (exit === 'focusout') ui.nodes[1].fire('focusout', { relatedTarget: null });
+    if (exit === 'blur') ui.window.fire('blur');
+    if (exit === 'dragstart') ui.root.fire('dragstart');
+    if (exit === 'destroy') controller.destroy();
+    ui.nodes.forEach(node => {
+      assert.equal(node.classList.contains('dependencyHoverActive'), false, exit);
+      assert.equal(node.classList.contains('dependencyHoverRelated'), false, exit);
+      assert.equal(node.classList.contains('dependencyHoverDimmed'), false, exit);
+    });
+    if (exit !== 'destroy') assert.equal(ui.overlay().innerHTML, '');
+    controller.destroy();
+  });
+});
+
+test('wide arrowheads remain visible after all lines and fit a ten-pixel card gap', () => {
+  const ui = uiFixture();
+  ui.nodes[1].bounds = rect(140, 20, 250, 80);
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: [{ from: 1, to: 2 }] });
+  ui.nodes[0].fire('pointerenter', { pointerType: 'mouse' });
+  const drawing = ui.overlay().innerHTML;
+  assert.match(drawing, /markerWidth="16" markerHeight="18"/);
+  assert.match(drawing, /refX="15" refY="9"/);
+  assert.match(drawing, /d="M5 1 L15 9 L5 17 Z"/);
+  assert.match(drawing, /class="dependencyHoverArrowHead" d="M130\.0 50\.0 L140\.0 50\.0"/);
+  assert.ok(drawing.lastIndexOf('dependencyHoverLine') < drawing.indexOf('dependencyHoverArrowHead'));
+  assert.ok(drawing.lastIndexOf('dependencyHoverDot') < drawing.indexOf('dependencyHoverArrowHead'));
   controller.destroy();
 });
 

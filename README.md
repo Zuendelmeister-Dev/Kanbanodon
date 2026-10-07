@@ -48,13 +48,13 @@ Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs
 
 Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
-Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Thin blue arrows point from prerequisite to dependent. The lines disappear when the task is neither hovered nor focused. Showing dependencies does not change focus or scroll position.
+Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Blue arrows point from prerequisite to dependent, while unrelated tasks fade into the background. The lines disappear and all tasks return to full visibility when the task is neither hovered nor focused. Showing dependencies does not change focus or scroll position.
 
 ### Sprints
 
 The "Sprints" panel is visible on the board. Configure the first Sprint start date and a duration of 1 to 52 whole weeks, then save. Sprint cards appear after a successful save. Following Sprints are calculated from the saved cadence. The board shows the current Sprint and the next five; before the cadence starts, it shows the first six. Changing the cadence fields marks them as unsaved and leaves the saved cards unchanged until the next successful save.
 
-Sprint names can be edited directly. Without a custom name, a Sprint is called "Sprint N". The focus action opens that Sprint in Timeline.
+Sprint names can be edited directly. Without a custom name, a Sprint is called "Sprint N". The focus action opens Timeline with the selected Sprint's date range fitted to the available width. "Show full timeline" returns to the complete date range.
 
 A task belongs to the Sprint in which it is planned to finish: its due date, when available, otherwise its start date plus duration. Tasks without a usable date remain unscheduled. Sprint assignment does not calculate team capacity.
 
