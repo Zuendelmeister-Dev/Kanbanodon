@@ -633,18 +633,22 @@
       overlay.setAttribute('height', String(height));
       overlay.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
       let drawing = '';
+      let sourceMarks = '';
       const numberedSources = new Set();
       const labelFor = id => options.labelsById instanceof Map ? options.labelsById.get(id) : options.labelsById?.[id];
       const routes = routeConnections(edges, positions, obstacles, { left: 1, top: 1, right: width - 1, bottom: height - 1 },
         { layout: options.layout, clearance: routeClearance, gutterWidth: options.gutterWidth, selectedId: selected });
-      const definitions = '<defs>' + stagePalette(maxStep).map(({ step, color }) => '<marker id="' + markerId + 'Stage' + step + '" style="--dependency-color:' + color + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker>').join('') + '</defs>';
+      // Marker fills are applied through the DOM below. Serialized style
+      // attributes are blocked by the application's Content Security Policy.
+      const definitions = '<defs>' + stagePalette(maxStep).map(({ step, color }) => '<marker id="' + markerId + 'Stage' + step + '" data-dependency-color="' + color + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path data-dependency-color="' + color + '" data-dependency-paint="fill" d="M5 1 L15 9 L5 17 Z"></path></marker>').join('') + '</defs>';
       routes.forEach(edge => {
         const route = edge.points;
         const path = pathData(route);
         const sourceStep = visibleSteps.get(edge.from) || edge.sourceStep;
         const role = roleForStep(sourceStep, maxStep);
         const roleClass = roleClasses[role];
-        const colorStyle = ' style="--dependency-color:' + stageColor(sourceStep, maxStep) + '"';
+        const color = stageColor(sourceStep, maxStep);
+        const colorData = ' data-dependency-color="' + color + '"';
         let sequence = '';
         const key = edge.from + ':' + role;
         if (!numberedSources.has(key) && edge.sourceLead >= 25) {
@@ -652,17 +656,27 @@
           const badgeDistance = options.layout === 'overview' ? 25 : 15;
           const x = route[0].x + (edge.sourceAxis === 1 ? edge.sourceDirection * badgeDistance : 0);
           const y = route[0].y + (edge.sourceAxis === 2 ? edge.sourceDirection * badgeDistance : 0);
-          sequence = '<g class="dependencyHoverSequence ' + roleClass + '"' + colorStyle + ' data-dependency-source="' + edge.from + '" data-dependency-step="' + sourceStep + '"><circle cx="' + x + '" cy="' + y + '" r="10"></circle><text x="' + x + '" y="' + y + '">' + sourceStep + '</text></g>';
+          sequence = '<g class="dependencyHoverSequence ' + roleClass + '"' + colorData + ' data-dependency-source="' + edge.from + '" data-dependency-step="' + sourceStep + '"><circle' + colorData + ' data-dependency-paint="stroke" cx="' + x + '" cy="' + y + '" r="10"></circle><text' + colorData + ' data-dependency-paint="fill" x="' + x + '" y="' + y + '">' + sourceStep + '</text></g>';
         }
         const description = escapedText((labelFor(edge.from) || '#' + edge.from) + ' → ' + (labelFor(edge.to) || '#' + edge.to));
         drawing += '<g class="dependencyHoverWire" data-dependency-wire="' + edge.from + '>' + edge.to + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" role="img" aria-label="Dependency: ' + description + '">' +
           '<title>' + description + '</title>' +
           '<path class="dependencyHoverOutline" d="' + path + '"></path>' +
-          '<path class="dependencyHoverLine ' + roleClass + '"' + colorStyle + ' data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>' +
-          '<circle class="dependencyHoverDot ' + roleClass + '"' + colorStyle + ' cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>' +
-          '<path class="dependencyHoverArrowHead ' + roleClass + '"' + colorStyle + ' d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + 'Stage' + sourceStep + ')"></path>' + sequence + '</g>';
+          '<path class="dependencyHoverLine ' + roleClass + '"' + colorData + ' data-dependency-paint="stroke" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>' +
+          '<path class="dependencyHoverArrowHead ' + roleClass + '"' + colorData + ' d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + 'Stage' + sourceStep + ')"></path></g>';
+        sourceMarks += '<circle class="dependencyHoverDot ' + roleClass + '"' + colorData + ' data-dependency-paint="stroke" data-dependency-source="' + edge.from + '" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>' + sequence;
       });
-      overlay.innerHTML = drawing ? definitions + drawing : '';
+      // Keep every source number above every wire, including wires rendered
+      // later in a branching circuit that cross an earlier source label.
+      overlay.innerHTML = drawing ? definitions + drawing + '<g class="dependencyHoverSourceMarks" aria-hidden="true">' + sourceMarks + '</g>' : '';
+      overlay.querySelectorAll('[data-dependency-color]').forEach(element => {
+        const color = element.getAttribute('data-dependency-color');
+        element.style.setProperty('--dependency-color', color);
+        // A concrete marker path fill also avoids marker-instance inheritance
+        // differences between browsers. CSSOM property changes obey the CSP.
+        const paint = element.getAttribute('data-dependency-paint');
+        if (paint === 'fill' || paint === 'stroke') element.style.setProperty(paint, color);
+      });
       overlay.setAttribute('aria-hidden', drawing ? 'false' : 'true');
       updateHighlight();
     };

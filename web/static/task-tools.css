@@ -73,6 +73,15 @@
 .dependencyGuide small{margin-left:auto}
 .dependencyFocusBar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin-bottom:12px;border:1px solid var(--gold);border-radius:8px;background:#231e11}
 .dependencyFocusBar button{white-space:nowrap}
+.dependencyFocusBar>div{display:grid;gap:4px;min-width:0}
+.dependencyFocusBar strong{color:var(--text);overflow-wrap:anywhere;font-size:13px}
+.dependencyFocusBar span{color:var(--muted);font-size:11px}
+.dependenciesBack,.taskActions .dependenciesBack{color:#fff6d5;background:#49390e;border-color:#f4b83f;font-weight:750}
+.dependenciesBack:hover,.taskActions .dependenciesBack:hover{background:#614c12;border-color:#ffe099}
+.dependenciesBack:focus-visible{outline:2px solid #ffe099;outline-offset:3px}
+.card.dependencyHoverSelected,.ganttTaskItem.dependencyHoverSelected,.boardLaneEpic.dependencyHoverSelected,.ticketRow.dependencyHoverSelected{outline:4px solid var(--dependency-color);outline-offset:-4px;box-shadow:0 0 0 2px #e5f1ff55}
+.ganttSvgTask.dependencyHoverSelected .ganttSvgBar{stroke:var(--dependency-color);stroke-width:5}
+@media(max-width:620px){.dependencyFocusBar{align-items:flex-start;flex-direction:column}.dependencyFocusBar button{align-self:flex-start}}
 .card{position:relative}
 .taskEdit{padding:3px 8px;font-size:10px;color:var(--muted);background:transparent}
 .card .taskEdit{margin-top:8px;cursor:pointer}
@@ -138,11 +147,12 @@
 
 /* The text pane and SVG share fixed tracks, including their header and axis. */
 .ganttTaskPane{display:grid;grid-template-rows:var(--gantt-head-height) calc(var(--gantt-row-count) * var(--gantt-row-height)) var(--gantt-axis-height);align-content:start;height:var(--gantt-chart-height);min-width:0}
-.ganttTaskRows{display:grid;grid-auto-rows:var(--gantt-row-height);align-content:start;min-height:0}
+.ganttTaskRows{display:grid;grid-auto-rows:var(--gantt-row-height);align-content:start;gap:0;min-height:0}
 .ganttTaskHead{height:var(--gantt-head-height)}
 .ganttTaskFoot{height:var(--gantt-axis-height)}
-.ganttTaskItem{box-sizing:border-box;min-width:0;grid-auto-rows:max-content;row-gap:3px;align-content:center}
+.ganttTaskItem{box-sizing:border-box;height:var(--gantt-row-height);min-height:var(--gantt-row-height);max-height:var(--gantt-row-height);min-width:0;grid-auto-rows:max-content;row-gap:3px;align-content:center}
 .ganttTaskItem .taskActions{min-width:0}
+.ganttSvg{min-width:0;max-width:none;height:var(--gantt-chart-height)}
 
 /* Six-card Sprint browsing keeps both paging controls beside the strip. */
 .sprintStrip{display:grid;grid-template-columns:30px minmax(0,1fr) 30px;gap:8px;align-items:stretch}

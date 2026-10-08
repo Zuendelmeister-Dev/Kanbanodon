@@ -17,6 +17,11 @@ function checklistProgress(ticket) {
 }
 
 function renderTaskTools() {
+  const dependencyExit = $('#dependencyExitBtn');
+  if (dependencyExit) {
+    dependencyExit.classList.toggle('hidden', !['board', 'overview', 'timeline'].includes(view) || !dependencyViewIds());
+    dependencyExit.onclick = closeDependencies;
+  }
   const filterCount = ['typeFilter','labelFilter','assigneeFilter','dependencyFilter'].filter(id => $('#' + id)?.value).length;
   if ($('#filtersTitle')) $('#filtersTitle').textContent = 'Filters' + (filterCount ? ' (' + filterCount + ')' : '');
   const sharing = $('#boardSharingBtn');

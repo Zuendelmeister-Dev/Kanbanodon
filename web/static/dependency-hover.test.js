@@ -68,7 +68,8 @@ function uiFixture() {
       contains(child) { return child === node || node.children.some(item => item.contains(child)); },
       querySelector() { return null; },
       querySelectorAll(selector) { return node.children.filter(child => selector === '[data-dependency-wire]' ?
-        child.getAttribute('data-dependency-wire') : +child.getAttribute('data-work-id') > 0); },
+        child.getAttribute('data-dependency-wire') : selector === '[data-dependency-color]' ?
+          child.getAttribute('data-dependency-color') : +child.getAttribute('data-work-id') > 0); },
       closest(selector) { return selector === '[data-dependency-wire]' && attrs.has('data-dependency-wire') ? node : node.parent?.closest(selector); },
       getBoundingClientRect() { node.layoutReads = (node.layoutReads || 0) + 1; return { ...node.bounds, width: node.bounds.right - node.bounds.left, height: node.bounds.bottom - node.bounds.top }; },
       focus() { assert.fail('hover must not move keyboard focus'); },
@@ -86,6 +87,14 @@ function uiFixture() {
           group.setAttribute('data-dependency-from', match[2]);
           group.setAttribute('data-dependency-to', match[3]);
           node.append(group);
+        }
+        // Color assertions inspect the resulting DOM/CSSOM instead of assuming
+        // an inline HTML style survived the application's strict CSP.
+        for (const match of value.matchAll(/<([a-z]+)\b([^>]*\bdata-dependency-color="[^"]+"[^>]*)>/g)) {
+          const colored = element();
+          colored.tagName = match[1];
+          for (const attr of match[2].matchAll(/([\w-]+)="([^"]*)"/g)) colored.setAttribute(attr[1], attr[2]);
+          node.append(colored);
         }
       },
     });
@@ -344,21 +353,57 @@ test('each numbered wire, arrowhead and source badge matches the outgoing source
   assert.equal(next.getAttribute('data-dependency-step'), '5');
   assert.equal(next.classList.contains('dependencyHoverDependent'), true);
   const markup = ui.overlay().innerHTML;
+  assert.doesNotMatch(markup, /\bstyle=/, 'dependency markup never relies on CSP-blocked inline styles');
+  const coloredElements = ui.overlay().querySelectorAll('[data-dependency-color]');
+  assert.ok(coloredElements.length > 0);
+  coloredElements.forEach(element => {
+    const color = element.getAttribute('data-dependency-color');
+    assert.equal(element.style.getPropertyValue('--dependency-color'), color, 'stage color is applied using CSSOM');
+    const paint = element.getAttribute('data-dependency-paint');
+    if (paint) assert.equal(element.style.getPropertyValue(paint), color, 'actual stroke/fill is applied using CSSOM');
+  });
   for (const [index, source] of ui.nodes.entries()) {
     const color = source.style.getPropertyValue('--dependency-color');
     assert.equal(color, hover.stageColor(index + 1, 5));
     const group = markup.match(new RegExp('<g class="dependencyHoverWire" data-dependency-wire="' + (index + 1) + '>' + (index + 2) + '"[\\s\\S]*?</g>'))?.[0];
     assert.ok(group, 'the source has a rendered wire');
-    for (const className of ['Line', 'Dot', 'ArrowHead']) {
-      assert.match(group, new RegExp('class="dependencyHover' + className + ' [^"]+" style="--dependency-color:' + color + '"'));
+    for (const className of ['Line', 'ArrowHead']) {
+      assert.match(group, new RegExp('class="dependencyHover' + className + ' [^"]+" data-dependency-color="' + color + '"'));
     }
     const markerId = group.match(/marker-end="url\(#([^)]*)\)"/)[1];
-    assert.match(markup, new RegExp('<marker id="' + markerId + '" style="--dependency-color:' + color + '"'));
-    if (group.includes('dependencyHoverSequence')) {
-      assert.match(group, new RegExp('class="dependencyHoverSequence [^"]+" style="--dependency-color:' + color + '" data-dependency-source="' + (index + 1) + '" data-dependency-step="' + (index + 1) + '"'));
+    const marker = markup.match(new RegExp('<marker id="' + markerId + '"[\\s\\S]*?</marker>'))?.[0];
+    assert.ok(marker, 'the wire references an existing stage marker');
+    assert.match(marker, new RegExp('<path data-dependency-color="' + color + '" data-dependency-paint="fill"'), 'the arrowhead owns a concrete fill instead of relying on marker variable inheritance');
+    const markerElement = coloredElements.find(element => element.getAttribute('id') === markerId);
+    assert.equal(markerElement.style.getPropertyValue('--dependency-color'), color);
+    const markerPath = coloredElements.find(element => element.tagName === 'path' && element.getAttribute('d') === 'M5 1 L15 9 L5 17 Z' && element.getAttribute('data-dependency-color') === color);
+    assert.equal(markerPath.style.getPropertyValue('fill'), color, 'the marker path has the actual source color');
+    assert.match(markup, new RegExp('class="dependencyHoverDot [^"]+" data-dependency-color="' + color + '" data-dependency-paint="stroke" data-dependency-source="' + (index + 1) + '"'));
+    const sequence = markup.match(new RegExp('<g class="dependencyHoverSequence [^"]+"[^>]*data-dependency-source="' + (index + 1) + '"[\\s\\S]*?</g>'))?.[0];
+    if (sequence) {
+      assert.match(sequence, new RegExp('<circle data-dependency-color="' + color + '" data-dependency-paint="stroke"'), 'the source circle keeps the source frame color');
+      assert.match(sequence, new RegExp('<text data-dependency-color="' + color + '" data-dependency-paint="fill"'), 'the source number keeps the source frame color');
     }
   }
   assert.equal(next.style.getPropertyValue('--dependency-color'), '#37c7ad');
+  controller.destroy();
+});
+
+test('source circles and numbers are always painted above all Overview wire paths', () => {
+  const ui = uiFixture();
+  ui.nodes.forEach((node, index) => { node.bounds = rect(88, 20 + index * 60, 620, 80 + index * 60); });
+  const controller = hover.wire(ui.root, { layerRoot: ui.root,
+    edges: [{ from: 1, to: 2 }, { from: 1, to: 3 }, { from: 2, to: 3 }, { from: 3, to: 4 }],
+    selectedId: 2, layout: 'overview', gutterWidth: 88 });
+  const markup = ui.overlay().innerHTML;
+  const marksStart = markup.indexOf('<g class="dependencyHoverSourceMarks"');
+  assert.ok(marksStart > markup.lastIndexOf('<path '), 'a later branch cannot paint over an earlier number');
+  assert.ok(marksStart > markup.lastIndexOf('<g class="dependencyHoverWire"'));
+  const marks = markup.slice(marksStart);
+  assert.equal([...marks.matchAll(/class="dependencyHoverSequence /g)].length, 3, 'each outgoing source has one readable number');
+  assert.equal([...marks.matchAll(/class="dependencyHoverDot /g)].length, 4, 'all source ports share the final decoration layer');
+  assert.equal(markup.slice(0, marksStart).includes('class="dependencyHoverSequence '), false);
+  assert.doesNotMatch(marks, /<path /);
   controller.destroy();
 });
 

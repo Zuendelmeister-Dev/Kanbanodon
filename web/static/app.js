@@ -26,6 +26,7 @@ let timelineCenterDate = null;
 let dependencyFocusTicketId = 0;
 let dependencyFocusBoardId = 0;
 let dependencyFocused = false;
+let dependencyRenderSnapshot = null;
 const collapsedEpics = new Set();
 let loadGeneration = 0;
 let sessionGeneration = 0;
@@ -750,6 +751,12 @@ function sprintFilteredWork(tickets) {
 
 // Follow both directions so a dependency view keeps the complete connected chain.
 function dependencyViewIds() {
+  if (!dependencyRenderSnapshot) return connectedDependencyIds();
+  if (!('ids' in dependencyRenderSnapshot)) dependencyRenderSnapshot.ids = connectedDependencyIds();
+  return dependencyRenderSnapshot.ids;
+}
+
+function connectedDependencyIds() {
   if (!dependencyFocusTicketId || dependencyFocusBoardId !== currentBoardId()) return null;
   const tickets = sprintFilteredWork(workTickets());
   const selected = tickets.find(ticket => +ticket.id === dependencyFocusTicketId);
@@ -773,6 +780,32 @@ function dependencyViewIds() {
 
 function dependencyFocusIds() {
   return dependencyFocused ? dependencyViewIds() : null;
+}
+
+// Dependency order is temporary; saved positions and the normal sort stay intact.
+function dependencyOrderSteps() {
+  if (!dependencyRenderSnapshot) return calculateDependencyOrder();
+  if (!('steps' in dependencyRenderSnapshot)) dependencyRenderSnapshot.steps = calculateDependencyOrder();
+  return dependencyRenderSnapshot.steps;
+}
+
+function calculateDependencyOrder() {
+  const ids = dependencyViewIds();
+  if (!ids) return null;
+  const edges = dependencyHoverEdges(sprintFilteredWork(workTickets())).filter(edge => ids.has(edge.from) && ids.has(edge.to));
+  return window.KanbanodonDependencyHover?.dependencySteps(edges, dependencyFocusTicketId) || new Map([[dependencyFocusTicketId, 1]]);
+}
+
+function planningCompare(a, b, fallback) {
+  const steps = dependencyOrderSteps();
+  if (steps) {
+    const first = steps.get(+a.id);
+    const second = steps.get(+b.id);
+    if (first && second && first !== second) return first - second;
+    if (first && !second) return -1;
+    if (!first && second) return 1;
+  }
+  return fallback(a, b);
 }
 
 function planningWork() {
@@ -807,10 +840,7 @@ function toggleDependencyFocus(id) {
     timelineCenterDate = null;
     syncRoute('replace', 0);
   }
-  renderView();
-  const root = $('#' + view);
-  const node = root?.querySelector('[data-focus-related="' + id + '"]');
-  node?.focus({preventScroll:true});
+  renderDependenciesKeepingPosition(id, '[data-focus-related="' + id + '"]');
 }
 
 function openDependencies(id) {
@@ -826,16 +856,14 @@ function openDependencies(id) {
     timelineCenterDate = null;
     syncRoute('replace', 0);
   }
-  renderView();
-  $('#' + view)?.querySelector('[data-focus-related="' + id + '"]')?.focus({preventScroll:true});
+  renderDependenciesKeepingPosition(id, '[data-focus-related="' + id + '"]');
 }
 
 function closeDependencies() {
   const id = dependencyFocusTicketId;
   dependencyFocusTicketId = 0;
   dependencyFocused = false;
-  renderView();
-  $('#' + view)?.querySelector('[data-dependencies="' + id + '"]')?.focus({preventScroll:true});
+  renderDependenciesKeepingPosition(id, '[data-dependencies="' + id + '"]');
 }
 
 function showOtherTasks() {
@@ -843,8 +871,41 @@ function showOtherTasks() {
   if (!dependencyFocused) return;
   const id = dependencyFocusTicketId;
   dependencyFocused = false;
+  renderDependenciesKeepingPosition(id, '[data-focus-related="' + id + '"]');
+}
+
+// Keep the clicked row at the same visible height when the dependency order changes.
+function renderDependenciesKeepingPosition(id, focusSelector) {
+  const root = $('#' + view);
+  const selector = view === 'timeline' ? '.ganttTaskItem[data-timeline-id="' + id + '"]' : '[data-work-id="' + id + '"]';
+  const before = root?.querySelector(selector);
+  const top = before?.getBoundingClientRect?.().top;
+  const chart = view === 'timeline' ? root?.querySelector('.ganttChart') : null;
+  const chartTop = chart?.scrollTop || 0;
+  const left = root?.scrollLeft || 0;
+  const tableScroll = view === 'overview' ? root?.querySelector('.tableScroll') : null;
+  const tableLeft = tableScroll?.scrollLeft || 0;
+  const tableExpanded = root?.querySelector('.ticketTable')?.classList.contains('showAllColumns');
   renderView();
-  $('#' + view)?.querySelector('[data-focus-related="' + id + '"]')?.focus({preventScroll:true});
+  if (root) root.scrollLeft = left;
+  if (tableScroll) {
+    root?.querySelector('.ticketTable')?.classList.toggle('showAllColumns', tableExpanded);
+    const columnsToggle = root?.querySelector('.overviewColumnsToggle');
+    if (columnsToggle) columnsToggle.textContent = tableExpanded ? 'Show simple table' : 'Show planning columns';
+    const nextTableScroll = root?.querySelector('.tableScroll');
+    if (nextTableScroll) nextTableScroll.scrollLeft = tableLeft;
+  }
+  const nextChart = view === 'timeline' ? root?.querySelector('.ganttChart') : null;
+  if (nextChart) nextChart.scrollTop = chartTop;
+  const after = root?.querySelector(selector);
+  const nextTop = after?.getBoundingClientRect?.().top;
+  if (Number.isFinite(top) && Number.isFinite(nextTop)) {
+    if (nextChart) nextChart.scrollTop += nextTop - top;
+    const finalTop = after.getBoundingClientRect().top;
+    if (Number.isFinite(finalTop)) window.scrollBy?.({top: finalTop - top, left: 0, behavior: 'instant'});
+  }
+  const action = after?.querySelector(focusSelector) || after?.querySelector('[data-dependencies-back]') || root?.querySelector(focusSelector);
+  action?.focus({preventScroll:true});
 }
 
 function toggleEpic(id) {
@@ -861,16 +922,16 @@ function planningFocusHtml() {
   const ids = dependencyViewIds();
   if (!ids) return '';
   const dependencies = window.KanbanodonDependencyHover;
-  const edges = dependencyHoverEdges(workTickets()).filter(edge => ids.has(edge.from) && ids.has(edge.to));
-  const steps = dependencies?.dependencySteps?.(edges, dependencyFocusTicketId);
+  const steps = dependencyOrderSteps();
   const maxStep = Math.max(1, ...Array.from(steps?.values() || []));
   const middleStep = maxStep >= 3 ? Math.ceil(maxStep / 2) : 0;
   const palette = dependencies?.stagePalette?.(maxStep) || [];
   const keys = palette.map(({step, color}) => {
     const label = step === 1 ? 'Start' : step === maxStep ? 'End' : step === middleStep ? 'Middle' : '';
-    return '<span class="dependencyStageKey" style="--dependency-color:' + color + '" title="Stage ' + step + (label ? ' · ' + label.toLowerCase() : '') + '"><b>' + step + '</b>' + (label ? '<em>' + label + '</em>' : '') + '</span>';
+    return '<span class="dependencyStageKey" data-dependency-color="' + color + '" title="Stage ' + step + (label ? ' · ' + label.toLowerCase() : '') + '"><b>' + step + '</b>' + (label ? '<em>' + label + '</em>' : '') + '</span>';
   }).join('');
-  return '<div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
+  const selected = parentTicket(dependencyFocusTicketId);
+  return '<div class="dependencyFocusBar" role="region" aria-label="Dependency view"><div><strong>Dependencies of ' + esc(ticketRef(selected)) + ' · ' + esc(ticketLabel(selected)) + '</strong><span>' + (dependencyFocused ? 'Connected tasks only' : 'Unrelated tasks are dimmed') + ' · Tasks follow dependency order</span></div><button type="button" class="dependenciesBack" data-dependencies-back>Back to normal view</button></div><div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
 }
 
 function taskEditHtml(ticket) {
@@ -878,7 +939,7 @@ function taskEditHtml(ticket) {
   const selected = ids && +ticket.id === dependencyFocusTicketId;
   const focus = '<button type="button" class="dependencyAction" data-focus-related="' + ticket.id + '" aria-label="Focus tasks connected to ' + escAttr(ticket.title) + '">Focus tasks</button>';
   const restore = '<button type="button" class="dependencyAction showOtherTasks" data-show-other-tasks>Show other tasks</button>';
-  const back = '<button type="button" class="dependencyAction" data-dependencies-back>Back</button>';
+  const back = '<button type="button" class="dependencyAction dependenciesBack" data-dependencies-back>Back</button>';
   const dependencies = ticket.type === 'epic' ? '' : dependencyFocused && ids?.has(+ticket.id) ? (selected ? restore + back : focus + restore) : selected ? focus + back : '<button type="button" class="dependencyAction" data-dependencies="' + ticket.id + '" aria-label="Dependencies of ' + escAttr(ticket.title) + '">Dependencies</button>';
   return '<div class="taskActions"><button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>' + dependencies + '</div>';
 }
@@ -889,6 +950,7 @@ function epicToggleHtml(epic, cssClass = 'epicToggle') {
 }
 
 function wirePlanningActions(root) {
+  root.querySelectorAll('[data-dependency-color]').forEach(node => node.style?.setProperty('--dependency-color', node.dataset.dependencyColor));
   root.querySelectorAll('[data-edit-ticket]').forEach(button => button.onclick = event => { event.stopPropagation(); openTicket(+button.dataset.editTicket); });
   root.querySelectorAll('[data-dependencies]').forEach(button => button.onclick = event => { event.stopPropagation(); openDependencies(+button.dataset.dependencies); });
   root.querySelectorAll('[data-focus-related]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleDependencyFocus(+button.dataset.focusRelated); });
@@ -921,7 +983,19 @@ function setHeader(title, subtitle) {
 }
 
 // Shows and renders the currently active workspace view.
+// Reuse the graph only within this synchronous render; later edits always recompute it.
+function withDependencySnapshot(renderContent) {
+  if (dependencyRenderSnapshot) return renderContent();
+  dependencyRenderSnapshot = {};
+  try { return renderContent(); }
+  finally { dependencyRenderSnapshot = null; }
+}
+
 function renderView() {
+  return withDependencySnapshot(renderActiveView);
+}
+
+function renderActiveView() {
   $$('#board,#overview,#list,#timeline,#admin,#config,#stash').forEach(x => x.classList.add('hidden'));
   $('.composer').classList.toggle('hidden', view !== 'board');
   renderNav();
@@ -1383,6 +1457,10 @@ function boardLaneColumnItems(lane, columnId) {
 
 // Sorts cards inside an Epic lane while keeping nested refs stable.
 function boardGroupSort(a, b) {
+  return planningCompare(a, b, boardNormalGroupSort);
+}
+
+function boardNormalGroupSort(a, b) {
   if (a.type === 'epic' && b.type !== 'epic') return -1;
   if (a.type !== 'epic' && b.type === 'epic') return 1;
   const ar = timelineRefParts(a);
@@ -1506,6 +1584,10 @@ function wireDnD() {
 
 // Renders board metrics, upcoming dates, and the ticket table.
 function renderOverview() {
+  return withDependencySnapshot(renderOverviewContent);
+}
+
+function renderOverviewContent() {
   setHeader('Overview', 'Status, planned sprints, and upcoming dates.');
   const root = $('#overview');
   root.classList.remove('hidden');
@@ -1636,6 +1718,10 @@ function overviewSearchText(t) {
 
 // Compares tickets according to the active overview sort.
 function overviewCompare(a, b) {
+  return planningCompare(a, b, overviewNormalCompare);
+}
+
+function overviewNormalCompare(a, b) {
   const key = overviewSort.key;
   const dir = overviewSort.dir === 'desc' ? -1 : 1;
   if (key === 'startDate' || key === 'dueDate' || key === 'updatedAt') {
@@ -1835,6 +1921,10 @@ function renderTimeline() {
 
 // Calculates and renders the Gantt chart for scheduled work.
 function renderGantt(root) {
+  return withDependencySnapshot(() => renderGanttContent(root));
+}
+
+function renderGanttContent(root) {
   timelineFitObservers.get(root)?.disconnect();
   timelineFitObservers.delete(root);
   // Only promoted, scheduled delivery work reaches the timeline.
@@ -1863,8 +1953,9 @@ function renderGantt(root) {
   const labels = '<div class="ganttTaskRows">' + tasks.map(task => ganttTaskLabel(task, rowHeight)).join('') + '</div>';
   const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, focusRange);
 
-  const rowSizing = '--gantt-row-height:' + rowHeight + 'px;--gantt-row-count:' + tasks.length + ';--gantt-head-height:' + headHeight + 'px;--gantt-axis-height:' + axisHeight + 'px;--gantt-chart-height:' + chartHeight + 'px';
-  root.innerHTML = '<section class="ganttFlow">' + controls + planningFocusHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Open Dependencies to inspect connections</span></div><div class="ganttChart" style="' + rowSizing + '"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  applyGanttTrackSizes(root, rowHeight, tasks.length, headHeight, axisHeight);
+  const rowSizing = 'data-row-height="' + rowHeight + '" data-row-count="' + tasks.length + '" data-chart-height="' + chartHeight + '"';
+  root.innerHTML = '<section class="ganttFlow">' + controls + planningFocusHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Open Dependencies to inspect connections</span></div><div class="ganttChart" ' + rowSizing + '><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   const scroll = root.querySelector('.ganttSvgScroll');
   const svgElement = root.querySelector('.ganttSvg');
   const fitViewport = () => {
@@ -1905,6 +1996,18 @@ function renderGantt(root) {
     timelineFitObservers.set(root, observer);
   }
   root.insertAdjacentHTML('beforeend', '<details class="timelineAssumptionHint"><summary>About estimated dates</summary><p>Without a start date, work is estimated from its deadline or creation date. Missing duration uses three days, or one day for an Epic. These estimates do not change saved deadlines.</p></details>');
+}
+
+// The CSP rejects HTML style attributes; trusted DOM property writes are allowed.
+function applyGanttTrackSizes(root, rowHeight, rowCount, headHeight, axisHeight) {
+  const properties = {
+    '--gantt-row-height': rowHeight + 'px',
+    '--gantt-row-count': String(rowCount),
+    '--gantt-head-height': headHeight + 'px',
+    '--gantt-axis-height': axisHeight + 'px',
+    '--gantt-chart-height': (headHeight + rowCount * rowHeight + axisHeight) + 'px',
+  };
+  Object.entries(properties).forEach(([name, value]) => root.style?.setProperty(name, value));
 }
 
 // A focused Sprint has exact calendar bounds and fits even below ten pixels/day.
@@ -1948,7 +2051,9 @@ function buildGanttRows() {
     const ownTask = (epicHasOwnTimelineConfig(epic) || (!childTasks.length && required?.has(+epic.id))) ? baseById.get(epic.id) : null;
     if (!ownTask && !childTasks.length) return;
     const groupRows = [ganttEpicAggregate(epic, childTasks, ownTask)];
-    (collapsedEpics.has(+epic.id) ? [] : timelineDescendants(epic.id, baseById)).forEach(task => {
+    const children = timelineDescendants(epic.id, baseById);
+    if (required) children.sort((a, b) => planningCompare(a.ticket, b.ticket, () => 0));
+    (collapsedEpics.has(+epic.id) ? [] : children).forEach(task => {
       task.depth = timelineDepth(task.ticket, epic.id);
       task.groupId = epic.id;
       groupRows.push(task);
@@ -2250,7 +2355,7 @@ function topEpicFor(ticket) {
 
 // Sorts standalone Gantt tasks by schedule and ticket order.
 function ganttTaskSort(a, b) {
-  return a.start - b.start || a.due - b.due || ticketOrder(a.ticket, b.ticket);
+  return planningCompare(a.ticket, b.ticket, () => a.start - b.start || a.due - b.due || ticketOrder(a.ticket, b.ticket));
 }
 
 // Builds the aggregate Gantt row for one Epic.
@@ -2360,7 +2465,7 @@ function ganttTaskLabel(task, rowHeight) {
   const detailClasses = [task.blocked.length ? 'waiting' : '', delayText ? 'late' : ''].filter(Boolean).join(' ');
 
   const title = task.isAggregate ? epicToggleHtml(task.ticket, 'ganttTaskTitle') : '<button type="button" class="ganttTaskTitle" data-open-ticket="' + task.ticket.id + '">' + esc(ticketLabel(task.ticket)) + '</button>';
-  return '<div class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" style="height:' + rowHeight + 'px;min-height:' + rowHeight + 'px;max-height:' + rowHeight + 'px">' + title + '<span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + taskEditHtml(task.ticket) + '</div>';
+  return '<div class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '" data-row-height="' + rowHeight + '" tabindex="0">' + title + '<span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + taskEditHtml(task.ticket) + '</div>';
 }
 
 // Describes the optimistic finish projection after the live delay segment.

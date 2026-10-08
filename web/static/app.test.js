@@ -96,7 +96,7 @@ function loadApp(options = {}) {
     applyRoute, openBacklogView, jumpToSprint, selectedPlanningSprint, selectPlanningSprint, clearPlanningSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
-    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml,
+    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml, renderTaskTools,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
@@ -109,7 +109,7 @@ function loadApp(options = {}) {
     normalizePromotionType, backlogDescendants,
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
-    boardSwimlaneData, boardCardDepth, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
+    boardSwimlaneData, boardCardDepth, overviewRows, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     boardDependencyHtml, dependencyHoverEdges, wireWorkDependencies, wireTimelineDependencies,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
     renderGantt, ganttTaskLabel, timelineGeometry,
@@ -1540,7 +1540,7 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     app.setState(state); app.selectBoard(1); app.navButtons.find(button => button.dataset.view === targetView).onclick();
     app.openDependencies(43);
     const legend = app.planningFocusHtml();
-    const stages = [...legend.matchAll(/class="dependencyStageKey" style="--dependency-color:(#[0-9a-f]{6})" title="Stage (\d+)/g)].map(match => ({step: +match[2], color: match[1]}));
+    const stages = [...legend.matchAll(/class="dependencyStageKey" data-dependency-color="(#[0-9a-f]{6})" title="Stage (\d+)/g)].map(match => ({step: +match[2], color: match[1]}));
     assert.deepEqual(stages.map(item => item.step), [1,2,3,4,5,6]);
     assert.equal(stages[0].color, '#60a5fa'); assert.equal(stages[2].color, '#f4b83f'); assert.equal(stages[5].color, '#37c7ad');
     assert.equal(new Set(stages.map(item => item.color)).size, 6);
@@ -1548,8 +1548,8 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     assert.doesNotMatch(legend, /Stages 1, 4|Stages 2, 5|Stages 3, 6/);
     assert.ok(app.document.querySelector('#' + targetView).innerHTML.includes(legend));
     app.toggleDependencyFocus(46);
-    assert.equal(app.planningFocusHtml(), legend);
-    app.showOtherTasks(); assert.equal(app.planningFocusHtml(), legend);
+    assert.deepEqual([...app.planningFocusHtml().matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]), [...legend.matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]));
+    app.showOtherTasks(); assert.deepEqual([...app.planningFocusHtml().matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]), [...legend.matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]));
     app.closeDependencies(); assert.equal(app.planningFocusHtml(), '');
   });
 }
@@ -1662,11 +1662,13 @@ for (const targetView of ['board','overview','timeline']) {
     dep.onclick(event); assert.equal(app.dependencyFocusIds(),null); assert.deepEqual([...app.dependencyViewIds()].sort(),[12,13]);
     assert.ok(app.planningWork().some(t=>t.id===18)); assert.equal(calls.at(-1).options.selectedId,12);
     assert.match(root.innerHTML,/data-focus-related="12"/);assert.match(root.innerHTML,/>Focus tasks<|>Focus tasks<\/button>/);assert.match(root.innerHTML,/data-dependencies-back/);
-    assert.doesNotMatch(root.innerHTML,/dependencyFocusBar|Show all tasks|Hover to preview/);
+    assert.match(root.innerHTML,/dependencyFocusBar/);
+    assert.match(root.innerHTML,/Back to normal view/);
+    assert.doesNotMatch(root.innerHTML,/Show all tasks|Hover to preview/);
     focus.onclick(event);assert.deepEqual([...app.dependencyFocusIds()].sort(),[12,13]);assert.ok(!app.planningWork().some(t=>t.id===18));
     assert.match(root.innerHTML,/class="dependencyAction showOtherTasks" data-show-other-tasks>Show other tasks/);
     assert.match(root.innerHTML,/data-focus-related="13"/);
-    if(targetView==='timeline') {assert.match(root.innerHTML,/data-range-start="2026-09-30"/);assert.match(root.innerHTML,/data-range-end="2026-10-06"/);assert.match(root.innerHTML,/height:120px/);}
+    if(targetView==='timeline') {assert.match(root.innerHTML,/data-range-start="2026-09-30"/);assert.match(root.innerHTML,/data-range-end="2026-10-06"/);assert.match(root.innerHTML,/data-row-height="120"/);}
     back.onclick(event);assert.equal(app.dependencyViewIds(),null);assert.equal(app.dependencyFocusIds(),null);assert.ok(app.planningWork().some(t=>t.id===18));
     assert.equal(calls.at(-1).options.selectedId,0);assert.equal(stopped,3);
   });
@@ -1690,12 +1692,16 @@ test('dependency preview opens related Epics and closes before a related Epic is
 test('Timeline labels and SVG rows use uniform additional action space on narrow viewports', () => {
   const app=loadApp();const state=stateWithHierarchy();state.tickets.forEach(t=>{t.createdAt='2026-10-01T10:00:00Z';t.startDate='2026-10-01';t.dueDate='2026-10-04';});app.setState(state);app.selectBoard(1);
   const root=app.document.querySelector('#timeline');
+  const sizes=new Map();root.style={setProperty(name,value){sizes.set(name,value);}};
   for(const [width,height] of [[500,188],[800,156],[1200,120]]) {
     root.clientWidth=width;app.renderGantt(root);
-    const tasks=app.buildGanttRows();assert.equal((root.innerHTML.match(new RegExp('style="height:'+height+'px;min-height:'+height+'px;max-height:'+height+'px"','g'))||[]).length,tasks.length);
+    const tasks=app.buildGanttRows();assert.equal((root.innerHTML.match(new RegExp('class="ganttTaskItem[^\"]*"[^>]*data-row-height="'+height+'"','g'))||[]).length,tasks.length);
     const svgHeights=[...root.innerHTML.matchAll(/<rect class="ganttSvgRow [^"]*"[^>]*height="(\d+)"/g)].map(match=>+match[1]);assert.equal(svgHeights.length,tasks.length);assert.ok(svgHeights.every(value=>value===height));
     const chartHeight=56+tasks.length*height+62;
-    assert.ok(root.innerHTML.includes('--gantt-row-height:'+height+'px;--gantt-row-count:'+tasks.length+';--gantt-head-height:56px;--gantt-axis-height:62px;--gantt-chart-height:'+chartHeight+'px'));
+    assert.ok(root.innerHTML.includes('class="ganttChart" data-row-height="'+height+'" data-row-count="'+tasks.length+'" data-chart-height="'+chartHeight+'"'));
+    assert.equal(sizes.get('--gantt-row-height'),height+'px');
+    assert.equal(sizes.get('--gantt-row-count'),String(tasks.length));
+    assert.equal(sizes.get('--gantt-chart-height'),chartHeight+'px');
     const bars=[...root.innerHTML.matchAll(/<rect class="ganttSvgBar [^"]*"[^>]*y="(\d+)"[^>]*height="(\d+)"/g)];assert.equal(bars.length,tasks.length);
     bars.forEach((bar,index)=>assert.equal(+bar[1]+ +bar[2]/2,56+(index+.5)*height));
     const dueBadges=[...root.innerHTML.matchAll(/<rect class="ganttSvgDueTagBg"[^>]*y="(\d+)"[^>]*height="(\d+)"/g)];assert.equal(dueBadges.length,tasks.length);
@@ -1713,7 +1719,7 @@ test('Timeline text tracks keep the axis after the same task rows as the SVG', (
 test('an empty focused Sprint keeps matching timeline header and axis heights without a phantom task row', () => {
   const app=loadApp();const state=stateWithHierarchy();state.tickets=[];app.setState(state);app.selectBoard(1);
   app.applyRoute({view:'timeline',boardId:1,ticketId:0,sprintNumber:1});const root=app.document.querySelector('#timeline');root.clientWidth=1200;app.renderGantt(root);
-  assert.match(root.innerHTML,/--gantt-row-count:0;--gantt-head-height:56px;--gantt-axis-height:62px;--gantt-chart-height:118px/);
+  assert.match(root.innerHTML,/data-row-height="120" data-row-count="0" data-chart-height="118"/);
   assert.match(root.innerHTML,/<div class="ganttTaskRows"><\/div><div class="ganttTaskFoot">Timeline<\/div>/);
   assert.match(root.innerHTML,/<svg class="ganttSvg"[^>]*height="118"/);
   assert.doesNotMatch(root.innerHTML,/<rect class="ganttSvgRow /);
@@ -2016,3 +2022,221 @@ test('Reset filters clears Sprint isolation and preserves all filters when disca
   for (const id of Object.keys(values)) assert.equal(app.document.querySelector('#' + id).value, '');
   assert.ok(planningIds(app).includes(15) && planningIds(app).includes(16));
 });
+
+function dependencyOrderState() {
+  const state = stateWithHierarchy();
+  const task = {...state.tickets[3], parentId: 200, columnId: 1, completedAt: '', duration: 1, createdAt: '2026-01-01T10:00:00Z', startDate: '2026-01-01'};
+  state.tickets = [
+    {...state.tickets[0], id: 200, ref: 'E1', title: 'Planning Epic'},
+    {...task, id: 90, ref: '1', title: 'Source task', position: 4, dueDate: '2026-01-05', links: []},
+    {...task, id: 80, ref: '2', title: 'Second task', position: 3, dueDate: '2026-01-04', links: [90]},
+    {...task, id: 70, ref: '3', title: 'Third task', position: 2, dueDate: '2026-01-03', links: [80]},
+    {...task, id: 60, ref: '4', title: 'Final task', position: 1, dueDate: '2026-01-02', links: [70]},
+    {...task, id: 75, ref: '5', title: 'Parallel task', position: 0, dueDate: '2026-01-01', links: [90]},
+  ];
+  return state;
+}
+
+function visibleDependencyOrder(app, targetView, relatedIds) {
+  if (targetView === 'board') {
+    return [...app.document.querySelector('#board').innerHTML.matchAll(/class="card[^>]+data-work-id="(\d+)"/g)]
+      .map(match => +match[1]).filter(id => relatedIds.has(id));
+  }
+  if (targetView === 'overview') return Array.from(app.overviewRows(app.planningWork()), row => row.ticket.id).filter(id => relatedIds.has(id));
+  return Array.from(app.buildGanttRows(), row => row.ticket.id).filter(id => relatedIds.has(id));
+}
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' orders a dependency chain by its stages and restores the chosen normal order on exit', () => {
+    const app = loadApp({hover: {wire() {}}});
+    const state = dependencyOrderState();
+    state.tickets.push(...[50,55,58].map((id,index) => ({...state.tickets[1], id, ref: String(20 + index), title: 'Unrelated ' + id, links: [], dueDate: '2026-01-0' + (index + 1)})));
+    app.setState(state); app.selectBoard(1);
+    app.setOverviewSort({key: 'dueDate', dir: 'asc'});
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const relatedIds = new Set([90,80,70,60,75]);
+    const normalOrder = visibleDependencyOrder(app, targetView, relatedIds);
+    const unrelatedIds = new Set([50,55,58]);
+    const unrelatedNormal = visibleDependencyOrder(app, targetView, unrelatedIds);
+    assert.equal(normalOrder.length, 5);
+    assert.ok(normalOrder.indexOf(60) < normalOrder.indexOf(90), 'the initial normal sort opposes dependency order');
+    app.openDependencies(70);
+    const dependencyOrder = visibleDependencyOrder(app, targetView, relatedIds);
+    assert.equal(dependencyOrder.length, 5);
+    assert.deepEqual(visibleDependencyOrder(app, targetView, unrelatedIds), unrelatedNormal, 'independent work retains its normal relative order');
+    const stageById = new Map([[90,1],[80,2],[75,2],[70,3],[60,4]]);
+    assert.deepEqual(dependencyOrder.map(id => stageById.get(id)), [1,2,2,3,4]);
+    for (const [source,target] of [[90,80],[90,75],[80,70],[70,60]]) assert.ok(dependencyOrder.indexOf(source) < dependencyOrder.indexOf(target));
+    if (targetView === 'overview') {
+      const rows = app.overviewRows(app.planningWork());
+      assert.equal(rows[0].kind, 'epic'); assert.equal(rows[0].ticket.id, 200);
+      assert.ok(rows.slice(1).every(row => row.depth === 1), 'dependency sorting retains the existing Epic hierarchy');
+    }
+    app.toggleDependencyFocus(75);
+    assert.deepEqual(visibleDependencyOrder(app, targetView, relatedIds), dependencyOrder);
+    app.showOtherTasks();
+    assert.deepEqual(visibleDependencyOrder(app, targetView, relatedIds), dependencyOrder);
+    app.closeDependencies();
+    assert.deepEqual(visibleDependencyOrder(app, targetView, relatedIds), normalOrder);
+  });
+}
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' orders a focused chain that crosses Story parents while preserving its Epic context', () => {
+    const app = loadApp({hover: {wire() {}}}); const state = dependencyOrderState();
+    const template = {...state.tickets[1], type: 'story', parentId: 200, links: []};
+    state.tickets.push({...template, id: 300, ref: 'E1.1', title: 'First Story'}, {...template, id: 301, ref: 'E1.2', title: 'Second Story'});
+    state.tickets.find(ticket => ticket.id === 90).parentId = 300;
+    state.tickets.find(ticket => ticket.id === 70).parentId = 300;
+    state.tickets.find(ticket => ticket.id === 80).parentId = 301;
+    state.tickets.find(ticket => ticket.id === 60).parentId = 301;
+    state.tickets = state.tickets.filter(ticket => ticket.id !== 75);
+    app.setState(state); app.selectBoard(1); app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    app.openDependencies(70); app.toggleDependencyFocus(70);
+    const chain = visibleDependencyOrder(app, targetView, new Set([90,80,70,60]));
+    assert.deepEqual(chain, [90,80,70,60], 'parent blocks must not interleave the dependency stages');
+    assert.ok(app.planningWork().some(ticket => ticket.id === 200), 'the focused chain retains its Epic summary');
+    assert.deepEqual(state.tickets.filter(ticket => [90,80,70,60].includes(ticket.id)).map(ticket => [ticket.id,ticket.parentId]), [[90,300],[80,301],[70,300],[60,301]], 'view order must never modify stored task parents');
+  });
+}
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' identifies the selected task and offers a persistent exit without fetching or reloading', () => {
+    let requests = 0;
+    const app = loadApp({fetch() { requests++; return new Promise(() => {}); }, hover: {wire() {}}});
+    const state = dependencyOrderState();
+    state.tickets.find(ticket => ticket.id === 70).title = 'Chosen <third> & task';
+    app.setState(state); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const stateBefore = app.getState(); const hashBefore = app.window.location.hash;
+    app.openDependencies(70);
+    const root = app.document.querySelector('#' + targetView);
+    assert.match(root.innerHTML, /dependencyFocusBar/);
+    assert.match(app.planningFocusHtml(), /Chosen &lt;third&gt; &amp; task/);
+    assert.match(app.planningFocusHtml(), /#3/);
+    assert.match(app.planningFocusHtml(), /data-dependencies-back/);
+    assert.match(app.card(state.tickets.find(ticket => ticket.id === 70)), /class="dependencyAction dependenciesBack"/);
+    assert.equal(app.document.querySelector('#dependencyExitBtn').classList.contains('hidden'), false);
+    assert.match(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'), /id="dependencyExitBtn"[^>]+class="dependenciesBack hidden"[^>]*>Close dependencies<\/button>/);
+    assert.equal(app.getView(), targetView); assert.equal(app.getState(), stateBefore);
+    assert.equal(app.window.location.hash, hashBefore); assert.equal(requests, 0);
+    app.toggleDependencyFocus(70);
+    assert.equal(app.document.querySelector('#dependencyExitBtn').classList.contains('hidden'), false);
+    app.document.querySelector('#dependencyExitBtn').onclick();
+    assert.equal(app.dependencyViewIds(), null); assert.equal(app.dependencyFocusIds(), null);
+    assert.equal(app.planningFocusHtml(), '');
+    assert.equal(app.document.querySelector('#dependencyExitBtn').classList.contains('hidden'), true);
+    assert.equal(app.getView(), targetView); assert.equal(requests, 0);
+  });
+}
+
+test('leaving dependencies preserves an unsaved editor draft and opening another chain still honors Cancel', () => {
+  const app = loadApp({hover: {wire() {}}});
+  app.setState(stateWithHierarchy()); app.selectBoard(1); app.openDependencies(12);
+  const fields = openEditor(app, 12); fields.dTitle.value = 'Keep this unsaved title';
+  let prompts = 0; app.setConfirm(() => { prompts++; return false; });
+  app.openDependencies(13);
+  assert.equal(prompts, 1); assert.equal(app.getEditing().id, 12);
+  assert.match(app.planningFocusHtml(), /Task/);
+  app.document.querySelector('#dependencyExitBtn').onclick();
+  assert.equal(app.dependencyViewIds(), null);
+  assert.equal(app.getEditing().id, 12); assert.equal(fields.dTitle.value, 'Keep this unsaved title');
+  assert.equal(prompts, 1, 'closing the display keeps the open draft and does not discard it');
+  assert.equal(app.canLeaveDrawer(), false); assert.equal(prompts, 2);
+});
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' keeps the clicked task at its visible position through dependency sorting, focusing and returning', () => {
+    const app = loadApp({hover: {wire() {}}}); app.setState(dependencyOrderState()); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const root = app.document.querySelector('#' + targetView); const originalQuery = root.querySelector;
+    let markup = root.innerHTML; let pageTop = 180; let chart = fakeElement(); chart.scrollTop = 240;
+    const scrolling = [], focusing = [];
+    app.window.scrollBy = options => { scrolling.push(options); pageTop += options.top; };
+    const action = fakeElement(); action.focus = options => focusing.push(options);
+    const selected = fakeElement(); selected.querySelector = () => action;
+    selected.getBoundingClientRect = () => {
+      const pattern = targetView === 'timeline' ? /class="ganttTaskItem[^>]+data-timeline-id="(\d+)"/g : targetView === 'overview' ? /class="ticketRow[^>]+data-work-id="(\d+)"/g : /class="card[^>]+data-work-id="(\d+)"/g;
+      const index = [...markup.matchAll(pattern)].map(match => +match[1]).indexOf(70);
+      assert.notEqual(index, -1);
+      const top = 400 + index * 120 + (markup.includes('dependencyFocusBar') ? 80 : 0) - pageTop - (targetView === 'timeline' ? chart.scrollTop : 0);
+      return {top, bottom: top + 100, height: 100, left: 100, right: 400, width: 300};
+    };
+    Object.defineProperty(root, 'innerHTML', {
+      get() { return markup; },
+      set(value) { markup = value; root.scrollLeft = 0; if (targetView === 'timeline') { chart = fakeElement(); chart.scrollTop = 0; } },
+    });
+    root.scrollLeft = 160;
+    const selector = targetView === 'timeline' ? '.ganttTaskItem[data-timeline-id="70"]' : '[data-work-id="70"]';
+    root.querySelector = query => query === selector ? selected : query === '.ganttChart' ? chart : originalQuery(query);
+    const before = selected.getBoundingClientRect().top;
+    for (const transition of [() => app.openDependencies(70), () => app.toggleDependencyFocus(70), () => app.showOtherTasks(), () => app.closeDependencies()]) {
+      transition();
+      assert.equal(selected.getBoundingClientRect().top, before, 'replacing and reordering the rows retains the clicked task position');
+      assert.equal(root.scrollLeft, 160, 'horizontal workspace position remains unchanged');
+    }
+    assert.equal(focusing.length, 4);
+    assert.ok(focusing.every(options => options.preventScroll === true), 'keyboard focus must not undo the retained scroll position');
+    assert.ok(scrolling.every(options => options.behavior === 'instant' && options.left === 0));
+    if (targetView === 'timeline') assert.ok(chart.scrollTop > 0, 'the recreated timeline chart retains its own vertical scroll');
+    else assert.ok(scrolling.some(options => options.top !== 0), 'the test exercises a real positional correction after ordering changes');
+  });
+}
+
+test('Overview retains its nested table horizontal position when dependency rows are recreated', () => {
+  const app = loadApp({hover: {wire() {}}}); app.setState(dependencyOrderState()); app.selectBoard(1);
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  const root = app.document.querySelector('#overview'); const originalQuery = root.querySelector;
+  let markup = root.innerHTML; let table = fakeElement(); table.classList.add('showAllColumns');
+  let columnsToggle = fakeElement(); columnsToggle.textContent = 'Show simple table';
+  const newTableScroll = () => {
+    const node = fakeElement(); let left = 0;
+    Object.defineProperty(node, 'scrollLeft', {get() { return left; }, set(value) { left = table.classList.contains('showAllColumns') ? Math.max(0,value) : 0; }});
+    node.before = button => { columnsToggle = button; };
+    return node;
+  };
+  let tableScroll = newTableScroll(); tableScroll.scrollLeft = 420;
+  const selected = fakeElement(); const action = fakeElement(); const focusCalls = [];
+  selected.querySelector = () => action; action.focus = options => focusCalls.push(options);
+  selected.getBoundingClientRect = () => ({top: 220, bottom: 320, left: 650 - tableScroll.scrollLeft, right: 1200 - tableScroll.scrollLeft, height: 100, width: 550});
+  Object.defineProperty(root, 'innerHTML', {
+    get() { return markup; },
+    set(value) { markup = value; table = fakeElement(); tableScroll = newTableScroll(); root.scrollLeft = 0; },
+  });
+  root.scrollLeft = 35;
+  root.querySelector = selector => selector === '[data-work-id="70"]' ? selected : selector === '.tableScroll' || selector === '.boardSwimlanes,.tableScroll' ? tableScroll : selector === '.ticketTable' ? table : selector === '.overviewColumnsToggle' ? columnsToggle : originalQuery(selector);
+  for (const transition of [() => app.openDependencies(70), () => app.toggleDependencyFocus(70), () => app.showOtherTasks(), () => app.closeDependencies()]) {
+    const previousTable = tableScroll; const previousLeft = selected.getBoundingClientRect().left;
+    transition();
+    assert.notEqual(tableScroll, previousTable, 'each transition replaces the table scroll node');
+    assert.equal(tableScroll.scrollLeft, 420, 'the table keeps its own horizontal scroll rather than only the outer workspace scroll');
+    assert.equal(table.classList.contains('showAllColumns'), true, 'the wide planning columns are restored before the browser clamps horizontal scroll');
+    assert.equal(columnsToggle.textContent, 'Show simple table');
+    assert.equal(selected.getBoundingClientRect().left, previousLeft);
+    assert.equal(root.scrollLeft, 35);
+  }
+  assert.equal(focusCalls.length, 4);
+  assert.ok(focusCalls.every(options => options.preventScroll));
+});
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' recomputes its dependency chain and stages after the next state render', () => {
+    const app = loadApp({hover: {wire() {}}}); const state = dependencyOrderState();
+    app.setState(state); app.selectBoard(1); app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    app.openDependencies(70);
+    assert.deepEqual([...app.dependencyViewIds()].sort((a,b) => a-b), [60,70,75,80,90]);
+    assert.match(app.planningFocusHtml(), /title="Stage 4 · end"/);
+    state.tickets.push({...state.tickets[1], id: 85, ref: '6', title: 'New final task', links: [60]});
+    app.renderView();
+    assert.deepEqual([...app.dependencyViewIds()].sort((a,b) => a-b), [60,70,75,80,85,90]);
+    assert.match(app.planningFocusHtml(), /title="Stage 5 · end"/);
+    state.tickets.find(ticket => ticket.id === 70).links = [];
+    app.renderView();
+    assert.deepEqual([...app.dependencyViewIds()].sort((a,b) => a-b), [60,70,85]);
+    assert.match(app.planningFocusHtml(), /title="Stage 3 · end"/);
+    assert.doesNotMatch(app.planningFocusHtml(), /title="Stage [45]/);
+    app.toggleDependencyFocus(70);
+    assert.deepEqual(visibleDependencyOrder(app, targetView, new Set([60,70,75,80,85,90])), [70,60,85]);
+    assert.deepEqual(Array.from(app.planningWork(), ticket => ticket.id).sort((a,b) => a-b), [60,70,85,200]);
+  });
+}

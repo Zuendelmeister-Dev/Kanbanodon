@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/admin.css?v=all-board-sharing-20260628">
   <link rel="stylesheet" href="/static/auth.css?v=password-confirm-20260628">
   <link rel="stylesheet" href="/static/dino-creator.css?v=blue-gold-teal-20261008">
-  <link rel="stylesheet" href="/static/task-tools.css?v=sprint-navigation-20261008">
+  <link rel="stylesheet" href="/static/task-tools.css?v=dependency-usability-csp-20261008">
 </head>
 <body>
   <header class="topbar">
@@ -16,6 +16,7 @@
     <div class="tools">
       <input id="search" type="search" placeholder="Search">
       <button id="myTasksBtn" type="button" aria-pressed="false">My tasks</button>
+      <button id="dependencyExitBtn" class="dependenciesBack hidden" type="button" title="Return to the normal task view without dependency arrows">Close dependencies</button>
       <details class="toolsMenu"><summary id="filtersTitle">Filters</summary><div class="toolsPopover">
       <select id="typeFilter"><option value="">All types</option><option>epic</option><option>story</option><option>task</option><option>bug</option></select>
       <select id="assigneeFilter"><option value="">All assignees</option></select>
@@ -131,8 +132,8 @@
   <aside id="drawer" class="drawer hidden"></aside>
   <script src="/static/dino-creator.js?v=avatars-auto-20261005"></script>
   <script src="/static/route.js?v=sprint-navigation-20261008"></script>
-  <script src="/static/task-tools.js?v=sprint-navigation-20261008"></script>
-  <script src="/static/dependency-hover.js?v=dependency-stage-gradient-20261008"></script>
-  <script src="/static/app.js?v=sprint-navigation-20261008"></script>
+  <script src="/static/task-tools.js?v=dependency-usability-csp-20261008"></script>
+  <script src="/static/dependency-hover.js?v=dependency-usability-csp-20261008"></script>
+  <script src="/static/app.js?v=dependency-usability-csp-20261008"></script>
 </body>
 </html>
