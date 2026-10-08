@@ -67,7 +67,7 @@ function loadApp(options = {}) {
     },
   };
   if (options.creator) window.KanbanodonDinoCreator = require('./dino-creator.js');
-  if (options.hover) window.KanbanodonDependencyHover = options.hover;
+  if (options.hover) window.KanbanodonDependencyHover = {...require('./dependency-hover.js'), ...options.hover};
   if (options.resizeObserver) window.ResizeObserver = options.resizeObserver;
   const context = {
     window,
@@ -96,7 +96,7 @@ function loadApp(options = {}) {
     applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
-    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions,
+    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
@@ -1529,6 +1529,30 @@ test('Timeline preserves a connected chain through an undated empty Epic without
   assert.equal(state.tickets[0].startDate, ''); assert.equal(state.tickets[0].dueDate, '');
   app.closeDependencies(); assert.deepEqual(Array.from(app.buildGanttRows(), t => t.ticket.id), [31,32]);
 });
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' explains the actual graduated stages and preserves their colors when focusing a different task', () => {
+    const app = loadApp({hover: {wire() {}}}); const state = stateWithHierarchy();
+    const task = {...state.tickets[3], parentId: 0, columnId: 1, completedAt: '', createdAt: '2026-10-01T10:00:00Z'};
+    state.tickets = Array.from({length: 6}, (_, index) => ({...task, id: 41 + index, title: 'Chain task ' + (index + 1), links: index ? [40 + index] : []}));
+    state.tickets.push({...task, id: 47, title: 'Parallel stage two', links: [41]});
+    for (let index = 0; index < 10; index++) state.tickets.push({...task, id: 101 + index, title: 'Separate chain ' + index, links: index ? [100 + index] : []});
+    app.setState(state); app.selectBoard(1); app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    app.openDependencies(43);
+    const legend = app.planningFocusHtml();
+    const stages = [...legend.matchAll(/class="dependencyStageKey" style="--dependency-color:(#[0-9a-f]{6})" title="Stage (\d+)/g)].map(match => ({step: +match[2], color: match[1]}));
+    assert.deepEqual(stages.map(item => item.step), [1,2,3,4,5,6]);
+    assert.equal(stages[0].color, '#60a5fa'); assert.equal(stages[2].color, '#f4b83f'); assert.equal(stages[5].color, '#37c7ad');
+    assert.equal(new Set(stages.map(item => item.color)).size, 6);
+    assert.match(legend, /Stage 1 · start/); assert.match(legend, /Stage 3 · middle/); assert.match(legend, /Stage 6 · end/);
+    assert.doesNotMatch(legend, /Stages 1, 4|Stages 2, 5|Stages 3, 6/);
+    assert.ok(app.document.querySelector('#' + targetView).innerHTML.includes(legend));
+    app.toggleDependencyFocus(46);
+    assert.equal(app.planningFocusHtml(), legend);
+    app.showOtherTasks(); assert.equal(app.planningFocusHtml(), legend);
+    app.closeDependencies(); assert.equal(app.planningFocusHtml(), '');
+  });
+}
 
 test('connected traversal terminates defensively even if stale data contains a dependency cycle', () => {
   const app = loadApp(); const state = stateWithHierarchy();

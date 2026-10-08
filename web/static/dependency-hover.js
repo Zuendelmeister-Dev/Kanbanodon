@@ -81,7 +81,45 @@
     return levels;
   }
 
-  const roleForStep = step => ['prerequisite', 'active', 'dependent'][(Math.max(1, +step || 1) - 1) % 3];
+  const STAGE_BLUE = '#60a5fa';
+  const STAGE_GOLD = '#f4b83f';
+  const STAGE_TEAL = '#37c7ad';
+  const stageCount = maxStep => Number.isFinite(+maxStep) ? Math.max(1, Math.floor(+maxStep || 1)) : 1;
+  const stageNumber = (step, maxStep) => Math.max(1, Math.min(stageCount(maxStep), Math.floor(+step || 1)));
+
+  function blendColors(first, last, fraction) {
+    const components = [1, 3, 5].map(offset => {
+      const start = parseInt(first.slice(offset, offset + 2), 16);
+      const end = parseInt(last.slice(offset, offset + 2), 16);
+      return Math.round(start + (end - start) * fraction).toString(16).padStart(2, '0');
+    });
+    return '#' + components.join('');
+  }
+
+  // A circuit progresses through the palette once. Its actual middle stage
+  // is gold, even when the graph has an even number of stages. Two-stage
+  // circuits use the start and finish colors without inventing a middle task.
+  function stageColor(step, maxStep) {
+    const count = stageCount(maxStep);
+    const current = stageNumber(step, count);
+    if (current === 1) return STAGE_BLUE;
+    if (current === count) return STAGE_TEAL;
+    const middle = Math.ceil(count / 2);
+    if (current <= middle) return blendColors(STAGE_BLUE, STAGE_GOLD, (current - 1) / (middle - 1));
+    return blendColors(STAGE_GOLD, STAGE_TEAL, (current - middle) / (count - middle));
+  }
+
+  function stagePalette(maxStep) {
+    return Array.from({ length: stageCount(maxStep) }, (_, index) => ({ step: index + 1, color: stageColor(index + 1, maxStep) }));
+  }
+
+  function roleForStep(step, maxStep) {
+    const count = stageCount(maxStep);
+    const current = stageNumber(step, count);
+    if (current === 1) return 'prerequisite';
+    if (count > 2 && current === Math.ceil(count / 2)) return 'active';
+    return current < Math.ceil(count / 2) ? 'prerequisite' : 'dependent';
+  }
 
   function normalizeRect(rect) {
     const left = +rect.left;
@@ -371,8 +409,8 @@
       [['right', 'left'], ['bottom', 'top'], ['top', 'bottom']] : [['left', 'right'], ['bottom', 'top'], ['top', 'bottom']];
   }
 
-  // Route a complete circuit together. Colors repeat blue/gold/teal while the
-  // absolute topological stage numbers continue past three.
+  // Route a complete circuit together. Its absolute topological stages share
+  // one blue-to-gold-to-teal progression across every branch.
   function routeConnections(edgeValues, positionValues, obstacleValues, boundsValue, options = {}) {
     const positions = positionValues instanceof Map ? positionValues : new Map(Object.entries(positionValues || {}).map(([id, rect]) => [+id, rect]));
     const bounds = normalizeRect(boundsValue);
@@ -390,7 +428,9 @@
         return true;
       }).sort((a, b) => a.from - b.from || a.to - b.to);
     const steps = dependencySteps(edgeCandidates, selected);
-    const edges = edgeCandidates.map(edge => ({ ...edge, sourceStep: steps.get(edge.from) || 1, role: roleForStep(steps.get(edge.from) || 1) }))
+    const maxStep = Math.max(1, ...steps.values());
+    const edges = edgeCandidates.map(edge => ({ ...edge, sourceStep: steps.get(edge.from) || 1,
+      role: roleForStep(steps.get(edge.from) || 1, maxStep), color: stageColor(steps.get(edge.from) || 1, maxStep) }))
       .sort((a, b) => a.sourceStep - b.sourceStep || a.from - b.from || a.to - b.to);
     const rectangles = new Map();
     edges.forEach(edge => [edge.from, edge.to].forEach(id => {
@@ -506,10 +546,11 @@
     layerRoot.append(overlay);
     const markerId = 'dependencyHoverArrow' + ++nextOverlayId;
     const roleClasses = { prerequisite: 'dependencyHoverPrerequisite', active: 'dependencyHoverActive', dependent: 'dependencyHoverDependent' };
-    const definitions = '<defs>' + Object.keys(roleClasses).map(role => '<marker id="' + markerId + role + '" class="' + roleClasses[role] + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker>').join('') + '</defs>';
     let pinned = +options.selectedId || 0;
     let visibleSteps = new Map();
     let visibleRelated = new Set();
+    let maxStep = 1;
+    const originalColors = new Map();
     let frame = 0;
     let destroyed = false;
     const listeners = [];
@@ -532,15 +573,33 @@
         else target.removeAttribute?.('data-dependency-step');
       });
     };
+    const restoreColor = target => {
+      const previous = originalColors.get(target);
+      if (!previous || !target.style) return;
+      if (previous.value) target.style.setProperty('--dependency-color', previous.value, previous.priority);
+      else target.style.removeProperty('--dependency-color');
+    };
+    const setColor = (node, color) => {
+      [node, node.querySelector('td:first-child')].filter(Boolean).forEach(target => {
+        if (!target.style) return;
+        if (!color) { restoreColor(target); return; }
+        if (!originalColors.has(target)) originalColors.set(target, {
+          value: target.style.getPropertyValue('--dependency-color'),
+          priority: target.style.getPropertyPriority('--dependency-color'),
+        });
+        target.style.setProperty('--dependency-color', color);
+      });
+    };
     const updateHighlight = () => {
       nodes.forEach(node => {
         const id = idOf(node);
         const step = visibleSteps.get(id) || 0;
         node.classList.toggle('dependencyHoverSelected', pinned > 0 && id === pinned);
         node.classList.toggle('dependencyHoverRelated', pinned > 0 && visibleRelated.has(id));
-        Object.entries(roleClasses).forEach(([role, className]) => node.classList.toggle(className, pinned > 0 && step > 0 && roleForStep(step) === role));
+        Object.entries(roleClasses).forEach(([role, className]) => node.classList.toggle(className, pinned > 0 && step > 0 && roleForStep(step, maxStep) === role));
         node.classList.toggle('dependencyHoverDimmed', pinned > 0 && !visibleRelated.has(id));
         setStep(node, pinned > 0 ? step : 0);
+        setColor(node, pinned > 0 && step > 0 ? stageColor(step, maxStep) : null);
       });
     };    const draw = () => {
       frame = 0;
@@ -550,6 +609,7 @@
       const edges = connectedEdges((options.edges || []).filter(edge => available.has(+edge.from) && available.has(+edge.to)), selected);
       visibleRelated = new Set(selected > 0 ? [selected, ...edges.flatMap(edge => [edge.from, edge.to])] : []);
       visibleSteps = dependencySteps(edges, selected);
+      maxStep = Math.max(1, ...visibleSteps.values());
       resetOverlay();
       updateHighlight();
       if (!selected || !edges.length || !layerRoot.isConnected) return;
@@ -577,11 +637,14 @@
       const labelFor = id => options.labelsById instanceof Map ? options.labelsById.get(id) : options.labelsById?.[id];
       const routes = routeConnections(edges, positions, obstacles, { left: 1, top: 1, right: width - 1, bottom: height - 1 },
         { layout: options.layout, clearance: routeClearance, gutterWidth: options.gutterWidth, selectedId: selected });
+      const definitions = '<defs>' + stagePalette(maxStep).map(({ step, color }) => '<marker id="' + markerId + 'Stage' + step + '" style="--dependency-color:' + color + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker>').join('') + '</defs>';
       routes.forEach(edge => {
         const route = edge.points;
         const path = pathData(route);
-        const role = edge.role;
+        const sourceStep = visibleSteps.get(edge.from) || edge.sourceStep;
+        const role = roleForStep(sourceStep, maxStep);
         const roleClass = roleClasses[role];
+        const colorStyle = ' style="--dependency-color:' + stageColor(sourceStep, maxStep) + '"';
         let sequence = '';
         const key = edge.from + ':' + role;
         if (!numberedSources.has(key) && edge.sourceLead >= 25) {
@@ -589,15 +652,15 @@
           const badgeDistance = options.layout === 'overview' ? 25 : 15;
           const x = route[0].x + (edge.sourceAxis === 1 ? edge.sourceDirection * badgeDistance : 0);
           const y = route[0].y + (edge.sourceAxis === 2 ? edge.sourceDirection * badgeDistance : 0);
-          sequence = '<g class="dependencyHoverSequence ' + roleClass + '" data-dependency-source="' + edge.from + '" data-dependency-step="' + edge.sourceStep + '"><circle cx="' + x + '" cy="' + y + '" r="10"></circle><text x="' + x + '" y="' + y + '">' + edge.sourceStep + '</text></g>';
+          sequence = '<g class="dependencyHoverSequence ' + roleClass + '"' + colorStyle + ' data-dependency-source="' + edge.from + '" data-dependency-step="' + sourceStep + '"><circle cx="' + x + '" cy="' + y + '" r="10"></circle><text x="' + x + '" y="' + y + '">' + sourceStep + '</text></g>';
         }
         const description = escapedText((labelFor(edge.from) || '#' + edge.from) + ' → ' + (labelFor(edge.to) || '#' + edge.to));
         drawing += '<g class="dependencyHoverWire" data-dependency-wire="' + edge.from + '>' + edge.to + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" role="img" aria-label="Dependency: ' + description + '">' +
           '<title>' + description + '</title>' +
           '<path class="dependencyHoverOutline" d="' + path + '"></path>' +
-          '<path class="dependencyHoverLine ' + roleClass + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>' +
-          '<circle class="dependencyHoverDot ' + roleClass + '" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>' +
-          '<path class="dependencyHoverArrowHead ' + roleClass + '" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + role + ')"></path>' + sequence + '</g>';
+          '<path class="dependencyHoverLine ' + roleClass + '"' + colorStyle + ' data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>' +
+          '<circle class="dependencyHoverDot ' + roleClass + '"' + colorStyle + ' cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>' +
+          '<path class="dependencyHoverArrowHead ' + roleClass + '"' + colorStyle + ' d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + 'Stage' + sourceStep + ')"></path>' + sequence + '</g>';
       });
       overlay.innerHTML = drawing ? definitions + drawing : '';
       overlay.setAttribute('aria-hidden', drawing ? 'false' : 'true');
@@ -612,7 +675,9 @@
       nodes.forEach(node => {
         node.classList.remove('dependencyHoverSelected', 'dependencyHoverRelated', 'dependencyHoverDimmed', ...Object.values(roleClasses));
         setStep(node, 0);
+        setColor(node, null);
       });
+      originalColors.forEach((previous, target) => restoreColor(target));
       resetOverlay();
     };
     const clear = () => updateHighlight();
@@ -654,7 +719,7 @@
     return controller;
   }
 
-  const api = { directEdges, connectedEdges, dependencySteps, routeConnection, routeConnections, segmentBlocked, sharesTrack, pathData, wire };
+  const api = { directEdges, connectedEdges, dependencySteps, stageColor, stagePalette, routeConnection, routeConnections, segmentBlocked, sharesTrack, pathData, wire };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (global) global.KanbanodonDependencyHover = api;
 })(typeof window === 'undefined' ? null : window);

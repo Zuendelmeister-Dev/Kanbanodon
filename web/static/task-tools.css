@@ -42,9 +42,7 @@
 .boardSwimlanes .boardLaneDrop .card.dependencyHoverActive,.boardSwimlanes .boardLaneDrop .card.dependencyHoverRelated{border-left-color:var(--dependency-color)}
 .ganttSvgTask.dependencyHoverActive .ganttSvgBar,.ganttSvgTask.dependencyHoverRelated .ganttSvgBar{stroke:var(--dependency-color);stroke-width:2.5}
 .ticketRow.dependencyHoverActive,.ticketRow.dependencyHoverRelated{outline:2px solid var(--dependency-color);outline-offset:-2px}
-.ticketRow.dependencyHoverActive td{background:#282313}
-.ticketRow.dependencyHoverPrerequisite td{background:#14243a}
-.ticketRow.dependencyHoverDependent td{background:#102a26}
+.ticketRow.dependencyHoverRelated td{background:#14243a;background:color-mix(in srgb,var(--dependency-color) 13%,#0f171f)}
 .ticketRow.dependencyHoverActive td:first-child,.ticketRow.dependencyHoverRelated td:first-child{border-left-color:var(--dependency-color)}
 
 /* Shared gutters keep column headers aligned and leave space for arrowheads. */
@@ -69,7 +67,9 @@
 .dependencyGuide{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:10px 0;color:var(--muted);font-size:11px}
 .dependencyGuide span{display:flex;align-items:center;gap:5px}
 .dependencyGuide b,.dependencyStepBadge{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;border:2px solid currentColor;background:#0b1219}
-.dependencyGuide .prerequisite{color:#60a5fa}.dependencyGuide .selected{color:var(--gold)}.dependencyGuide .dependent{color:var(--teal)}
+.dependencyStageKeys{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.dependencyStageKey b{color:var(--dependency-color)}
+.dependencyStageKey em{font-style:normal;color:var(--muted)}
 .dependencyGuide small{margin-left:auto}
 .dependencyFocusBar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin-bottom:12px;border:1px solid var(--gold);border-radius:8px;background:#231e11}
 .dependencyFocusBar button{white-space:nowrap}

@@ -814,7 +814,19 @@ function toggleEpic(id) {
 }
 
 function planningFocusHtml() {
-  return dependencyViewIds() ? '<div class="dependencyGuide"><span><b class="prerequisite">1</b> Stages 1, 4, …</span><span><b class="selected">2</b> Stages 2, 5, …</span><span><b class="dependent">3</b> Stages 3, 6, …</span><small>Arrows point to dependent tasks · Numbers show the order from the first task</small></div>' : '';
+  const ids = dependencyViewIds();
+  if (!ids) return '';
+  const dependencies = window.KanbanodonDependencyHover;
+  const edges = dependencyHoverEdges(workTickets()).filter(edge => ids.has(edge.from) && ids.has(edge.to));
+  const steps = dependencies?.dependencySteps?.(edges, dependencyFocusTicketId);
+  const maxStep = Math.max(1, ...Array.from(steps?.values() || []));
+  const middleStep = maxStep >= 3 ? Math.ceil(maxStep / 2) : 0;
+  const palette = dependencies?.stagePalette?.(maxStep) || [];
+  const keys = palette.map(({step, color}) => {
+    const label = step === 1 ? 'Start' : step === maxStep ? 'End' : step === middleStep ? 'Middle' : '';
+    return '<span class="dependencyStageKey" style="--dependency-color:' + color + '" title="Stage ' + step + (label ? ' · ' + label.toLowerCase() : '') + '"><b>' + step + '</b>' + (label ? '<em>' + label + '</em>' : '') + '</span>';
+  }).join('');
+  return '<div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
 }
 
 function taskEditHtml(ticket) {

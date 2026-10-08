@@ -39,6 +39,7 @@ function uiFixture() {
     const attrs = new Map();
     if (id) attrs.set('data-work-id', String(id));
     const classes = new Set();
+    const styles = new Map();
     const node = eventTarget({
       ownerDocument: document,
       children: [],
@@ -47,6 +48,12 @@ function uiFixture() {
       clientWidth: bounds.right - bounds.left, scrollWidth: bounds.right - bounds.left,
       clientHeight: bounds.bottom - bounds.top, scrollHeight: bounds.bottom - bounds.top,
       bounds,
+      style: {
+        getPropertyValue(name) { return styles.get(name)?.value || ''; },
+        getPropertyPriority(name) { return styles.get(name)?.priority || ''; },
+        setProperty(name, value, priority = '') { styles.set(name, { value: String(value), priority }); },
+        removeProperty(name) { const previous = styles.get(name)?.value || ''; styles.delete(name); return previous; },
+      },
       classList: {
         add(...names) { names.forEach(name => classes.add(name)); },
         remove(...names) { names.forEach(name => classes.delete(name)); },
@@ -113,6 +120,38 @@ test('topological numbering starts at actual roots and handles converging branch
   assert.deepEqual([...levels].sort((a, b) => a[0] - b[0]), [[1, 1], [2, 1], [3, 2], [4, 3]]);
   assert.deepEqual([...hover.dependencySteps([], 7)], [[7, 1]]);
   assert.equal(hover.dependencySteps([{ from: 1, to: 2 }, { from: 2, to: 1 }], 1).size, 2);
+});
+
+test('stage colors progress once from blue through an actual gold middle stage to teal', () => {
+  assert.deepEqual(hover.stagePalette(1), [{ step: 1, color: '#60a5fa' }]);
+  assert.deepEqual(hover.stagePalette(2), [{ step: 1, color: '#60a5fa' }, { step: 2, color: '#37c7ad' }]);
+  assert.deepEqual(hover.stagePalette(3).map(stage => stage.color), ['#60a5fa', '#f4b83f', '#37c7ad']);
+  assert.deepEqual(hover.stagePalette(4).map(stage => stage.color), ['#60a5fa', '#f4b83f', '#96c076', '#37c7ad']);
+  assert.deepEqual(hover.stagePalette(5).map(stage => stage.color), ['#60a5fa', '#aaaf9d', '#f4b83f', '#96c076', '#37c7ad']);
+  for (const count of [3, 4, 5, 6, 7, 10]) {
+    assert.equal(hover.stageColor(1, count), '#60a5fa');
+    assert.equal(hover.stageColor(Math.ceil(count / 2), count), '#f4b83f');
+    assert.equal(hover.stageColor(count, count), '#37c7ad');
+    assert.equal(new Set(hover.stagePalette(count).map(stage => stage.color)).size, count, 'later stages never reset to earlier colors');
+  }
+  assert.equal(hover.stageColor(0, 5), '#60a5fa');
+  assert.equal(hover.stageColor(99, 5), '#37c7ad');
+  assert.deepEqual(hover.stagePalette(Infinity), [{ step: 1, color: '#60a5fa' }]);
+});
+
+test('branching tasks share their stage color and selection cannot shift the component palette', () => {
+  const edges = [{ from: 1, to: 3 }, { from: 2, to: 3 }, { from: 3, to: 4 }, { from: 3, to: 5 }, { from: 4, to: 6 }];
+  const colorsFor = selected => {
+    const levels = hover.dependencySteps(hover.connectedEdges(edges, selected), selected);
+    const count = Math.max(...levels.values());
+    return [...levels].sort((a, b) => a[0] - b[0]).map(([id, step]) => [id, step, hover.stageColor(step, count)]);
+  };
+  assert.deepEqual(colorsFor(1), colorsFor(6));
+  const byId = new Map(colorsFor(3).map(([id, step, color]) => [id, { step, color }]));
+  assert.deepEqual(byId.get(1), byId.get(2));
+  assert.deepEqual(byId.get(4), byId.get(5));
+  assert.equal(byId.get(3).color, '#f4b83f');
+  assert.equal(byId.get(6).color, '#37c7ad');
 });
 
 test('a prerequisite on the right uses the facing left output and the middle gutter', () => {
@@ -285,24 +324,41 @@ test('explicit selection reveals the complete chain and dims only disconnected t
   const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 2 });
   assert.match(ui.overlay().innerHTML, /data-dependency-from="3" data-dependency-to="4"/);
   assert.deepEqual(ui.nodes.map(node => node.getAttribute('data-dependency-step')), ['1', '2', '3', '4']);
-  assert.equal(ui.nodes[3].classList.contains('dependencyHoverPrerequisite'), true, 'stage four repeats blue');
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDependent'), true, 'the final stage is teal without cycling');
+  const colors = ui.nodes.map(node => node.style.getPropertyValue('--dependency-color'));
+  assert.deepEqual(colors, ['#60a5fa', '#f4b83f', '#96c076', '#37c7ad']);
   assert.equal(unrelated.classList.contains('dependencyHoverDimmed'), true);
   ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
   controller.setSelected(4);
   assert.deepEqual(ui.nodes.map(node => node.getAttribute('data-dependency-step')), ['1', '2', '3', '4']);
+  assert.deepEqual(ui.nodes.map(node => node.style.getPropertyValue('--dependency-color')), colors);
   assert.equal(ui.nodes[3].classList.contains('dependencyHoverSelected'), true);
   controller.destroy();
 });
 
-test('numbered wire colors repeat after stage three without resetting the stage numbers', () => {
+test('each numbered wire, arrowhead and source badge matches the outgoing source frame', () => {
   const ui = uiFixture();
   const next = ui.element(5, rect(460, 230, 570, 290));
   ui.root.append(next);
   const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: [...ui.edges, { from: 4, to: 5 }], selectedId: 3 });
   assert.equal(next.getAttribute('data-dependency-step'), '5');
-  assert.equal(next.classList.contains('dependencyHoverActive'), true);
-  assert.match(ui.overlay().innerHTML, /dependencyHoverLine dependencyHoverPrerequisite" data-dependency-from="4" data-dependency-to="5"/);
-  assert.match(ui.overlay().innerHTML, /dependencyHoverSequence dependencyHoverPrerequisite" data-dependency-source="4" data-dependency-step="4"/);
+  assert.equal(next.classList.contains('dependencyHoverDependent'), true);
+  const markup = ui.overlay().innerHTML;
+  for (const [index, source] of ui.nodes.entries()) {
+    const color = source.style.getPropertyValue('--dependency-color');
+    assert.equal(color, hover.stageColor(index + 1, 5));
+    const group = markup.match(new RegExp('<g class="dependencyHoverWire" data-dependency-wire="' + (index + 1) + '>' + (index + 2) + '"[\\s\\S]*?</g>'))?.[0];
+    assert.ok(group, 'the source has a rendered wire');
+    for (const className of ['Line', 'Dot', 'ArrowHead']) {
+      assert.match(group, new RegExp('class="dependencyHover' + className + ' [^"]+" style="--dependency-color:' + color + '"'));
+    }
+    const markerId = group.match(/marker-end="url\(#([^)]*)\)"/)[1];
+    assert.match(markup, new RegExp('<marker id="' + markerId + '" style="--dependency-color:' + color + '"'));
+    if (group.includes('dependencyHoverSequence')) {
+      assert.match(group, new RegExp('class="dependencyHoverSequence [^"]+" style="--dependency-color:' + color + '" data-dependency-source="' + (index + 1) + '" data-dependency-step="' + (index + 1) + '"'));
+    }
+  }
+  assert.equal(next.style.getPropertyValue('--dependency-color'), '#37c7ad');
   controller.destroy();
 });
 
@@ -338,9 +394,41 @@ test('Overview stage numbers mirror onto the first cell and are removed on clear
   ui.nodes.forEach((node, index) => { node.querySelector = selector => selector === 'td:first-child' ? cells[index] : null; });
   const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 2 });
   assert.deepEqual(cells.map(node => node.getAttribute('data-dependency-step')), ['1', '2', '3', '4']);
+  assert.deepEqual(cells.map(node => node.style.getPropertyValue('--dependency-color')), ['#60a5fa', '#f4b83f', '#96c076', '#37c7ad']);
   controller.setSelected(0);
-  cells.forEach(node => assert.equal(node.getAttribute('data-dependency-step'), undefined));
+  cells.forEach(node => {
+    assert.equal(node.getAttribute('data-dependency-step'), undefined);
+    assert.equal(node.style.getPropertyValue('--dependency-color'), '');
+  });
   controller.destroy();
+});
+
+test('clearing, switching components and destroying restore preexisting inline color values and priorities', () => {
+  const ui = uiFixture();
+  const cell = ui.element();
+  ui.nodes[0].querySelector = selector => selector === 'td:first-child' ? cell : null;
+  ui.nodes[0].style.setProperty('--dependency-color', 'rebeccapurple', 'important');
+  ui.nodes[0].style.setProperty('--other-setting', '42');
+  cell.style.setProperty('--dependency-color', '#123456');
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 2 });
+  assert.equal(ui.nodes[0].style.getPropertyValue('--dependency-color'), '#60a5fa');
+  assert.equal(cell.style.getPropertyValue('--dependency-color'), '#60a5fa');
+  controller.setSelected(0);
+  assert.equal(ui.nodes[0].style.getPropertyValue('--dependency-color'), 'rebeccapurple');
+  assert.equal(ui.nodes[0].style.getPropertyPriority('--dependency-color'), 'important');
+  assert.equal(cell.style.getPropertyValue('--dependency-color'), '#123456');
+  ui.nodes.slice(1).forEach(node => assert.equal(node.style.getPropertyValue('--dependency-color'), ''));
+  controller.setSelected(3);
+  assert.equal(ui.nodes[0].style.getPropertyValue('--dependency-color'), '#60a5fa');
+  controller.setSelected(99);
+  assert.equal(ui.nodes[0].style.getPropertyValue('--dependency-color'), 'rebeccapurple');
+  controller.setSelected(4);
+  controller.destroy();
+  assert.equal(ui.nodes[0].style.getPropertyValue('--dependency-color'), 'rebeccapurple');
+  assert.equal(ui.nodes[0].style.getPropertyPriority('--dependency-color'), 'important');
+  assert.equal(cell.style.getPropertyValue('--dependency-color'), '#123456');
+  assert.equal(ui.nodes[0].style.getPropertyValue('--other-setting'), '42');
+  ui.nodes.slice(1).forEach(node => assert.equal(node.style.getPropertyValue('--dependency-color'), ''));
 });
 
 test('Timeline labels and bars share explicit selection using only main bars as anchors', () => {
