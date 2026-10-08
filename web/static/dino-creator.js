@@ -28,7 +28,8 @@
     { id: 'kentrosaurus', name: 'Kentrosaurus' },
   ];
   // Always screen-left to screen-right, including flight and standing poses.
-  const accents = Object.freeze(['#ef4444', '#f4b83f', '#37c7ad']);
+  const accents = Object.freeze(['#60a5fa', '#f4b83f', '#37c7ad']);
+  const artworkVersion = 'blue-gold-teal-20261007';
   const prefix = 'dino-v2';
 
   function parse(value) {
@@ -69,23 +70,23 @@
     brachiosaurus: 'neck markings',
     ankylosaurus: 'armored osteoderms',
     spinosaurus: 'sail membranes',
-    parasaurolophus: 'three contiguous red then yellow then teal sections along the crest from screen left to right',
-    pachycephalosaurus: 'three anatomical bands red yellow teal across dome from screen left to right',
-    carnotaurus: 'three dorsal scute groups red yellow teal along spine from screen left to right, horns silver',
-    dilophosaurus: 'anatomical crest lobes colored red yellow teal in screen left to right sequence',
-    allosaurus: 'three brow ridge/scute sections red yellow teal across visible head from screen left to right',
-    iguanodon: 'three anatomical neck markings curving naturally red yellow teal from screen left to right',
-    therizinosaurus: 'three claws of prominently visible hand colored red yellow teal from screen left to right',
-    oviraptor: 'three crest sections red yellow teal from screen left to right',
-    gallimimus: 'three tail feather fans red yellow teal from screen left to right',
-    protoceratops: 'three natural frill lobes red yellow teal from screen left to right',
-    styracosaurus: 'three prominent frill spikes colored red yellow teal from screen left to right',
-    kentrosaurus: 'three prominent tail spike groups red yellow teal from screen left to right',
+    parasaurolophus: 'three contiguous blue then gold then teal sections along the crest from screen left to right',
+    pachycephalosaurus: 'three anatomical bands blue gold teal across dome from screen left to right',
+    carnotaurus: 'three dorsal scute groups blue gold teal along spine from screen left to right, horns silver',
+    dilophosaurus: 'anatomical crest lobes colored blue gold teal in screen left to right sequence',
+    allosaurus: 'three brow ridge/scute sections blue gold teal across visible head from screen left to right',
+    iguanodon: 'three anatomical neck markings curving naturally blue gold teal from screen left to right',
+    therizinosaurus: 'three claws of prominently visible hand colored blue gold teal from screen left to right',
+    oviraptor: 'three crest sections blue gold teal from screen left to right',
+    gallimimus: 'three tail feather fans blue gold teal from screen left to right',
+    protoceratops: 'three natural frill lobes blue gold teal from screen left to right',
+    styracosaurus: 'three prominent frill spikes colored blue gold teal from screen left to right',
+    kentrosaurus: 'three prominent tail spike groups blue gold teal from screen left to right',
   });
 
   function assetPath(value) {
     const parsed = parse(value);
-    return parsed ? '/static/dino-art/' + parsed.species + '.png' : '';
+    return parsed ? '/static/dino-art/' + parsed.species + '.png?v=' + artworkVersion : '';
   }
 
   function createSVG(value, options = {}) {

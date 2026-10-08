@@ -5,7 +5,7 @@ const creator = require('./dino-creator.js');
 test('all species use bundled mascot art with deterministic framing', () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  assert.deepEqual(creator.accents, ['#ef4444', '#f4b83f', '#37c7ad']);
+  assert.deepEqual(creator.accents, ['#60a5fa', '#f4b83f', '#37c7ad']);
   assert.equal(creator.species.length, 20);
   assert.equal(new Set(creator.species.map(item => item.id)).size, 20);
   for (const species of creator.species) {
@@ -18,7 +18,7 @@ test('all species use bundled mascot art with deterministic framing', () => {
       assert.match(svg, /^<svg /);
       assert.match(svg, /viewBox="0 0 512 512"/);
       assert.match(svg, /<image /);
-      assert.equal(creator.assetPath(value), '/static/dino-art/' + species.id + '.png');
+      assert.equal(creator.assetPath(value), '/static/dino-art/' + species.id + '.png?v=blue-gold-teal-20261007');
       assert.ok(svg.includes('href="' + creator.assetPath(value) + '"'));
       assert.ok(creator.anatomy[species.id]);
       // Keep painted anatomical colors intact: no palette filter or mirroring.
@@ -35,7 +35,7 @@ test('standalone exports embed PNGs without accepting arbitrary URLs or markup',
   assert.ok(creator.createSVG(value, { embeddedImage: data }).includes('href="' + data + '"'));
   for (const embeddedImage of ['javascript:alert(1)', 'https://example.test/image.png', 'data:image/svg+xml,<script>bad</script>']) {
     const svg = creator.createSVG(value, { embeddedImage });
-    assert.ok(svg.includes('href="/static/dino-art/triceratops.png"'));
+    assert.ok(svg.includes('href="/static/dino-art/triceratops.png?v=blue-gold-teal-20261007"'));
     assert.ok(!svg.includes(embeddedImage));
   }
 });

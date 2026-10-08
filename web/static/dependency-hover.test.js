@@ -39,14 +39,16 @@ test('adjacent overview rows use their outer gutter without crossing table text'
 });
 
 test('Timeline connections avoid due-date badges between aligned short bars', () => {
-  const source = rect(28, 84, 70, 112);
-  const target = rect(28, 168, 70, 196);
-  const dueBadge = rect(45, 144, 127, 164);
+  const source = rect(100, 84, 142, 112);
+  const target = rect(105, 168, 147, 196);
+  const dueBadge = rect(117, 144, 199, 164);
   const bounds = rect(1, 1, 640, 300);
-  const withoutBadge = hover.routeConnection(source, target, [source, target], bounds);
-  assert.ok(withoutBadge.slice(1).some((point, index) => hover.segmentBlocked(withoutBadge[index], point, [dueBadge])), 'ignoring the badge would draw over its date text');
   const obstacles = [source, target, dueBadge];
-  assertSafeRoute(hover.routeConnection(source, target, obstacles, bounds), obstacles);
+  const route = hover.routeConnections([{ from: 1, to: 2 }], new Map([[1, source], [2, target]]), obstacles, bounds, { layout: 'timeline', gutterWidth: 100 })[0];
+  assertSafeRoute(route.points, obstacles);
+  assert.equal(route.points[0].x, source.left);
+  assert.equal(route.points.at(-1).x, target.left);
+  assert.ok(route.points.slice(1, -1).every(point => point.x < 100), 'all trunk segments stay in the dedicated cable gutter');
 });
 
 test('a complex obstacle layout remains safe and an enclosed task has no text-crossing fallback', () => {
@@ -95,6 +97,7 @@ function uiFixture() {
         toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
       },
       setAttribute(name, value) { attrs.set(name, value); },
+      removeAttribute(name) { attrs.delete(name); },
       getAttribute(name) { return attrs.get(name); },
       append(child) { child.parent = node; node.children.push(child); },
       remove() { if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node); node.isConnected = false; },
@@ -152,7 +155,7 @@ test('hover keeps only the selected task and direct neighbors bright and clears 
   controller.destroy();
 });
 
-test('incoming and outgoing arrow parts use separate role markers for the red-yellow-teal sequence', () => {
+test('incoming and outgoing arrow parts use separate role markers for the blue-yellow-teal sequence', () => {
   const ui = uiFixture();
   const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges });
   ui.nodes[1].fire('pointerenter', { pointerType: 'mouse' });
@@ -328,27 +331,26 @@ test('wide arrowheads remain visible after all lines and fit a ten-pixel card ga
   controller.destroy();
 });
 
-test('a roomy board gutter routes twelve pixels clear of card edges while narrow layouts retain their default', () => {
-  const ui = uiFixture();
-  ui.nodes[1].bounds = rect(20, 200, 130, 260);
-  ui.nodes[2].bounds = rect(20, 104, 130, 176);
-  const edges = [{ from: 1, to: 2 }];
-  const first = hover.wire(ui.root, { layerRoot: ui.root, edges });
-  ui.nodes[0].fire('pointerenter', { pointerType: 'mouse' });
-  assert.match(ui.overlay().innerHTML, /d="M20\.0 50\.0 L16\.0 50\.0 L16\.0 230\.0 L20\.0 230\.0"/);
-  const roomy = hover.wire(ui.root, { layerRoot: ui.root, edges, routeClearance: 12 });
-  ui.nodes[0].fire('pointerenter', { pointerType: 'mouse' });
-  const drawing = ui.overlay().innerHTML;
-  const line = drawing.match(/class="dependencyHoverLine [^"]+"[^>]+ d="([^"]+)"/);
-  assert.ok(line);
-  const points = [...line[1].matchAll(/[ML](-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)].map(match => ({ x: +match[1], y: +match[2] }));
-  assertSafeRoute(points, ui.nodes.map(node => node.bounds));
-  assert.deepEqual(points, [{ x: 20, y: 50 }, { x: 8, y: 50 }, { x: 8, y: 230 }, { x: 20, y: 230 }]);
-  assert.match(drawing, /class="dependencyHoverArrowHead dependencyHoverDependent" d="M8\.0 230\.0 L20\.0 230\.0"/);
-  assert.equal(ui.root.scrollLeft, 0);
-  assert.equal(ui.root.scrollTop, 0);
-  roomy.destroy();
-  first.destroy();
+test('same-column routes use centred cable channels with stable right-output and left-input ports', () => {
+  const positions = new Map([[1, rect(96, 30, 296, 130)], [2, rect(96, 220, 296, 320)], [3, rect(96, 410, 296, 510)]]);
+  const obstacles = [...positions.values()];
+  const routes = hover.routeConnections([{ from: 1, to: 2 }, { from: 2, to: 3 }], positions, obstacles, rect(1, 1, 410, 550),
+    { layout: 'board', clearance: 12, selectedId: 2 });
+  assert.equal(routes.length, 2);
+  routes.forEach(route => {
+    const source = positions.get(route.from);
+    const target = positions.get(route.to);
+    assertSafeRoute(route.points, obstacles);
+    assert.equal(route.points[0].x, source.right, 'all outputs use the right side');
+    assert.equal(route.points.at(-1).x, target.left, 'all inputs use the left side');
+    assert.equal(route.points[0].y, (source.top + source.bottom) / 2);
+    assert.ok(route.points.some(point => point.x > source.right + 25), 'the output trunk is clear of the card edge');
+    assert.ok(route.points.some(point => point.x < target.left - 25), 'the input trunk is clear of the card edge');
+    assert.equal(route.points.at(-2).y, route.points.at(-1).y, 'the arrow enters horizontally');
+  });
+  assert.equal(routes[0].sourceStep, 1);
+  assert.equal(routes[1].sourceStep, 2);
+  assert.equal(hover.sharesTrack(routes[1].points[1], routes[1].points[2], [routes[0].points]), false);
 });
 
 test('filtered-out relationships produce no dangling line or detached focus target', () => {
@@ -429,4 +431,115 @@ test('shrinking content discards the previous SVG extent instead of retaining ar
   assert.equal(ui.root.scrollWidth, 200, 'an inactive overlay adds no stale horizontal overflow');
   assert.equal(ui.root.scrollHeight, 150, 'an inactive overlay adds no stale vertical overflow');
   controller.destroy();
+});
+
+test('board branch routing centres trunks in gaps and separates every incoming arrowhead', () => {
+  const positions = new Map([
+    [1, rect(96, 30, 296, 130)], [2, rect(396, 200, 596, 300)],
+    [3, rect(96, 380, 296, 480)], [4, rect(396, 380, 596, 480)], [5, rect(96, 200, 296, 300)],
+  ]);
+  const edges = [{ from: 1, to: 2 }, { from: 5, to: 2 }, { from: 2, to: 3 }, { from: 2, to: 4 }];
+  const obstacles = [...positions.values()];
+  const options = { layout: 'board', clearance: 12, selectedId: 2 };
+  const bounds = rect(1, 1, 700, 520);
+  const routes = hover.routeConnections(edges, positions, obstacles, bounds, options);
+  assert.equal(routes.length, 4);
+  assert.deepEqual(hover.routeConnections(edges.slice().reverse(), positions, obstacles, bounds, options), routes, 'API ordering does not move ports or cables');
+  routes.forEach(route => assertSafeRoute(route.points, obstacles));
+  const incoming = routes.filter(route => route.role === 'prerequisite');
+  assert.equal(new Set(incoming.map(route => route.points.at(-1).y)).size, 2, 'fan-in heads have distinct input slots');
+  assert.ok(incoming[0].points.some(point => Math.abs(point.x - 346) <= 20), 'the gap centre is used instead of hugging x=296 or x=396');
+  routes.filter(route => route.role === 'dependent').forEach(route => route.points.slice(1).forEach((point, index) => {
+    assert.equal(hover.sharesTrack(route.points[index], point, incoming.map(edge => edge.points)), false, 'a teal trunk never covers a blue trunk');
+  }));
+});
+
+test('short Timeline bars use separate cable lanes and nonoverlapping input/output slots', () => {
+  const positions = new Map([
+    [1, rect(100, 28, 106, 56)], [2, rect(105, 84, 111, 112)], [3, rect(101, 140, 107, 168)],
+    [4, rect(115, 196, 121, 224)], [5, rect(100, 252, 106, 280)],
+  ]);
+  const edges = [{ from: 1, to: 3 }, { from: 2, to: 3 }, { from: 3, to: 4 }, { from: 3, to: 5 }];
+  const obstacles = [...positions.values(), rect(130, 60, 220, 80), rect(120, 172, 220, 192)];
+  const routes = hover.routeConnections(edges, positions, obstacles, rect(1, 1, 340, 300),
+    { layout: 'timeline', gutterWidth: 100, clearance: 4, selectedId: 3 });
+  assert.equal(routes.length, 4, 'a six-pixel bar still has a visible dependency arrow');
+  const incoming = routes.filter(route => route.role === 'prerequisite');
+  const outgoing = routes.filter(route => route.role === 'dependent');
+  const centre = 154;
+  assert.ok(incoming.every(route => route.points.at(-1).y < centre));
+  assert.ok(outgoing.every(route => route.points[0].y > centre));
+  routes.forEach(route => {
+    assertSafeRoute(route.points, obstacles);
+    assert.equal(route.points[0].x, positions.get(route.from).left);
+    assert.equal(route.points.at(-1).x, positions.get(route.to).left);
+    assert.ok(route.points.slice(1, -1).every(point => point.x < 85));
+  });
+  outgoing.forEach(route => route.points.slice(1).forEach((point, index) =>
+    assert.equal(hover.sharesTrack(route.points[index], point, incoming.map(edge => edge.points)), false)));
+});
+
+test('clipped tasks produce no dangling arrow while visible relationships continue to draw', () => {
+  const positions = new Map([[1, rect(-200, 30, -120, 58)], [2, rect(100, 90, 130, 118)], [3, rect(100, 150, 130, 178)]]);
+  const routes = hover.routeConnections([{ from: 1, to: 2 }, { from: 2, to: 3 }], positions, [...positions.values()], rect(1, 1, 350, 250),
+    { layout: 'timeline', gutterWidth: 100, selectedId: 2 });
+  assert.deepEqual(routes.map(route => [route.from, route.to]), [[2, 3]]);
+  assert.ok(routes[0].points.every(point => point.x >= 1 && point.x <= 350 && point.y >= 1 && point.y <= 250));
+});
+
+test('source number badges identify incoming step one and outgoing step two without duplicate source labels', () => {
+  const ui = uiFixture();
+  const extra = ui.element(5, rect(460, 20, 570, 80));
+  ui.root.append(extra);
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: [{ from: 1, to: 2 }, { from: 2, to: 3 }, { from: 2, to: 5 }], selectedId: 2 });
+  const drawing = ui.overlay().innerHTML;
+  assert.match(drawing, /dependencyHoverSequence dependencyHoverPrerequisite" data-dependency-source="1" data-dependency-step="1"/);
+  assert.match(drawing, /dependencyHoverSequence dependencyHoverDependent" data-dependency-source="2" data-dependency-step="2"/);
+  assert.equal((drawing.match(/data-dependency-source="2"/g) || []).length, 1);
+  assert.equal(ui.nodes[0].getAttribute('data-dependency-step'), '1');
+  assert.equal(ui.nodes[1].getAttribute('data-dependency-step'), '2');
+  assert.equal(ui.nodes[2].getAttribute('data-dependency-step'), '3');
+  controller.destroy();
+  [...ui.nodes, extra].forEach(node => assert.equal(node.getAttribute('data-dependency-step'), undefined));
+});
+
+test('pinned click focus survives pointer leave and blur without changing selection or scrolling', () => {
+  const ui = uiFixture();
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 2 });
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true, 'the persistent selection draws immediately');
+  ui.nodes[2].fire('pointerenter', { pointerType: 'mouse' });
+  ui.nodes[2].fire('pointerleave');
+  ui.window.fire('blur');
+  ui.root.fire('dragstart');
+  assert.equal(ui.nodes[1].classList.contains('dependencyHoverActive'), true);
+  assert.equal(ui.nodes[2].classList.contains('dependencyHoverDependent'), true);
+  assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), true);
+  assert.equal(ui.root.scrollLeft, 0);
+  assert.equal(ui.root.scrollTop, 0);
+  controller.setSelected(0);
+  assert.equal(ui.overlay().innerHTML, '');
+  ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
+  controller.destroy();
+});
+
+test('Epic hover highlights its descendants without fabricated arrows or an empty isolated Epic focus', () => {
+  [new Map([[90, [1, 2, 3]]]), { 90: [1, 2, 3] }].forEach(relatedById => {
+    const ui = uiFixture();
+    const epic = ui.element(90, rect(20, 220, 130, 280));
+    ui.root.append(epic);
+    const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, relatedById });
+    epic.fire('pointerenter', { pointerType: 'mouse' });
+    assert.equal(ui.overlay().innerHTML, '');
+    assert.equal(epic.classList.contains('dependencyHoverActive'), true);
+    ui.nodes.slice(0, 3).forEach(node => {
+      assert.equal(node.classList.contains('dependencyHoverRelated'), true);
+      assert.equal(node.classList.contains('dependencyHoverDependent'), false, 'Epic membership is not a dependency');
+      assert.equal(node.getAttribute('data-dependency-step'), undefined);
+      assert.equal(node.classList.contains('dependencyHoverDimmed'), false);
+    });
+    assert.equal(ui.nodes[3].classList.contains('dependencyHoverDimmed'), true);
+    epic.fire('pointerleave');
+    ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
+    controller.destroy();
+  });
 });

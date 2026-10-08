@@ -20,6 +20,9 @@ let timelineZoom = 1;
 let timelineEpicFilter = 'all';
 let timelineFocusSprint = initialRoute.sprintNumber || 0;
 let timelineCenterDate = null;
+let dependencyFocusTicketId = 0;
+let dependencyFocusBoardId = 0;
+const collapsedEpics = new Set();
 let loadGeneration = 0;
 let sessionGeneration = 0;
 let editorGeneration = 0;
@@ -59,6 +62,8 @@ function invalidateSessionRequests() {
   loadGeneration++;
   sprintCadenceDraft = null;
   sprintSettingsStatus = '';
+  dependencyFocusTicketId = dependencyFocusBoardId = 0;
+  collapsedEpics.clear();
 }
 
 // Returns the currently selected board id, falling back to the first accessible board.
@@ -205,7 +210,7 @@ function applyRoute(route) {
   view = route.view || 'board';
   pendingTicketId = route.ticketId || 0;
   timelineFocusSprint = view === 'timeline' ? +(route.sprintNumber || 0) : 0;
-  if (timelineFocusSprint) timelineZoom = 1;
+  if (timelineFocusSprint) { timelineZoom = 1; dependencyFocusTicketId = 0; }
   timelineCenterDate = null;
   if (route.boardId && route.boardId !== currentBoardId()) {
     return load();
@@ -696,6 +701,89 @@ function filteredWork() {
   return filtered().filter(t => !isBacklogTicket(t));
 }
 
+// A pinned task reveals only its direct neighbours and their hierarchy context.
+function dependencyFocusIds() {
+  if (!dependencyFocusTicketId || dependencyFocusBoardId !== currentBoardId()) return null;
+  const tickets = workTickets();
+  const selected = tickets.find(ticket => +ticket.id === dependencyFocusTicketId);
+  if (!selected) { dependencyFocusTicketId = 0; return null; }
+  const ids = new Set([+selected.id]);
+  dependencyHoverEdges(tickets).forEach(edge => {
+    if (edge.from === +selected.id || edge.to === +selected.id) { ids.add(edge.from); ids.add(edge.to); }
+  });
+  return ids;
+}
+
+function planningWork() {
+  const ids = dependencyFocusIds();
+  if (!ids) return filteredWork();
+  const visible = new Set(ids);
+  ids.forEach(id => {
+    let ticket = parentTicket(id);
+    const seen = new Set();
+    while (ticket?.parentId && !seen.has(+ticket.id)) {
+      seen.add(+ticket.id);
+      ticket = parentTicket(ticket.parentId);
+      if (ticket?.type === 'epic' && !ticket.archivedAt && !ticket.deletedAt && !isBacklogTicket(ticket)) visible.add(+ticket.id);
+    }
+  });
+  return workTickets().filter(ticket => visible.has(+ticket.id));
+}
+
+function toggleDependencyFocus(id) {
+  if (editing && !closeDrawer()) return;
+  const ticket = workTickets().find(item => +item.id === +id);
+  if (!ticket) return;
+  dependencyFocusTicketId = dependencyFocusBoardId === currentBoardId() && dependencyFocusTicketId === +id ? 0 : +id;
+  dependencyFocusBoardId = currentBoardId();
+  const ids = dependencyFocusIds();
+  ids?.forEach(ticketId => { const epic = topEpicFor(parentTicket(ticketId)); if (epic) collapsedEpics.delete(+epic.id); });
+  if (view === 'timeline') {
+    timelineFocusSprint = 0;
+    timelineZoom = 1;
+    timelineCenterDate = null;
+    syncRoute('replace', 0);
+  }
+  renderView();
+  const root = $('#' + view);
+  const node = root?.querySelector('[data-work-id="' + id + '"],[data-timeline-id="' + id + '"]');
+  node?.focus({preventScroll:true});
+}
+
+function toggleEpic(id) {
+  if (collapsedEpics.has(+id)) collapsedEpics.delete(+id); else collapsedEpics.add(+id);
+  renderView();
+  $('#' + view)?.querySelector('[data-epic-toggle="' + id + '"]')?.focus({preventScroll:true});
+}
+
+function planningFocusHtml() {
+  const ids = dependencyFocusIds();
+  const selected = ids ? parentTicket(dependencyFocusTicketId) : null;
+  return '<div class="dependencyGuide"><span><b class="prerequisite">1</b> Prerequisite</span><span><b class="selected">2</b> Selected task</span><span><b class="dependent">3</b> Next task</span><small>Hover to preview · click a task to focus · click again to show all</small></div>' + (selected ? '<div class="dependencyFocusBar" role="status"><span>Related to <strong>' + esc(selected.title) + '</strong></span><button type="button" data-clear-dependency-focus>Show all tasks</button></div>' : '');
+}
+
+function taskEditHtml(ticket) {
+  return '<button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>';
+}
+
+function epicToggleHtml(epic, cssClass = 'epicToggle') {
+  const collapsed = collapsedEpics.has(+epic.id);
+  return '<button type="button" class="' + cssClass + '" data-epic-toggle="' + epic.id + '" aria-expanded="' + !collapsed + '" aria-label="' + (collapsed ? 'Expand ' : 'Collapse ') + escAttr(epic.title) + '"><span aria-hidden="true">' + (collapsed ? '▸' : '▾') + '</span> ' + esc(epic.title) + '</button>';
+}
+
+function wirePlanningActions(root) {
+  root.querySelectorAll('[data-edit-ticket]').forEach(button => button.onclick = event => { event.stopPropagation(); openTicket(+button.dataset.editTicket); });
+  root.querySelectorAll('[data-epic-toggle]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleEpic(+button.dataset.epicToggle); });
+  root.querySelectorAll('[data-clear-dependency-focus]').forEach(button => button.onclick = () => { dependencyFocusTicketId = 0; renderView(); });
+}
+
+function dependencyEpicGroups(tickets) {
+  const groups = {};
+  const epics = new Map(tickets.map(ticket => topEpicFor(ticket)).filter(Boolean).map(epic => [+epic.id, epic]));
+  epics.forEach(epic => { groups[epic.id] = tickets.filter(ticket => +(topEpicFor(ticket)?.id || 0) === +epic.id && +ticket.id !== +epic.id).map(ticket => +ticket.id); });
+  return groups;
+}
+
 // Applies search filtering to backlog tickets only.
 function filteredBacklog() {
   return filtered().filter(isBacklogTicket);
@@ -750,11 +838,12 @@ function renderBoard() {
     $('#firstBoardBtn').onclick = () => $('#newBoardBtn').click();
     return;
   }
-  const tickets = filteredWork();
-  root.innerHTML = sprintPlannerHtml(workTickets()) + (backlogTickets().length ? boardBacklogPickerHtml() : '') + boardSwimlanes(tickets);
+  const tickets = planningWork();
+  root.innerHTML = sprintPlannerHtml(workTickets()) + (backlogTickets().length ? boardBacklogPickerHtml() : '') + planningFocusHtml() + boardSwimlanes(tickets);
   wireSprintPlanner();
   wireBoardBacklogPicker();
   wireDnD();
+  wirePlanningActions(root);
   wireWorkDependencies(root, tickets);
 }
 
@@ -989,6 +1078,7 @@ function jumpToSprint(number) {
   const range = sprintByNumber(number);
   if (!range) return;
   if (!canLeaveDrawer()) return;
+  dependencyFocusTicketId = 0;
   timelineFocusSprint = number;
   timelineZoom = 1;
   timelineCenterDate = addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2));
@@ -1031,10 +1121,12 @@ function wireBoardBacklogPicker() {
 // Builds the full swimlane board for the filtered tickets.
 function boardSwimlanes(tickets) {
   const lanes = boardSwimlaneData(tickets);
+  const columns = dependencyFocusIds() ? state.columns.filter(column => tickets.some(ticket => ticket.type !== 'epic' && +ticket.columnId === +column.id)) : state.columns;
+  const visibleColumns = columns.length ? columns : state.columns;
   if (!lanes.length) return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + (workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.') + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section><section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
-  const colClass = 'cols' + Math.max(1, Math.min(8, state.columns.length || 1)) + (lanes.every(lane => !lane.epic) ? ' simpleBoard' : '');
-  const counts = state.columns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
-  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + state.columns.map((c, index) => '<div class="boardLaneColumnHead">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(boardSwimlane).join('') + '</section>';
+  const colClass = 'cols' + Math.max(1, Math.min(8, visibleColumns.length || 1)) + (lanes.every(lane => !lane.epic) ? ' simpleBoard' : '');
+  const counts = visibleColumns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
+  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + visibleColumns.map((c, index) => '<div class="boardLaneColumnHead">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(lane => boardSwimlane(lane, visibleColumns)).join('') + '</section>';
 }
 
 // Groups filtered tickets into visual Epic swimlanes.
@@ -1058,11 +1150,12 @@ function boardSwimlaneData(tickets) {
 }
 
 // Builds one Epic swimlane row across all board columns.
-function boardSwimlane(lane) {
+function boardSwimlane(lane, columns = state.columns) {
   const epicId = lane.epic ? lane.epic.id : 0;
-  return '<div class="boardLane">' + boardLaneEpicCell(lane) + state.columns.map(c => {
+  const collapsed = epicId && collapsedEpics.has(+epicId);
+  return '<div class="boardLane' + (collapsed ? ' epicCollapsed' : '') + '">' + boardLaneEpicCell(lane) + columns.map(c => {
     const items = boardLaneColumnItems(lane, c.id);
-    return '<div class="boardLaneCell"><div class="drop boardLaneDrop" data-col="' + c.id + '" data-epic="' + epicId + '">' + items.map(card).join('') + '</div></div>';
+    return '<div class="boardLaneCell">' + (collapsed ? '<span class="collapsedCount">' + items.length + ' task' + (items.length === 1 ? '' : 's') + '</span>' : '<div class="drop boardLaneDrop" data-col="' + c.id + '" data-epic="' + epicId + '">' + items.map(card).join('') + '</div>') + '</div>';
   }).join('') + '</div>';
 }
 
@@ -1071,7 +1164,7 @@ function boardLaneEpicCell(lane) {
   if (!lane.epic) {
     return '<div class="boardLaneEpic boardLaneStandalone"><strong>No epic</strong><span>' + lane.items.length + ' item' + (lane.items.length === 1 ? '' : 's') + '</span></div>';
   }
-  return '<button class="boardLaneEpic" type="button" data-id="' + lane.epic.id + '" data-work-id="' + lane.epic.id + '"><span>Epic</span><strong>' + esc(lane.epic.title) + '</strong><em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small></button>';
+  return '<div class="boardLaneEpic" data-work-id="' + lane.epic.id + '" tabindex="0"><span>Epic</span>' + epicToggleHtml(lane.epic) + '<em>' + lane.items.length + ' child item' + (lane.items.length === 1 ? '' : 's') + '</em><small>' + esc(columnName(lane.epic.columnId)) + '</small>' + taskEditHtml(lane.epic) + '</div>';
 }
 
 // Returns the cards that belong in one swimlane column.
@@ -1136,7 +1229,7 @@ function card(t) {
   const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
   const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
   const sprint = ticketSprint(t);
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + (ticketDuration(t) ? '<span class="pill">' + durationLabel(t) + '</span>' : '') + (checklistProgress(t) ? '<span class="pill checklistPill" title="Checklist progress">' + checklistProgress(t) + ' steps</span>' : '') + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + '</article>';
+  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + (ticketDuration(t) ? '<span class="pill">' + durationLabel(t) + '</span>' : '') + (checklistProgress(t) ? '<span class="pill checklistPill" title="Checklist progress">' + checklistProgress(t) + ' steps</span>' : '') + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + taskEditHtml(t) + '</article>';
 }
 
 // Keeps the dependency summary on the card while hover shows direct connections.
@@ -1173,9 +1266,9 @@ function wireDnD() {
   $$('.card').forEach(c => {
     c.tabIndex = 0;
     c.setAttribute('role', 'group');
-    c.onkeydown = event => { if (event.target === c && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openTicket(+c.dataset.id); } };
+    c.onkeydown = event => { if (event.target === c && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleDependencyFocus(+c.dataset.id); } };
     c.ondragstart = e => e.dataTransfer.setData('text/plain', c.dataset.id);
-    c.onclick = () => openTicket(+c.dataset.id);
+    c.onclick = () => toggleDependencyFocus(+c.dataset.id);
   });
   $$('.boardLaneEpic[data-id],.epicBoardHeader').forEach(header => header.onclick = () => openTicket(+header.dataset.id));
   $$('.drop').forEach(d => {
@@ -1207,13 +1300,13 @@ function renderOverview() {
   setHeader('Overview', 'Status, planned sprints, and upcoming dates.');
   const root = $('#overview');
   root.classList.remove('hidden');
-  const ts = filteredWork();
+  const ts = planningWork();
   const doneCol = state.columns.find(c => /done/i.test(c.name));
   const done = ts.filter(t => doneCol && t.columnId == doneCol.id);
   const open = ts.length - done.length;
   const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
-  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + overviewTable(ts);
+  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + planningFocusHtml() + overviewTable(ts);
   wireOverviewControls(ts);
   if (root.querySelector('.ticketTable')) {
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'overviewColumnsToggle'; toggle.textContent = 'Show planning columns';
@@ -1221,13 +1314,14 @@ function renderOverview() {
     root.querySelector('.tableScroll').before(toggle);
   }
   root.querySelectorAll('[data-open-ticket]').forEach(node => {
-    node.onclick = () => openTicket(+node.dataset.openTicket);
+    node.onclick = () => node.matches('.ticketRow') ? (node.classList.contains('epic') ? toggleEpic(+node.dataset.openTicket) : toggleDependencyFocus(+node.dataset.openTicket)) : openTicket(+node.dataset.openTicket);
     if (node.matches('.ticketRow')) {
       node.tabIndex = 0;
-      node.onkeydown = event => { if (event.target === node && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openTicket(+node.dataset.openTicket); } };
+      node.onkeydown = event => { if (event.target === node && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); if (node.classList.contains('epic')) toggleEpic(+node.dataset.openTicket); else toggleDependencyFocus(+node.dataset.openTicket); } };
     }
   });
   wireWorkDependencies(root, overviewRows(ts).map(row => row.ticket));
+  wirePlanningActions(root);
 }
 
 // Builds the filterable overview ticket table.
@@ -1247,6 +1341,7 @@ function overviewHeader(key, label) {
 
 // Applies overview filters and sorting before grouping rows.
 function overviewRows(tickets) {
+  if (dependencyFocusIds()) return overviewGroupedRows(tickets.sort((a, b) => overviewCompare(a, b)));
   const q = overviewFilters.q.trim().toLowerCase();
   const rows = tickets
     .filter(t => !overviewFilters.type || t.type === overviewFilters.type)
@@ -1274,7 +1369,7 @@ function overviewGroupedRows(rows) {
     const childRows = group.items
       .sort((a, b) => overviewCompare(a, b))
       .map(ticket => ({ kind: 'ticket', ticket, depth: overviewHierarchyDepth(ticket, group.epic.id) }));
-    return [{ kind: 'epic', ticket: group.epic, count: childRows.length }, ...childRows];
+    return [{ kind: 'epic', ticket: group.epic, count: childRows.length }, ...(collapsedEpics.has(+group.epic.id) ? [] : childRows)];
   });
   return grouped.concat(standalone.sort((a, b) => overviewCompare(a.ticket, b.ticket)));
 }
@@ -1301,7 +1396,7 @@ function overviewRow(row) {
   const parent = parentTicket(t.parentId);
   const sprint = ticketSprint(t);
   const depthClass = ' overviewDepth' + Math.max(0, Math.min(4, +(row.depth || 0)));
-  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" data-open-ticket="' + t.id + '"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong><span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
+  return '<tr class="ticketRow ' + escAttr(t.type || 'task') + ' overviewChildRow' + depthClass + '" data-work-id="' + t.id + '" data-open-ticket="' + t.id + '"><td>' + esc(ticketRef(t)) + '</td><td><strong>' + esc(t.title) + '</strong>' + taskEditHtml(t) + '<span class="tableSub">' + esc(parent ? 'under ' + ticketLabel(parent) : (t.body || '')) + '</span></td><td><span class="typeBadge ' + escAttr(t.type || 'task') + '">' + esc(t.type || 'task') + '</span></td><td>' + esc(columnName(t.columnId)) + '</td><td>' + sprintCellHtml(sprint) + '</td><td>' + esc(durationLabel(t)) + '</td><td>' + esc(t.startDate || '-') + '</td><td>' + esc(t.dueDate || '-') + '</td><td>' + esc(assigneeName(t.assigneeId)) + '</td><td>' + esc(milestoneName(t.milestoneId)) + '</td><td>' + esc(deps) + '</td><td><div class="tableTags">' + labels + '</div></td><td>' + esc(shortDate(t.updatedAt)) + '</td></tr>';
 }
 
 // Builds the compact Sprint label shown in Overview.
@@ -1321,7 +1416,7 @@ function sprintName(sprint) {
 // Builds the overview table group header for an Epic.
 function overviewEpicRow(epic, childCount) {
   const sprint = ticketSprint(epic);
-  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-open-ticket="' + epic.id + '"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader"><strong>' + esc(epic.title) + '</strong><span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span></div></td></tr>';
+  return '<tr class="ticketRow epic overviewEpicRow" data-work-id="' + epic.id + '" data-open-ticket="' + epic.id + '"><td>' + esc(ticketRef(epic)) + '</td><td colspan="12"><div class="overviewEpicHeader">' + epicToggleHtml(epic) + taskEditHtml(epic) + '<span>' + childCount + ' child item' + (childCount === 1 ? '' : 's') + (sprint ? ' · ' + esc(sprintName(sprint)) : '') + '</span></div></td></tr>';
 }
 
 // Builds searchable text for an overview row.
@@ -1401,6 +1496,10 @@ function wireWorkDependencies(root, tickets) {
     idAttribute: 'data-work-id',
     layerRoot,
     routeClearance: layerRoot?.classList.contains('boardSwimlanes') ? 12 : 4,
+    layout: layerRoot?.classList.contains('boardSwimlanes') ? 'board' : 'overview',
+    gutterWidth: 88,
+    selectedId: dependencyFocusIds() ? dependencyFocusTicketId : 0,
+    relatedById: dependencyEpicGroups(tickets),
     edges: dependencyHoverEdges(tickets),
   });
 }
@@ -1509,7 +1608,8 @@ function wireBacklogActions(root) {
   });
 }
 
-const GANTT_LEFT_PAD = 28;
+const GANTT_LEFT_PAD = 88;
+const GANTT_RIGHT_PAD = 16;
 const timelineFitObservers = new WeakMap();
 
 // Renders the Timeline view or an error message.
@@ -1531,7 +1631,7 @@ function renderGantt(root) {
   // Only promoted, scheduled delivery work reaches the timeline.
   const controls = timelineControlsHtml();
   const tasks = buildGanttRows();
-  const focusRange = sprintByNumber(timelineFocusSprint);
+  const focusRange = dependencyTimelineRange(tasks) || sprintByNumber(timelineFocusSprint);
   if (!tasks.length && !focusRange) {
     root.innerHTML = controls + '<div class="event muted">No tickets with schedulable dates yet</div>';
     wireTimelineControls(root);
@@ -1551,9 +1651,9 @@ function renderGantt(root) {
   const bodyHeight = tasks.length * rowHeight;
   const chartHeight = headHeight + bodyHeight + axisHeight;
   const labels = tasks.map(task => ganttTaskLabel(task, rowHeight)).join('');
-  const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight);
+  const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, focusRange);
 
-  root.innerHTML = '<section class="ganttFlow">' + controls + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Hover a task to see direct dependencies · arrows point to dependent tasks</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  root.innerHTML = '<section class="ganttFlow">' + controls + planningFocusHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Hover a task to see direct dependencies · arrows point to dependent tasks</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   const scroll = root.querySelector('.ganttSvgScroll');
   const svgElement = root.querySelector('.ganttSvg');
   const fitViewport = () => {
@@ -1568,7 +1668,7 @@ function renderGantt(root) {
     scroll.dataset.timelineWidth = String(timelineWidth);
     svgElement.setAttribute('width', timelineWidth);
     svgElement.setAttribute('viewBox', '0 0 ' + timelineWidth + ' ' + chartHeight);
-    svgElement.innerHTML = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight);
+    svgElement.innerHTML = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, focusRange);
     return true;
   };
   fitViewport();
@@ -1576,16 +1676,18 @@ function renderGantt(root) {
   wireTimelineDependencies(root, tasks);
   wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth, !!focusRange);
   wireTimelinePan(root);
+  wirePlanningActions(root);
   const requestedCenter = validDate(timelineCenterDate) ? timelineCenterDate : focusCenter;
   if (requestedCenter) centerTimelineOnDate(root, requestedCenter);
   if (focusRange && scroll && typeof window.ResizeObserver === 'function') {
     const sessionCurrent = currentSessionGuard();
     const boardId = currentBoardId();
     const observer = new window.ResizeObserver(() => {
-      if (!sessionCurrent() || currentBoardId() !== boardId || timelineFocusSprint !== focusRange.number || !scroll.isConnected || !fitViewport()) return;
+      if (!sessionCurrent() || currentBoardId() !== boardId || (focusRange.dependencyId ? dependencyFocusTicketId !== focusRange.dependencyId : timelineFocusSprint !== focusRange.number) || !scroll.isConnected || !fitViewport()) return;
       wireTimelineControls(root);
       wireTimelineDependencies(root, tasks);
       wireTimelineCursor(root, rangeStart, totalDays, dayWidth, timelineWidth, true);
+      wirePlanningActions(root);
       centerTimelineOnDate(root, validDate(timelineCenterDate) ? timelineCenterDate : focusCenter);
     });
     observer.observe(scroll);
@@ -1595,6 +1697,13 @@ function renderGantt(root) {
 }
 
 // A focused Sprint has exact calendar bounds and fits even below ten pixels/day.
+function dependencyTimelineRange(tasks) {
+  if (!dependencyFocusIds()) return null;
+  const dates = tasks.filter(task => !task.isAggregate).flatMap(task => [task.plannedStart, task.start, task.due, task.actualFinish]).filter(validDate);
+  if (!dates.length) return null;
+  return {dependencyId: dependencyFocusTicketId, start: addDays(new Date(Math.min(...dates.map(Number))), -1), endExclusive: addDays(new Date(Math.max(...dates.map(Number))), 2)};
+}
+
 function timelineGeometry(tasks, focusRange, viewportWidth, zoom = timelineZoom) {
   const dates = tasks.flatMap(task => [task.plannedStart, task.start, task.end, task.due, task.actualFinish, task.readyAt, task.delayEnd, task.overrunEnd, task.estimateEnd]).filter(validDate);
   const minDate = dates.length ? new Date(Math.min(...dates.map(Number))) : startOfDay(new Date());
@@ -1603,9 +1712,9 @@ function timelineGeometry(tasks, focusRange, viewportWidth, zoom = timelineZoom)
   const rangeEnd = focusRange ? focusRange.endExclusive : addDays(maxDate, 2);
   const totalDays = Math.max(1, dayDiff(rangeStart, rangeEnd));
   const availableWidth = Math.max(1, +viewportWidth || 520);
-  const fittedDayWidth = Math.max(1, availableWidth - GANTT_LEFT_PAD * 2) / totalDays;
+  const fittedDayWidth = Math.max(1, availableWidth - GANTT_LEFT_PAD - GANTT_RIGHT_PAD) / totalDays;
   const dayWidth = focusRange ? fittedDayWidth * zoom : Math.max(10, Math.min(90, Math.floor(fittedDayWidth * zoom)));
-  const timelineWidth = focusRange && zoom <= 1 ? availableWidth : Math.max(availableWidth, totalDays * dayWidth + GANTT_LEFT_PAD * 2);
+  const timelineWidth = focusRange && zoom <= 1 ? availableWidth : Math.max(availableWidth, totalDays * dayWidth + GANTT_LEFT_PAD + GANTT_RIGHT_PAD);
   return {rangeStart, rangeEnd, totalDays, dayWidth, timelineWidth};
 }
 
@@ -1626,7 +1735,7 @@ function buildGanttRows() {
     const ownTask = epicHasOwnTimelineConfig(epic) ? baseById.get(epic.id) : null;
     if (!ownTask && !childTasks.length) return;
     const groupRows = [ganttEpicAggregate(epic, childTasks, ownTask)];
-    timelineDescendants(epic.id, baseById).forEach(task => {
+    (collapsedEpics.has(+epic.id) ? [] : timelineDescendants(epic.id, baseById)).forEach(task => {
       task.depth = timelineDepth(task.ticket, epic.id);
       task.groupId = epic.id;
       groupRows.push(task);
@@ -1654,7 +1763,8 @@ function epicHasOwnTimelineConfig(epic) {
 
 // Filters timeline work by the selected Epic.
 function timelineFilteredWork() {
-  const items = filteredWork();
+  const items = planningWork();
+  if (dependencyFocusIds()) return items;
   if (timelineEpicFilter === 'all') return items;
   const epicId = +timelineEpicFilter;
   return items.filter(t => +t.id === epicId || +(topEpicFor(t)?.id || 0) === epicId);
@@ -1693,13 +1803,19 @@ function wireTimelineControls(root) {
     renderGantt(root);
   };
   root.querySelectorAll('.ganttTaskTitle,.ganttSvgTask').forEach(el => {
-    const open = () => openTicket(+el.dataset.openTicket);
-    el.onclick = open;
+    const select = () => { const id = +(el.dataset.epicToggle || el.dataset.openTicket); const ticket = parentTicket(id); if (ticket?.type === 'epic') toggleEpic(id); else toggleDependencyFocus(id); };
+    el.onclick = select;
     if (el.classList.contains('ganttSvgTask')) el.onkeydown = event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
-      open();
+      select();
     };
+  });
+  root.querySelectorAll('.ganttTaskItem').forEach(el => el.onkeydown = event => {
+    if (event.target !== el || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    const ticket = parentTicket(+el.dataset.timelineId);
+    if (ticket?.type === 'epic') toggleEpic(ticket.id); else toggleDependencyFocus(+el.dataset.timelineId);
   });
 }
 
@@ -1713,6 +1829,10 @@ function wireTimelineDependencies(root, tasks) {
     anchorSelector: '.ganttSvgBar',
     obstaclesSelector: '.ganttSvgBar,.ganttSvgDueTagBg',
     layerRoot,
+    layout: 'timeline',
+    gutterWidth: GANTT_LEFT_PAD,
+    selectedId: dependencyFocusIds() ? dependencyFocusTicketId : 0,
+    relatedById: dependencyEpicGroups(tasks.map(task => task.ticket)),
     edges: dependencyHoverEdges(tasks.map(task => task.ticket)),
   });
 }
@@ -1912,7 +2032,7 @@ function topEpicFor(ticket) {
   while (current && current.parentId && !seen.has(+current.id)) {
     seen.add(+current.id);
     const parent = parentTicket(current.parentId);
-    if (!parent) return null;
+    if (!parent || parent.archivedAt || parent.deletedAt || isBacklogTicket(parent)) return null;
     if (parent.type === 'epic') return parent;
     current = parent;
   }
@@ -2030,7 +2150,8 @@ function ganttTaskLabel(task, rowHeight) {
   const typeLabel = task.isAggregate ? 'epic total' : task.ticket.type;
   const detailClasses = [task.blocked.length ? 'waiting' : '', delayText ? 'late' : ''].filter(Boolean).join(' ');
 
-  return '<div class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" style="height:' + rowHeight + 'px"><button type="button" class="ganttTaskTitle" data-open-ticket="' + task.ticket.id + '">' + esc(ticketLabel(task.ticket)) + '</button><span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + '</div>';
+  const title = task.isAggregate ? epicToggleHtml(task.ticket, 'ganttTaskTitle') : '<button type="button" class="ganttTaskTitle" data-open-ticket="' + task.ticket.id + '">' + esc(ticketLabel(task.ticket)) + '</button>';
+  return '<div class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" style="height:' + rowHeight + 'px">' + title + taskEditHtml(task.ticket) + '<span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + '</div>';
 }
 
 // Describes the optimistic finish projection after the live delay segment.
@@ -2053,10 +2174,9 @@ function ganttDelayText(task) {
 }
 
 // Builds the full SVG markup for the Gantt chart.
-function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, rowHeight, bodyHeight, axisHeight) {
+function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, rowHeight, bodyHeight, axisHeight, focusRange = sprintByNumber(timelineFocusSprint)) {
   const bodyTop = headHeight;
   const axisTop = headHeight + bodyHeight;
-  const focusRange = sprintByNumber(timelineFocusSprint);
   const calendarClip = focusRange ? '<clipPath id="ganttCalendarClip"><rect x="' + GANTT_LEFT_PAD + '" y="' + bodyTop + '" width="' + (totalDays * dayWidth) + '" height="' + bodyHeight + '"></rect></clipPath>' : '';
   const defs = '<defs><pattern id="ganttSavedPattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgSavedBase"></rect><rect width="5" height="12" class="ganttSvgSavedStripe"></rect></pattern><pattern id="ganttLatePattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgLateBase"></rect><rect width="5" height="12" class="ganttSvgLateStripe"></rect></pattern></defs>';
   return defs + calendarClip +
@@ -2162,7 +2282,7 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, focusRa
   const delayText = ganttDelayText(task);
   const estimateText = ganttEstimateText(task);
   const clipId = 'ganttTaskClip' + task.ticket.id;
-  return '<g class="ganttSvgTask" data-timeline-id="' + task.ticket.id + '" data-open-ticket="' + task.ticket.id + '" tabindex="0" role="button" aria-label="Open ' + escAttr(ticketLabel(task.ticket)) + '">' +
+  return '<g class="ganttSvgTask" data-timeline-id="' + task.ticket.id + '" data-open-ticket="' + task.ticket.id + '" tabindex="0" role="button" aria-label="' + (task.isAggregate ? (collapsedEpics.has(+task.ticket.id) ? 'Expand ' : 'Collapse ') : 'Focus related to ') + escAttr(ticketLabel(task.ticket)) + '">' +
     '<title>' + esc(ticketLabel(task.ticket)) + ' | ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + (delayText ? ' | ' + delayText : '') + (estimateText ? ' | ' + estimateText : '') + '</title>' + saved +
     '<rect class="ganttSvgBar ' + type + blocked + aggregate + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late + ganttSvgEstimate(task, rangeStart, dayWidth, railY, railHeight) +
     '<clipPath id="' + clipId + '"><rect x="' + (left + 7) + '" y="' + y + '" width="' + Math.max(0, width - 14) + '" height="' + h + '"></rect></clipPath>' +

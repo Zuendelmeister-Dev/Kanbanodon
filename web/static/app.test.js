@@ -96,6 +96,7 @@ function loadApp(options = {}) {
     applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
+    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
@@ -732,7 +733,7 @@ test('Board rendering wires direct hover dependencies to the card surface withou
   assert.deepEqual(app.historyCalls, []);
 });
 
-test('Overview rendering wires hover dependencies in the table and keeps keyboard task opening', () => {
+test('Overview rendering wires hover dependencies in the table and supports keyboard task focus', () => {
   const {app, calls} = hoverApp(); const root = app.document.querySelector('#overview');
   const table = fakeElement(); const layer = fakeElement(); const row = fakeElement();
   row.classList.add('ticketRow'); row.dataset.openTicket = '12';
@@ -747,7 +748,7 @@ test('Overview rendering wires hover dependencies in the table and keeps keyboar
   assert.equal(row.tabIndex, 0); assert.equal(app.getEditing(), null);
   assert.doesNotMatch(root.innerHTML, /Show dependencies|dependencySelection|pathDimmed/);
   let prevented = false; row.onkeydown({target: row, key: 'Enter', preventDefault() { prevented = true; }});
-  assert.equal(prevented, true); assert.equal(app.getEditing().id, 12);
+  assert.equal(prevented, true); assert.equal(app.getEditing(), null); assert.deepEqual([...app.dependencyFocusIds()].sort(), [12,13]);
 });
 
 test('Board shows full Sprint planning without a disclosure and keeps backlog promotion available', () => {
@@ -1016,8 +1017,8 @@ test('focused Sprint geometry uses only its exact bounds and fits short and long
       assert.equal(app.fmtIsoDate(geometry.rangeEnd), app.fmtIsoDate(sprint.endExclusive));
       assert.equal(geometry.totalDays, weeks * 7);
       assert.equal(geometry.timelineWidth, viewport);
-      assert.equal(app.ganttPx(sprint.start, geometry.rangeStart, geometry.dayWidth), 28);
-      assert.ok(Math.abs(app.ganttPx(sprint.endExclusive, geometry.rangeStart, geometry.dayWidth) - (viewport - 28)) < 1e-8);
+      assert.equal(app.ganttPx(sprint.start, geometry.rangeStart, geometry.dayWidth), app.GANTT_LEFT_PAD);
+      assert.ok(Math.abs(app.ganttPx(sprint.endExclusive, geometry.rangeStart, geometry.dayWidth) - (viewport - app.GANTT_RIGHT_PAD)) < 1e-8);
     }
   }
   const long = app.timelineGeometry(tasks, app.sprintByNumber(1, '2026-10-05', 52), 160, 1);
@@ -1066,12 +1067,12 @@ test('a focused Sprint deep link fits at 100% and refits when the calendar viewp
   assert.equal(observers[0].target, surface.scroll);
   surface.scroll.clientWidth = 160; observers[0].callback();
   assert.equal(+surface.svg.getAttribute('width'), 160);
-  assert.ok(Math.abs(+surface.scroll.dataset.dayWidth - 104 / 14) < 1e-8);
+  assert.ok(Math.abs(+surface.scroll.dataset.dayWidth - 56 / 14) < 1e-8);
   assert.equal(surface.scroll.scrollLeft, 0);
   const days = [...surface.svg.innerHTML.matchAll(/class="ganttSvgAxisDay"[^>]*>(\d+)<\/text>/g)].map(match => +match[1]);
   assert.ok(days.every(day => day >= 5 && day <= 18));
   assert.equal((surface.svg.innerHTML.match(/class="ganttSvgSprintLabel focused"/g) || []).length, 1);
-  const cursor = app.ganttCursorAtX(160, app.parseDate('2026-10-05'), 14, 104 / 14, 160, 0, 160, 13);
+  const cursor = app.ganttCursorAtX(160, app.parseDate('2026-10-05'), 14, 56 / 14, 160, 0, 160, 13);
   assert.equal(app.fmtIsoDate(cursor.date), '2026-10-18');
   app.elements.get('#timelineClearFocus').onclick();
   assert.equal(observers[0].disconnected, true);
@@ -1085,13 +1086,13 @@ test('focused calendar clipping hides padding fragments and due tags from tasks 
   const history = app.ganttTask({...state.tickets[3], id: 31, startDate: '2026-10-03', dueDate: '2026-10-04', completedAt: '2026-10-04', links: []}); history.row = 0;
   const future = app.ganttTask({...state.tickets[3], id: 32, startDate: '2026-10-20', dueDate: '2026-10-21', completedAt: '2026-10-21', links: []}); future.row = 1;
   const html = app.ganttSvg([history, future], geometry.rangeStart, geometry.totalDays, geometry.dayWidth, 300, 56, 84, 168, 62);
-  const clip = /<clipPath id="ganttCalendarClip"><rect x="28" y="56" width="([^"]+)" height="168"/.exec(html);
-  assert.ok(clip); assert.ok(Math.abs(+clip[1] - 244) < 1e-8);
+  const clip = /<clipPath id="ganttCalendarClip"><rect x="88" y="56" width="([^"]+)" height="168"/.exec(html);
+  assert.ok(clip); assert.ok(Math.abs(+clip[1] - 196) < 1e-8);
   assert.match(html, /<g class="ganttCalendarTasks" clip-path="url\(#ganttCalendarClip\)">/);
   const bar = app.ganttSvgTask(history, sprint.start, geometry.dayWidth, 56, 84, sprint);
   const rect = /class="ganttSvgBar [^"]+" x="([^"]+)"[^>]*width="([^"]+)"/.exec(bar);
-  assert.ok(+rect[1] < 0);
-  assert.ok(+rect[1] + +rect[2] > 0 && +rect[1] + +rect[2] < 28, 'only the SVG padding would have shown a historical fragment without the calendar clip');
+  assert.ok(+rect[1] < app.GANTT_LEFT_PAD);
+  assert.ok(+rect[1] + +rect[2] > 0 && +rect[1] + +rect[2] < app.GANTT_LEFT_PAD, 'only the SVG padding would have shown a historical fragment without the calendar clip');
   assert.doesNotMatch(bar, /ganttSvgDueLine|ganttSvgDueTagBg|ganttSvgDueTag"/);
   assert.doesNotMatch(app.ganttSvgTask(future, sprint.start, geometry.dayWidth, 56, 84, sprint), /ganttSvgDueLine|ganttSvgDueTagBg|ganttSvgDueTag"/);
   assert.match(html, /ganttSvgAxisDay/);
@@ -1110,7 +1111,7 @@ test('focused last-day due and estimated-finish badges fit inside the calendar w
       const text = /class="ganttSvgDueTag" x="([^"]+)"[^>]*>([^<]+)<\/text>/.exec(html);
       const line = /class="ganttSvgDueLine" x1="([^"]+)" x2="([^"]+)"/.exec(html);
       assert.ok(badge); assert.ok(text); assert.ok(line);
-      assert.ok(+badge[1] >= 28); assert.ok(+badge[1] + +badge[2] <= viewport - 28 + 1e-8);
+      assert.ok(+badge[1] >= app.GANTT_LEFT_PAD); assert.ok(+badge[1] + +badge[2] <= viewport - app.GANTT_RIGHT_PAD + 1e-8);
       assert.ok(+text[1] > +badge[1]); assert.ok(+text[1] + text[2].length * 7 <= +badge[1] + +badge[2]);
       assert.equal(+line[1], app.ganttPx(task.due, sprint.start, geometry.dayWidth)); assert.equal(line[1], line[2]);
       assert.match(text[2], viewport === 160 ? /18 Oct/ : /2026-10-18/);
@@ -1128,7 +1129,7 @@ test('timeline centering converts dates and scroll offsets symmetrically', () =>
   const rangeStart = app.parseDate('2026-01-01');
   const target = app.parseDate('2026-01-21');
   const scroll = app.timelineScrollForDate(target, rangeStart, 20, 400, 1000);
-  assert.equal(scroll, 228);
+  assert.equal(scroll, 288);
   assert.equal(app.fmtIsoDate(app.timelineDateAtScrollCenter(scroll, 400, rangeStart, 20)), '2026-01-21');
   assert.equal(app.timelineScrollForDate(rangeStart, rangeStart, 20, 400, 1000), 0);
   assert.equal(app.timelineScrollForDate(app.parseDate('2026-03-01'), rangeStart, 20, 400, 1000), 600);
@@ -1362,10 +1363,10 @@ test('Timeline keeps delay rails separate from clipped labels and draws dependen
 test('timeline cursor snaps to days and keeps its date label in view', () => {
   const app = loadApp();
   const rangeStart = app.parseDate('2026-08-01');
-  const cursor = app.ganttCursorAtX(152, rangeStart, 31, 10, 400);
+  const cursor = app.ganttCursorAtX(212, rangeStart, 31, 10, 400);
 
   assert.equal(cursor.day, 12);
-  assert.equal(cursor.x, 148);
+  assert.equal(cursor.x, 208);
   assert.equal(app.fmtIsoDate(cursor.date), '2026-08-13');
   assert.equal(cursor.label, '13 August');
   assert.equal(app.ganttCursorDateLabel(app.parseDate('2026-10-06')), '6 October');
@@ -1403,4 +1404,68 @@ test('HTML-producing helpers escape user-controlled text', () => {
   assert.equal(markup.includes('&lt;b&gt;Task&lt;/b&gt;'), true);
   assert.equal(app.escAttr('"<&'), '&quot;&lt;&amp;');
   assert.equal(app.avatar('<x').includes('&lt;X'), true);
+});
+
+test('task focus keeps direct neighbors and Epic context, excludes transitive and inactive work, and restores on second click', () => {
+  const app=loadApp(); const state=stateWithHierarchy();
+  state.tickets.push({...state.tickets[3],id:15,title:'Later',links:[12],completedAt:''},{...state.tickets[3],id:16,title:'Transitive',links:[15]},{...state.tickets[3],id:17,title:'Archived',links:[12],archivedAt:'2026-10-08'});
+  app.setState(state); app.selectBoard(1); app.toggleDependencyFocus(12);
+  assert.deepEqual([...app.dependencyFocusIds()].sort((a,b)=>a-b),[12,13,15]);
+  assert.deepEqual(Array.from(app.planningWork(),t=>t.id).sort((a,b)=>a-b),[10,12,13,15]);
+  for(const view of ['overview','timeline','board']) {
+    app.navButtons.find(b=>b.dataset.view===view).onclick();
+    assert.deepEqual([...app.dependencyFocusIds()].sort((a,b)=>a-b),[12,13,15]);
+  }
+  app.toggleDependencyFocus(12); assert.equal(app.dependencyFocusIds(),null);
+  assert.ok(app.planningWork().some(t=>t.id===16));
+});
+
+test('independent task focus hides other tasks and never restores archived Epic parents', () => {
+  const app=loadApp(); const state=stateWithHierarchy(); state.tickets[0].archivedAt='2026-10-08'; state.tickets[2].links=[];
+  app.setState(state); app.selectBoard(1); app.toggleDependencyFocus(12);
+  assert.deepEqual(Array.from(app.planningWork(),t=>t.id),[12]);
+  assert.equal(app.topEpicFor(state.tickets[2]),null);
+  state.board.id=2; app.selectBoard(2); assert.equal(app.dependencyFocusIds(),null);
+  state.board.id=1; app.selectBoard(1); app.resetClientState(true); assert.equal(app.dependencyFocusIds(),null);
+});
+
+test('Epic collapse hides descendants across Board, Overview and Timeline and keeps the group summary', () => {
+  const app=loadApp(); const state=stateWithHierarchy(); state.tickets[1].dueDate='2026-01-04'; state.tickets[2].dueDate='2026-01-05';
+  app.setState(state); app.selectBoard(1); app.toggleEpic(10);
+  app.renderBoard(); const html=app.elements.get('#board').innerHTML;
+  assert.match(html,/epicCollapsed/); assert.match(html,/aria-expanded="false"/); assert.doesNotMatch(html,/class="card[^>]*data-id="12"/);
+  assert.deepEqual(Array.from(app.overviewGroupedRows(app.workTickets()),row=>row.ticket.id),[10,13]);
+  assert.deepEqual(Array.from(app.buildGanttRows(),row=>row.ticket.id),[10,13]);
+  app.toggleEpic(10);
+  assert.ok(app.overviewGroupedRows(app.workTickets()).some(row=>row.ticket.id===12));
+  assert.ok(app.buildGanttRows().some(row=>row.ticket.id===12));
+});
+
+test('focused Timeline fits all directly related planned dates without months of overdue rail', () => {
+  const app=loadApp(); app.setState(stateWithHierarchy()); app.selectBoard(1); app.toggleDependencyFocus(12);
+  const tasks=[{plannedStart:app.parseDate('2026-01-01'),due:app.parseDate('2026-01-05'),delayEnd:app.parseDate('2026-10-08')},{plannedStart:app.parseDate('2026-01-03'),due:app.parseDate('2026-01-09')}];
+  const range=app.dependencyTimelineRange(tasks); assert.equal(app.fmtIsoDate(range.start),'2025-12-31'); assert.equal(app.fmtIsoDate(range.endExclusive),'2026-01-11');
+  const geometry=app.timelineGeometry(tasks,range,720,1); assert.equal(geometry.timelineWidth,720); assert.equal(geometry.totalDays,11);
+});
+
+test('Edit button preserves task editing separately from focus and stops card click propagation', () => {
+  const app=loadApp(); app.setState(stateWithHierarchy()); const root=fakeElement(); const button=fakeElement(); button.dataset.editTicket='12';
+  root.querySelectorAll=selector=>selector==='[data-edit-ticket]'?[button]:[];
+  app.wirePlanningActions(root); let stopped=false; button.onclick({stopPropagation(){stopped=true;}});
+  assert.equal(stopped,true); assert.equal(app.getEditing().id,12); assert.equal(app.dependencyFocusIds(),null);
+});
+
+test('opening a Sprint clears a pinned dependency focus and fits the selected Sprint', () => {
+  const app=loadApp(); const state=stateWithHierarchy(); state.board.sprint_start_date='2026-10-05'; app.setState(state); app.selectBoard(1);
+  const surface=timelineSurface(app,720); app.toggleDependencyFocus(12); app.jumpToSprint(2);
+  assert.equal(app.dependencyFocusIds(),null); assert.equal(surface.scroll.dataset.rangeStart,'2026-10-19'); assert.equal(surface.scroll.dataset.rangeEnd,'2026-11-02');
+  app.toggleDependencyFocus(12); app.applyRoute({view:'timeline',boardId:1,sprintNumber:1,ticketId:0});
+  assert.equal(app.dependencyFocusIds(),null); assert.equal(surface.scroll.dataset.rangeStart,'2026-10-05');
+});
+
+test('focusing a task protects an unsaved editor and closes it only after accepted discard', () => {
+  const app=loadApp(); const state=stateWithHierarchy(); app.setState(state); app.selectBoard(1); const fields=openEditor(app,12);
+  fields.dTitle.value='Unsaved title'; app.setConfirm(()=>false);
+  app.toggleDependencyFocus(13); assert.equal(app.dependencyFocusIds(),null); assert.equal(app.getEditing().id,12);
+  app.setConfirm(()=>true); app.toggleDependencyFocus(13); assert.equal(app.getEditing(),null); assert.deepEqual([...app.dependencyFocusIds()].sort(),[12,13]);
 });

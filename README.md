@@ -22,7 +22,7 @@ The application runs as one Go service with a static browser interface and local
 4. Open the card and change its "Status", or drag it to another column.
 5. Select "Done" and save to complete the task.
 
-The default columns are "To Do", "Ready", "In Progress", "Review", and "Done". This workflow does not require Sprint planning, Epics, durations, or dates. Cards can be opened with Tab and Enter. Closing, switching away from, or logging out with an unsaved editor prompts you before discarding changes.
+The default columns are "To Do", "Ready", "In Progress", "Review", and "Done". This workflow does not require Sprint planning, Epics, durations, or dates. Task focus and Epic expansion support Tab, Enter, and Space. Use "Edit" to open a task. Closing, switching away from, or logging out with an unsaved editor prompts you before discarding changes.
 
 See [Organizing tasks](docs/task-tools.md) for more detailed instructions. [Dinosaur avatars](docs/avatars.md) are assigned to accounts automatically.
 
@@ -48,7 +48,9 @@ Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs
 
 Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
-Hover over a card or task row in Board, Overview, or Timeline to see its direct prerequisites and dependents. Keyboard focus on a task shows the same connections. Prerequisites use red borders and incoming arrows, the selected task uses yellow, and its dependents use teal borders and outgoing arrows. Arrows point from prerequisite to dependent, while unrelated tasks fade into the background. The lines disappear and all tasks return to full visibility when the task is neither hovered nor focused. Showing dependencies does not change focus or scroll position.
+Hover over a card or task row in Board, Overview, or Timeline to preview its direct prerequisites and dependents. Unrelated tasks fade while the connections are shown. Blue marks prerequisites (1), gold the selected task (2), and teal its direct dependents (3). Numbered source markers and arrowheads show the direction from prerequisite to dependent. Lines use separate routing channels between cards or beside rows. Red is reserved for warnings and delays.
+
+Click a task to focus on it and its direct neighbors, hiding unrelated tasks. Click it again or select "Show all tasks" to restore the full view. The focus carries between Board, Overview, and Timeline; Timeline fits the related planned dates. Use "Edit" to open the task editor, including its dependencies under "Planning and details". Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
 
 ### Sprints
 
