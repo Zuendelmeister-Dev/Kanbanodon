@@ -96,7 +96,7 @@ function loadApp(options = {}) {
     applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
-    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions,
+    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
@@ -117,7 +117,7 @@ function loadApp(options = {}) {
     ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands, ganttSvgAxis,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
-    calculatedSprints, sprintName, sprintPlannerHtml, sprintPreviewHtml, sprintPreviewCardHtml, shortRange,
+    calculatedSprints, sprintName, sprintPlannerHtml, sprintPreviewHtml, sprintPreviewCardHtml, sprintStripFirstNumber, pageSprintStrip, shortRange,
     wireSprintPlanner, wireSprintCards, saveSprintName, sprintCadenceDirty, currentSessionGuard,
     wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
     fmtDate, shortDate, card, avatar, esc, escAttr,
@@ -733,7 +733,7 @@ test('Board rendering wires direct hover dependencies to the card surface withou
   assert.deepEqual(app.historyCalls, []);
 });
 
-test('Overview rendering wires hover dependencies in the table and supports keyboard task focus', () => {
+test('Overview rendering wires hover dependencies in the table and supports keyboard task editing', () => {
   const {app, calls} = hoverApp(); const root = app.document.querySelector('#overview');
   const table = fakeElement(); const layer = fakeElement(); const row = fakeElement();
   row.classList.add('ticketRow'); row.dataset.openTicket = '12';
@@ -748,7 +748,7 @@ test('Overview rendering wires hover dependencies in the table and supports keyb
   assert.equal(row.tabIndex, 0); assert.equal(app.getEditing(), null);
   assert.doesNotMatch(root.innerHTML, /Show dependencies|dependencySelection|pathDimmed/);
   let prevented = false; row.onkeydown({target: row, key: 'Enter', preventDefault() { prevented = true; }});
-  assert.equal(prevented, true); assert.equal(app.getEditing(), null); assert.deepEqual([...app.dependencyFocusIds()].sort(), [12,13]);
+  assert.equal(prevented, true); assert.equal(app.getEditing().id,12); assert.equal(app.dependencyFocusIds(),null);
 });
 
 test('Board shows full Sprint planning without a disclosure and keeps backlog promotion available', () => {
@@ -996,6 +996,76 @@ test('Sprint window exposes current plus five successors and applies custom name
   const future = app.sprintWindow('2026-02-01', 2, app.parseDate('2026-01-20'), 6);
   assert.equal(future[0].number, 1);
   assert.equal(future[0].next, true);
+});
+
+test('browsing Sprint windows keeps Current on the actual Sprint and labels earlier Sprints Past', () => {
+  const app = loadApp();
+  const today = app.parseDate('2026-04-10');
+  const earlier = app.sprintWindow('2026-01-01', 2, today, 6, 3);
+  assert.deepEqual(Array.from(earlier, sprint => sprint.number), [3, 4, 5, 6, 7, 8]);
+  assert.equal(earlier[0].past, true);
+  assert.equal(earlier[5].current, true);
+  assert.equal(earlier[5].past, false);
+  assert.match(app.sprintPreviewCardHtml(earlier[0]), /<em>Past<\/em>/);
+  const later = app.sprintWindow('2026-01-01', 2, today, 6, 9);
+  assert.ok(later.every(sprint => !sprint.current && !sprint.past));
+  assert.equal(app.sprintWindow('2026-01-01', 2, today, 6, Number.MAX_SAFE_INTEGER).length, 0);
+});
+
+test('the Sprint strip disables its previous arrow at Sprint 1 with an explanatory tooltip', () => {
+  const app = loadApp(); app.setState(stateWithHierarchy());
+  const html = app.sprintPreviewHtml([], '2026-02-01', 2, app.parseDate('2026-01-20'));
+  assert.match(html, /title="No earlier sprints"><button[^>]*data-sprint-page="-1"[^>]*disabled/);
+  assert.match(html, /title="Show later sprints"><button[^>]*data-sprint-page="1"/);
+  assert.equal((html.match(/data-sprint-card=/g) || []).length, 6);
+  assert.doesNotMatch(app.sprintPreviewHtml([], '', 2), /data-sprint-page=/);
+});
+
+test('Sprint arrows browse six saved cards and reset for a different board or login session', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  state.board.sprint_start_date = app.fmtIsoDate(app.addDays(app.startOfDay(new Date()), -196));
+  app.setState(state); const planner = prepareSprintPlanner(app);
+  const current = app.sprintWindow()[0].number;
+  assert.match(planner.preview.innerHTML, new RegExp('data-sprint-card="' + current + '"'));
+  app.pageSprintStrip(1);
+  assert.equal(app.sprintStripFirstNumber(), current + 6);
+  assert.match(planner.preview.innerHTML, new RegExp('data-sprint-card="' + (current + 6) + '"'));
+  app.renderBoard();
+  assert.match(app.elements.get('#board').innerHTML, new RegExp('data-sprint-card="' + (current + 6) + '"'));
+  app.pageSprintStrip(-1); app.pageSprintStrip(-1); app.pageSprintStrip(-1); app.pageSprintStrip(-1);
+  assert.equal(app.sprintStripFirstNumber(), 1);
+  app.pageSprintStrip(-1);
+  assert.equal(app.sprintStripFirstNumber(), 1);
+  assert.match(planner.preview.innerHTML, /title="No earlier sprints"/);
+  app.setState({...state, board: {...state.board, id: 2}}); app.selectBoard(2);
+  assert.equal(app.sprintStripFirstNumber(), 0);
+  app.pageSprintStrip(1); assert.equal(app.sprintStripFirstNumber(), current + 6);
+  app.resetClientState(); app.setState(state);
+  assert.equal(app.sprintStripFirstNumber(), 0);
+  app.pageSprintStrip(1); state.board.sprint_weeks = 1;
+  assert.equal(app.sprintStripFirstNumber(), 0);
+});
+
+test('paging Sprint cards preserves unsaved cadence fields and keeps jump and naming disabled', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); app.setState(state);
+  const name = fakeElement(); name.dataset = {sprintName: '1', originalDisplay: 'Sprint 1'};
+  const jump = fakeElement(); jump.dataset.sprintJump = '1';
+  const next = fakeElement(); next.dataset.sprintPage = '1';
+  const original = app.document.querySelectorAll;
+  app.document.querySelectorAll = selector => selector === '.sprintNameInput' ? [name] : selector === '.sprintJump' ? [jump] : selector === '.sprintPageButton' ? [next] : original(selector);
+  const planner = prepareSprintPlanner(app);
+  planner.start.value = '2027-02-01'; planner.start.oninput();
+  planner.weeks.value = '1.5'; planner.weeks.oninput();
+  next.onclick();
+  assert.equal(planner.start.value, '2027-02-01');
+  assert.equal(planner.weeks.value, '1.5');
+  assert.equal(state.board.sprint_start_date, '2026-01-01');
+  assert.equal(name.disabled, true); assert.equal(jump.disabled, true);
+  assert.equal(planner.status.textContent, 'Unsaved changes');
+  assert.equal((planner.preview.innerHTML.match(/data-sprint-card=/g) || []).length, 6);
+  app.setState({...state, board: {...state.board, id: 2}}); app.selectBoard(2);
+  const preview = planner.preview.innerHTML; next.onclick();
+  assert.equal(planner.preview.innerHTML, preview, 'stale paging controls cannot affect another board');
 });
 
 function timelineSurface(app, viewportWidth) {
@@ -1356,7 +1426,7 @@ test('Timeline keeps delay rails separate from clipped labels and draws dependen
   root.querySelector = selector => selector === '.ganttSvgScroll' ? layer : null;
   app.renderGantt(root);
   assert.equal(calls.length,1); assert.equal(calls[0].options.layerRoot,layer);
-  assert.match(root.innerHTML,/Hover a task to see direct dependencies/);
+  assert.match(root.innerHTML,/Open Dependencies to inspect connections/);
   assert.doesNotMatch(root.innerHTML,/Show dependencies|dependencySelection|ganttSvgArrow|pathDimmed|hoverDimmed/);
 });
 
@@ -1468,4 +1538,52 @@ test('focusing a task protects an unsaved editor and closes it only after accept
   fields.dTitle.value='Unsaved title'; app.setConfirm(()=>false);
   app.toggleDependencyFocus(13); assert.equal(app.dependencyFocusIds(),null); assert.equal(app.getEditing().id,12);
   app.setConfirm(()=>true); app.toggleDependencyFocus(13); assert.equal(app.getEditing(),null); assert.deepEqual([...app.dependencyFocusIds()].sort(),[12,13]);
+});
+
+for (const targetView of ['board','overview','timeline']) {
+  test(targetView + ' exposes Dependencies, Focus tasks and Back as separate intentional actions', () => {
+    const calls=[]; const app=loadApp({hover:{wire(root,options){calls.push({root,options});}}}); const state=stateWithHierarchy();
+    state.tickets.forEach(t=>{t.createdAt='2026-10-01T10:00:00Z';t.startDate='2026-10-01';t.dueDate='2026-10-04';t.completedAt=t.completedAt?'2026-10-03':'';});
+    state.tickets.push({...state.tickets[3],id:18,title:'Unrelated task',links:[]});
+    app.setState(state); app.selectBoard(1); app.navButtons.find(b=>b.dataset.view===targetView).onclick();
+    const root=app.document.querySelector('#'+targetView); const layer=fakeElement();
+    root.querySelector=selector=>selector==='.boardSwimlanes,.tableScroll'||selector==='.ganttSvgScroll'?layer:null;
+    const dep=fakeElement(),focus=fakeElement(),back=fakeElement(); dep.dataset.dependencies='12'; focus.dataset.focusRelated='12';
+    root.querySelectorAll=selector=>selector==='[data-dependencies]'?[dep]:selector==='[data-focus-related]'?[focus]:selector==='[data-dependencies-back]'?[back]:[];
+    app.wirePlanningActions(root); let stopped=0;const event={stopPropagation(){stopped++;}};
+    dep.onclick(event); assert.equal(app.dependencyFocusIds(),null); assert.deepEqual([...app.dependencyViewIds()].sort(),[12,13]);
+    assert.ok(app.planningWork().some(t=>t.id===18)); assert.equal(calls.at(-1).options.selectedId,12);
+    assert.match(root.innerHTML,/data-focus-related="12"/);assert.match(root.innerHTML,/>Focus tasks<|>Focus tasks<\/button>/);assert.match(root.innerHTML,/data-dependencies-back/);
+    assert.doesNotMatch(root.innerHTML,/dependencyFocusBar|Show all tasks|Hover to preview/);
+    focus.onclick(event);assert.deepEqual([...app.dependencyFocusIds()].sort(),[12,13]);assert.ok(!app.planningWork().some(t=>t.id===18));
+    assert.match(root.innerHTML,/Show other tasks/);
+    if(targetView==='timeline') {assert.match(root.innerHTML,/data-range-start="2026-09-30"/);assert.match(root.innerHTML,/data-range-end="2026-10-06"/);assert.match(root.innerHTML,/height:120px/);}
+    back.onclick(event);assert.equal(app.dependencyViewIds(),null);assert.equal(app.dependencyFocusIds(),null);assert.ok(app.planningWork().some(t=>t.id===18));
+    assert.equal(calls.at(-1).options.selectedId,0);assert.equal(stopped,3);
+  });
+}
+
+test('dependency preview retains its source controls and neighbors through global and local filters', () => {
+  const app=loadApp();const state=stateWithHierarchy();state.tickets.push({...state.tickets[3],id:18,title:'Unrelated',links:[],parentId:0});app.setState(state);app.selectBoard(1);app.openDependencies(12);
+  app.document.querySelector('#search').value='Unrelated';app.renderBoard();
+  assert.deepEqual(Array.from(app.planningWork(),t=>t.id).sort((a,b)=>a-b),[10,12,13,18]);assert.match(app.elements.get('#board').innerHTML,/data-focus-related="12"/);
+  app.renderOverview();app.document.querySelector('#overviewSearch').value='Unrelated';app.document.querySelector('#overviewSearch').oninput();assert.match(app.elements.get('#overview').innerHTML,/data-focus-related="12"/);
+  app.setTimelineEpicFilter('999');assert.ok(app.buildGanttRows().some(row=>row.ticket.id===13));
+});
+
+test('dependency preview opens related Epics and closes before a related Epic is collapsed', () => {
+  const app=loadApp();app.setState(stateWithHierarchy());app.selectBoard(1);app.toggleEpic(10);app.openDependencies(12);
+  assert.ok(app.overviewGroupedRows(app.workTickets()).some(row=>row.ticket.id===12));assert.deepEqual([...app.dependencyViewIds()].sort(),[12,13]);
+  app.toggleEpic(10);assert.equal(app.dependencyViewIds(),null);assert.equal(app.dependencyFocusIds(),null);
+  assert.ok(!app.overviewGroupedRows(app.workTickets()).some(row=>row.ticket.id===12));
+});
+
+test('Timeline labels and SVG rows use uniform additional action space on narrow viewports', () => {
+  const app=loadApp();const state=stateWithHierarchy();state.tickets.forEach(t=>{t.createdAt='2026-10-01T10:00:00Z';t.startDate='2026-10-01';t.dueDate='2026-10-04';});app.setState(state);app.selectBoard(1);
+  const root=app.document.querySelector('#timeline');
+  for(const [width,height] of [[500,188],[800,156],[1200,120]]) {
+    root.clientWidth=width;app.renderGantt(root);
+    const tasks=app.buildGanttRows();assert.equal((root.innerHTML.match(new RegExp('style="height:'+height+'px"','g'))||[]).length,tasks.length);
+    const svgHeights=[...root.innerHTML.matchAll(/<rect class="ganttSvgRow [^"]*"[^>]*height="(\d+)"/g)].map(match=>+match[1]);assert.equal(svgHeights.length,tasks.length);assert.ok(svgHeights.every(value=>value===height));
+  }
 });

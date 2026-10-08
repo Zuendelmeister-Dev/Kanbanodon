@@ -18,6 +18,7 @@ func main() {
 	s := &server{db: open(filepath.Join(data, "app.db")), cfg: open(filepath.Join(data, "config.db")), authMode: env("KANBANODON_AUTH_MODE", "local"), allowSignup: env("KANBANODON_ALLOW_SIGNUP", "true") == "true", secret: []byte(env("KANBANODON_SESSION_SECRET", "change-me-kanbanodon"))}
 	must(s.migrate())
 	must(s.seed())
+	must(s.resetDemoDataIfEnabled(env("KANBANODON_RESET_DEMO_DATA", "false"), time.Now()))
 	addr := env("KANBANODON_ADDR", ":8080")
 	log.Printf("Kanbanodon listening on %s (%s mode)", addr, s.authMode)
 	log.Fatal(http.ListenAndServe(addr, newHandler(s)))

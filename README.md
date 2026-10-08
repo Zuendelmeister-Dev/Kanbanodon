@@ -22,7 +22,7 @@ The application runs as one Go service with a static browser interface and local
 4. Open the card and change its "Status", or drag it to another column.
 5. Select "Done" and save to complete the task.
 
-The default columns are "To Do", "Ready", "In Progress", "Review", and "Done". This workflow does not require Sprint planning, Epics, durations, or dates. Task focus and Epic expansion support Tab, Enter, and Space. Use "Edit" to open a task. Closing, switching away from, or logging out with an unsaved editor prompts you before discarding changes.
+The default columns are "To Do", "Ready", "In Progress", "Review", and "Done". This workflow does not require Sprint planning, Epics, durations, or dates. Task actions and Epic expansion support Tab, Enter, and Space. Click a task or use "Edit" to open it. Closing, switching away from, or logging out with an unsaved editor prompts you before discarding changes.
 
 See [Organizing tasks](docs/task-tools.md) for more detailed instructions. [Dinosaur avatars](docs/avatars.md) are assigned to accounts automatically.
 
@@ -48,13 +48,15 @@ Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs
 
 Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
-Hover over a card or task row in Board, Overview, or Timeline to preview its direct prerequisites and dependents. Unrelated tasks fade while the connections are shown. Blue marks prerequisites (1), gold the selected task (2), and teal its direct dependents (3). Numbered source markers and arrowheads show the direction from prerequisite to dependent. Lines use separate routing channels between cards or beside rows. Red is reserved for warnings and delays.
+Select "Dependencies" beside "Edit" to preview a task’s direct connections. Unrelated tasks fade; hovering over a wire emphasizes that connection and its two endpoint tasks. Keyboard focus on a wire does the same. Numbering starts at 1 for the first task in the displayed relationship: blue (1), gold (2), then teal (3). Frames and outgoing arrows use the source task’s color. Arrows point to the tasks that depend on their source.
 
-Click a task to focus on it and its direct neighbors, hiding unrelated tasks. Click it again or select "Show all tasks" to restore the full view. The focus carries between Board, Overview, and Timeline; Timeline fits the related planned dates. Use "Edit" to open the task editor, including its dependencies under "Planning and details". Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
+Within the selected task, "Focus tasks" hides unrelated work and "Show other tasks" returns to the preview. "Back" closes the dependency view. These actions work in Board, Overview, and Timeline; focused Timeline fits the related dates. Click a task or use "Edit" to open its editor. Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
 
 ### Sprints
 
 The "Sprints" panel is visible on the board. Configure the first Sprint start date and a duration of 1 to 52 whole weeks, then save. Sprint cards appear after a successful save. Following Sprints are calculated from the saved cadence. The board shows the current Sprint and the next five; before the cadence starts, it shows the first six. Changing the cadence fields marks them as unsaved and leaves the saved cards unchanged until the next successful save.
+
+Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
 
 Sprint names can be edited directly. Without a custom name, a Sprint is called "Sprint N". The focus action opens Timeline with the selected Sprint's date range fitted to the available width. "Show full timeline" returns to the complete date range.
 
@@ -66,7 +68,7 @@ Overview and Timeline are directly available in the sidebar. Overview initially 
 
 Timeline uses stored durations and dates. When duration is missing, it assumes three days for ordinary tasks and one day for Epics. When the start date is missing, it derives the start from the due date and duration, or from the creation date. The interface explains these assumptions; they are not saved as task dates.
 
-Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Hover over a task's name or bar to see its direct dependencies. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
+Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Use "Dependencies" beside the task name to inspect its connections. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
 
 ## Accounts and permissions
 
@@ -135,6 +137,8 @@ The board menu exports a board as JSON. Import adds the contained tasks to the s
 Checklists, recurrence, Archive and Trash status, and comments with timestamps and author names are transferred. Comment authors are marked as imported instead of being associated with unrelated accounts that have the same numeric IDs in the destination. Activity logs and notifications are not part of a board export.
 
 A board export supplements backups but does not replace a backup of the entire installation.
+
+For disposable demonstrations, the optional [fresh demo data reset](docs/demo-data.md) replaces all tasks with three dated example Epics per board. It is disabled by default.
 
 ## Architecture
 

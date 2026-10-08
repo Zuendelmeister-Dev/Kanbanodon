@@ -16,12 +16,14 @@ let overviewFilters = { type: '', status: '', q: '' };
 let boardAccessSaveStatus = {};
 let sprintSettingsStatus = '';
 let sprintCadenceDraft = null;
+let sprintStripPage = null;
 let timelineZoom = 1;
 let timelineEpicFilter = 'all';
 let timelineFocusSprint = initialRoute.sprintNumber || 0;
 let timelineCenterDate = null;
 let dependencyFocusTicketId = 0;
 let dependencyFocusBoardId = 0;
+let dependencyFocused = false;
 const collapsedEpics = new Set();
 let loadGeneration = 0;
 let sessionGeneration = 0;
@@ -63,6 +65,7 @@ function invalidateSessionRequests() {
   sprintCadenceDraft = null;
   sprintSettingsStatus = '';
   dependencyFocusTicketId = dependencyFocusBoardId = 0;
+  dependencyFocused = false;
   collapsedEpics.clear();
 }
 
@@ -210,7 +213,7 @@ function applyRoute(route) {
   view = route.view || 'board';
   pendingTicketId = route.ticketId || 0;
   timelineFocusSprint = view === 'timeline' ? +(route.sprintNumber || 0) : 0;
-  if (timelineFocusSprint) { timelineZoom = 1; dependencyFocusTicketId = 0; }
+  if (timelineFocusSprint) { timelineZoom = 1; dependencyFocusTicketId = 0; dependencyFocused = false; }
   timelineCenterDate = null;
   if (route.boardId && route.boardId !== currentBoardId()) {
     return load();
@@ -701,12 +704,12 @@ function filteredWork() {
   return filtered().filter(t => !isBacklogTicket(t));
 }
 
-// A pinned task reveals only its direct neighbours and their hierarchy context.
-function dependencyFocusIds() {
+// Explicit dependency views reveal only direct neighbours.
+function dependencyViewIds() {
   if (!dependencyFocusTicketId || dependencyFocusBoardId !== currentBoardId()) return null;
   const tickets = workTickets();
   const selected = tickets.find(ticket => +ticket.id === dependencyFocusTicketId);
-  if (!selected) { dependencyFocusTicketId = 0; return null; }
+  if (!selected) { dependencyFocusTicketId = 0; dependencyFocused = false; return null; }
   const ids = new Set([+selected.id]);
   dependencyHoverEdges(tickets).forEach(edge => {
     if (edge.from === +selected.id || edge.to === +selected.id) { ids.add(edge.from); ids.add(edge.to); }
@@ -714,10 +717,15 @@ function dependencyFocusIds() {
   return ids;
 }
 
+function dependencyFocusIds() {
+  return dependencyFocused ? dependencyViewIds() : null;
+}
+
 function planningWork() {
-  const ids = dependencyFocusIds();
+  const ids = dependencyViewIds();
   if (!ids) return filteredWork();
-  const visible = new Set(ids);
+  const visible = new Set(dependencyFocused ? ids : filteredWork().map(ticket => +ticket.id));
+  ids.forEach(id => visible.add(id));
   ids.forEach(id => {
     let ticket = parentTicket(id);
     const seen = new Set();
@@ -734,7 +742,8 @@ function toggleDependencyFocus(id) {
   if (editing && !closeDrawer()) return;
   const ticket = workTickets().find(item => +item.id === +id);
   if (!ticket) return;
-  dependencyFocusTicketId = dependencyFocusBoardId === currentBoardId() && dependencyFocusTicketId === +id ? 0 : +id;
+  dependencyFocused = !(dependencyFocusBoardId === currentBoardId() && dependencyFocusTicketId === +id && dependencyFocused);
+  dependencyFocusTicketId = +id;
   dependencyFocusBoardId = currentBoardId();
   const ids = dependencyFocusIds();
   ids?.forEach(ticketId => { const epic = topEpicFor(parentTicket(ticketId)); if (epic) collapsedEpics.delete(+epic.id); });
@@ -746,24 +755,53 @@ function toggleDependencyFocus(id) {
   }
   renderView();
   const root = $('#' + view);
-  const node = root?.querySelector('[data-work-id="' + id + '"],[data-timeline-id="' + id + '"]');
+  const node = root?.querySelector('[data-focus-related="' + id + '"]');
   node?.focus({preventScroll:true});
 }
 
+function openDependencies(id) {
+  if (editing && !closeDrawer()) return;
+  if (!workTickets().some(ticket => +ticket.id === +id)) return;
+  dependencyFocusTicketId = +id;
+  dependencyFocusBoardId = currentBoardId();
+  dependencyFocused = false;
+  dependencyViewIds()?.forEach(ticketId => { const epic = topEpicFor(parentTicket(ticketId)); if (epic) collapsedEpics.delete(+epic.id); });
+  if (view === 'timeline') {
+    timelineFocusSprint = 0;
+    timelineZoom = 1;
+    timelineCenterDate = null;
+    syncRoute('replace', 0);
+  }
+  renderView();
+  $('#' + view)?.querySelector('[data-focus-related="' + id + '"]')?.focus({preventScroll:true});
+}
+
+function closeDependencies() {
+  const id = dependencyFocusTicketId;
+  dependencyFocusTicketId = 0;
+  dependencyFocused = false;
+  renderView();
+  $('#' + view)?.querySelector('[data-dependencies="' + id + '"]')?.focus({preventScroll:true});
+}
+
 function toggleEpic(id) {
+  if (!collapsedEpics.has(+id) && [...(dependencyViewIds() || [])].some(ticketId => +(topEpicFor(parentTicket(ticketId))?.id || 0) === +id)) {
+    dependencyFocusTicketId = 0;
+    dependencyFocused = false;
+  }
   if (collapsedEpics.has(+id)) collapsedEpics.delete(+id); else collapsedEpics.add(+id);
   renderView();
   $('#' + view)?.querySelector('[data-epic-toggle="' + id + '"]')?.focus({preventScroll:true});
 }
 
 function planningFocusHtml() {
-  const ids = dependencyFocusIds();
-  const selected = ids ? parentTicket(dependencyFocusTicketId) : null;
-  return '<div class="dependencyGuide"><span><b class="prerequisite">1</b> Prerequisite</span><span><b class="selected">2</b> Selected task</span><span><b class="dependent">3</b> Next task</span><small>Hover to preview · click a task to focus · click again to show all</small></div>' + (selected ? '<div class="dependencyFocusBar" role="status"><span>Related to <strong>' + esc(selected.title) + '</strong></span><button type="button" data-clear-dependency-focus>Show all tasks</button></div>' : '');
+  return dependencyViewIds() ? '<div class="dependencyGuide"><span><b class="prerequisite">1</b> First task</span><span><b class="selected">2</b> Next task</span><span><b class="dependent">3</b> Following task</span><small>Arrows point to tasks that depend on their source</small></div>' : '';
 }
 
 function taskEditHtml(ticket) {
-  return '<button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>';
+  const selected = dependencyViewIds() && +ticket.id === dependencyFocusTicketId;
+  const dependencies = ticket.type === 'epic' ? '' : selected ? '<button type="button" class="dependencyAction" data-focus-related="' + ticket.id + '">' + (dependencyFocused ? 'Show other tasks' : 'Focus tasks') + '</button><button type="button" class="dependencyAction" data-dependencies-back>Back</button>' : '<button type="button" class="dependencyAction" data-dependencies="' + ticket.id + '" aria-label="Dependencies of ' + escAttr(ticket.title) + '">Dependencies</button>';
+  return '<div class="taskActions"><button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>' + dependencies + '</div>';
 }
 
 function epicToggleHtml(epic, cssClass = 'epicToggle') {
@@ -773,15 +811,10 @@ function epicToggleHtml(epic, cssClass = 'epicToggle') {
 
 function wirePlanningActions(root) {
   root.querySelectorAll('[data-edit-ticket]').forEach(button => button.onclick = event => { event.stopPropagation(); openTicket(+button.dataset.editTicket); });
+  root.querySelectorAll('[data-dependencies]').forEach(button => button.onclick = event => { event.stopPropagation(); openDependencies(+button.dataset.dependencies); });
+  root.querySelectorAll('[data-focus-related]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleDependencyFocus(+button.dataset.focusRelated); });
+  root.querySelectorAll('[data-dependencies-back]').forEach(button => button.onclick = event => { event.stopPropagation(); closeDependencies(); });
   root.querySelectorAll('[data-epic-toggle]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleEpic(+button.dataset.epicToggle); });
-  root.querySelectorAll('[data-clear-dependency-focus]').forEach(button => button.onclick = () => { dependencyFocusTicketId = 0; renderView(); });
-}
-
-function dependencyEpicGroups(tickets) {
-  const groups = {};
-  const epics = new Map(tickets.map(ticket => topEpicFor(ticket)).filter(Boolean).map(epic => [+epic.id, epic]));
-  epics.forEach(epic => { groups[epic.id] = tickets.filter(ticket => +(topEpicFor(ticket)?.id || 0) === +epic.id && +ticket.id !== +epic.id).map(ticket => +ticket.id); });
-  return groups;
 }
 
 // Applies search filtering to backlog tickets only.
@@ -856,28 +889,55 @@ function sprintPlannerHtml(tickets) {
   return '<section class="panel sprintPlanner"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>Set the first Sprint once. Every following Sprint continues automatically.</p></div><div class="sprintSettings"><label><span>First Sprint starts</span><input id="sprintStartDate" type="date" value="' + escAttr(draft ? draft.start : start) + '"></label><label><span>Duration</span><span class="sprintDurationField"><input id="sprintWeeks" type="number" min="1" max="52" step="1" value="' + escAttr(draft ? draft.weeks : weeks) + '"><em>weeks</em></span></label><button id="saveSprintSettings" type="button">Save Sprint plan</button></div></div><div class="sprintPreview">' + sprintPreviewHtml(tickets, start, weeks) + '</div><div class="sprintPlannerFeedback"><p id="sprintSettingsError" class="formError" role="alert"></p><span id="sprintSettingsStatus" class="sprintSettingsStatus" data-state="' + (status === 'Unsaved changes' ? 'unsaved' : status ? 'saved' : '') + '">' + esc(status) + '</span></div></section>';
 }
 
-// Builds the current Sprint plus five successors and explains unscheduled work.
+// Builds six saved Sprints with previous/next controls and explains unscheduled work.
 function sprintPreviewHtml(tickets, startValue, weeksValue, today = startOfDay(new Date())) {
   const start = parseDate(startValue);
   if (!start) return '<span class="sprintPreviewNote">Choose the first Sprint start date.</span>';
   const weeks = validSprintWeeks(weeksValue);
   if (!weeks) return '<span class="sprintPreviewNote">Use a whole number from 1 to 52 weeks.</span>';
   const planned = tickets.map(ticketPlannedFinish).filter(validDate);
-  const sprints = sprintWindow(startValue, weeks, today, 6);
+  const sprints = sprintWindow(startValue, weeks, today, 6, sprintStripFirstNumber(startValue, weeks));
+  if (!sprints.length) return '<span class="sprintPreviewNote">No Sprints are available for these dates.</span>';
   const before = planned.filter(date => date < start).length;
   const unscheduled = tickets.length - planned.length;
   const notes = [];
   if (before) notes.push(before + ' scheduled item' + (before === 1 ? ' is' : 's are') + ' before Sprint 1');
   if (unscheduled) notes.push(unscheduled + ' item' + (unscheduled === 1 ? ' has' : 's have') + ' no planned date');
   const cards = sprints.map(sprintPreviewCardHtml).join('');
-  return '<div class="sprintWindow">' + cards + '</div>' + (notes.length ? '<span class="sprintPreviewNote">' + esc(notes.join(' · ')) + '</span>' : '');
+  const hasEarlier = sprints[0].number > 1;
+  const hasLater = sprintWindow(startValue, weeks, today, 6, sprints[0].number + 6).length === 6;
+  const previousTitle = hasEarlier ? 'Show earlier sprints' : 'No earlier sprints';
+  const nextTitle = hasLater ? 'Show later sprints' : 'No later sprints';
+  return '<div class="sprintStrip"><span class="sprintPageControl" title="' + previousTitle + '"><button class="sprintPageButton" data-sprint-page="-1" type="button" aria-label="Show earlier sprints"' + (hasEarlier ? '' : ' disabled') + '><span aria-hidden="true">‹</span></button></span><div class="sprintWindow">' + cards + '</div><span class="sprintPageControl" title="' + nextTitle + '"><button class="sprintPageButton" data-sprint-page="1" type="button" aria-label="Show later sprints"' + (hasLater ? '' : ' disabled') + '><span aria-hidden="true">›</span></button></span></div>' + (notes.length ? '<span class="sprintPreviewNote">' + esc(notes.join(' · ')) + '</span>' : '');
+}
+
+// Keep browsing on this board without leaking pages into a different session or cadence.
+function sprintStripFirstNumber(startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks()) {
+  if (sprintStripPage && (sprintStripPage.boardId !== currentBoardId() || sprintStripPage.session !== sessionGeneration || sprintStripPage.start !== startValue || sprintStripPage.weeks !== +weeksValue)) sprintStripPage = null;
+  return sprintStripPage?.firstNumber || 0;
+}
+
+// Browse the saved cadence without changing pending date fields or the Timeline focus.
+function pageSprintStrip(direction) {
+  const start = boardSprintStartValue();
+  const weeks = boardSprintWeeks();
+  const today = startOfDay(new Date());
+  const sprints = sprintWindow(start, weeks, today, 6, sprintStripFirstNumber(start, weeks));
+  if (!sprints.length || ![-1, 1].includes(direction)) return;
+  const firstNumber = Math.max(1, sprints[0].number + direction * 6);
+  if (firstNumber === sprints[0].number || sprintWindow(start, weeks, today, 6, firstNumber).length !== 6) return;
+  sprintStripPage = {boardId: currentBoardId(), session: sessionGeneration, start, weeks, firstNumber};
+  const preview = $('.sprintPreview');
+  if (!preview) return;
+  preview.innerHTML = sprintPreviewHtml(workTickets(), start, weeks, today);
+  wireSprintCards(!sprintCadenceDirty() && !!start);
 }
 
 // Builds one editable Sprint card with a dedicated Timeline focus action.
 function sprintPreviewCardHtml(sprint) {
   const fallback = defaultSprintName(sprint.number);
   const name = sprintName(sprint);
-  const phase = sprint.current ? 'Current' : sprint.next ? 'Next' : 'Upcoming';
+  const phase = sprint.current ? 'Current' : sprint.next ? 'Next' : sprint.past ? 'Past' : 'Upcoming';
   const phaseClass = sprint.current ? ' current' : sprint.next ? ' next' : '';
   const jumpLabel = 'Open ' + name + ' in Timeline';
   return '<article class="sprintCard' + phaseClass + '" data-sprint-card="' + sprint.number + '"><button class="sprintJump" data-sprint-jump="' + sprint.number + '" type="button" title="' + escAttr(jumpLabel) + '" aria-label="' + escAttr(jumpLabel) + '"><span aria-hidden="true">⌖</span></button><label><span>' + esc(fallback) + '<em>' + phase + '</em></span><input class="sprintNameInput" data-sprint-name="' + sprint.number + '" data-original-display="' + escAttr(name) + '" maxlength="80" value="' + escAttr(name) + '" title="Edit name · saved automatically" aria-label="Name for ' + escAttr(fallback) + '"></label><small>' + esc(shortRange(sprint.start, sprint.end)) + '</small><span class="sprintNameStatus" data-sprint-name-status="' + sprint.number + '" aria-live="polite"></span></article>';
@@ -1006,6 +1066,11 @@ function setSprintSettingsStatus(message, phase) {
 function wireSprintCards(jumpEnabled) {
   const boardId = currentBoardId();
   const sessionCurrent = currentSessionGuard();
+  $$('.sprintPageButton').forEach(button => {
+    button.onclick = () => {
+      if (!button.disabled && sessionCurrent() && boardId === currentBoardId() && (!selectedBoardId || boardId === selectedBoardId)) pageSprintStrip(+button.dataset.sprintPage);
+    };
+  });
   $$('.sprintJump').forEach(button => {
     button.disabled = !jumpEnabled;
     button.title = jumpEnabled ? 'Open ' + sprintName(sprintByNumber(+button.dataset.sprintJump)) + ' centered in Timeline' : 'Save the Sprint plan before opening it in Timeline';
@@ -1080,6 +1145,7 @@ function jumpToSprint(number) {
   if (!canLeaveDrawer()) return;
   dependencyFocusTicketId = 0;
   timelineFocusSprint = number;
+  dependencyFocused = false;
   timelineZoom = 1;
   timelineCenterDate = addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2));
   view = 'timeline';
@@ -1266,9 +1332,9 @@ function wireDnD() {
   $$('.card').forEach(c => {
     c.tabIndex = 0;
     c.setAttribute('role', 'group');
-    c.onkeydown = event => { if (event.target === c && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleDependencyFocus(+c.dataset.id); } };
+    c.onkeydown = event => { if (event.target === c && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openTicket(+c.dataset.id); } };
     c.ondragstart = e => e.dataTransfer.setData('text/plain', c.dataset.id);
-    c.onclick = () => toggleDependencyFocus(+c.dataset.id);
+    c.onclick = () => openTicket(+c.dataset.id);
   });
   $$('.boardLaneEpic[data-id],.epicBoardHeader').forEach(header => header.onclick = () => openTicket(+header.dataset.id));
   $$('.drop').forEach(d => {
@@ -1314,10 +1380,10 @@ function renderOverview() {
     root.querySelector('.tableScroll').before(toggle);
   }
   root.querySelectorAll('[data-open-ticket]').forEach(node => {
-    node.onclick = () => node.matches('.ticketRow') ? (node.classList.contains('epic') ? toggleEpic(+node.dataset.openTicket) : toggleDependencyFocus(+node.dataset.openTicket)) : openTicket(+node.dataset.openTicket);
+    node.onclick = () => node.matches('.ticketRow') && node.classList.contains('epic') ? toggleEpic(+node.dataset.openTicket) : openTicket(+node.dataset.openTicket);
     if (node.matches('.ticketRow')) {
       node.tabIndex = 0;
-      node.onkeydown = event => { if (event.target === node && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); if (node.classList.contains('epic')) toggleEpic(+node.dataset.openTicket); else toggleDependencyFocus(+node.dataset.openTicket); } };
+      node.onkeydown = event => { if (event.target === node && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); if (node.classList.contains('epic')) toggleEpic(+node.dataset.openTicket); else openTicket(+node.dataset.openTicket); } };
     }
   });
   wireWorkDependencies(root, overviewRows(ts).map(row => row.ticket));
@@ -1342,11 +1408,10 @@ function overviewHeader(key, label) {
 // Applies overview filters and sorting before grouping rows.
 function overviewRows(tickets) {
   if (dependencyFocusIds()) return overviewGroupedRows(tickets.sort((a, b) => overviewCompare(a, b)));
+  const required = dependencyViewIds();
   const q = overviewFilters.q.trim().toLowerCase();
   const rows = tickets
-    .filter(t => !overviewFilters.type || t.type === overviewFilters.type)
-    .filter(t => !overviewFilters.status || String(t.columnId) === String(overviewFilters.status))
-    .filter(t => !q || overviewSearchText(t).includes(q))
+    .filter(t => required?.has(+t.id) || ((!overviewFilters.type || t.type === overviewFilters.type) && (!overviewFilters.status || String(t.columnId) === String(overviewFilters.status)) && (!q || overviewSearchText(t).includes(q))))
     .sort((a, b) => overviewCompare(a, b));
   return overviewGroupedRows(rows);
 }
@@ -1488,7 +1553,7 @@ function dependencyHoverEdges(tickets) {
     .map(id => ({ from: +id, to: +ticket.id })));
 }
 
-// Draws only a hovered or keyboard-focused item's direct connections in place.
+// Draws the explicitly opened task's direct connections in place.
 function wireWorkDependencies(root, tickets) {
   const layerRoot = root.querySelector('.boardSwimlanes,.tableScroll');
   window.KanbanodonDependencyHover?.wire(root, {
@@ -1498,8 +1563,8 @@ function wireWorkDependencies(root, tickets) {
     routeClearance: layerRoot?.classList.contains('boardSwimlanes') ? 12 : 4,
     layout: layerRoot?.classList.contains('boardSwimlanes') ? 'board' : 'overview',
     gutterWidth: 88,
-    selectedId: dependencyFocusIds() ? dependencyFocusTicketId : 0,
-    relatedById: dependencyEpicGroups(tickets),
+    selectedId: dependencyViewIds() ? dependencyFocusTicketId : 0,
+    labelsById: Object.fromEntries(tickets.map(ticket => [ticket.id, ticket.title])),
     edges: dependencyHoverEdges(tickets),
   });
 }
@@ -1644,7 +1709,8 @@ function renderGantt(root) {
   const focusCenter = focusRange ? addDays(focusRange.start, Math.floor(dayDiff(focusRange.start, focusRange.endExclusive) / 2)) : null;
   let geometry = timelineGeometry(tasks, focusRange, availableTimelineWidth);
   const {rangeStart, rangeEnd, totalDays} = geometry;
-  const rowHeight = 84;
+  // Leave room for wrapped actions and long titles in the narrow task pane.
+  const rowHeight = root.clientWidth > 0 && root.clientWidth < 620 ? 188 : root.clientWidth > 0 && root.clientWidth < 900 ? 156 : 120;
   const headHeight = 56;
   const axisHeight = 62;
   let {dayWidth, timelineWidth} = geometry;
@@ -1653,7 +1719,7 @@ function renderGantt(root) {
   const labels = tasks.map(task => ganttTaskLabel(task, rowHeight)).join('');
   const svg = ganttSvg(tasks, rangeStart, totalDays, dayWidth, timelineWidth, headHeight, rowHeight, bodyHeight, axisHeight, focusRange);
 
-  root.innerHTML = '<section class="ganttFlow">' + controls + planningFocusHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Hover a task to see direct dependencies · arrows point to dependent tasks</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
+  root.innerHTML = '<section class="ganttFlow">' + controls + planningFocusHtml() + '<div class="ganttFlowLegend"><span><b></b> Work item</span><span><b class="epic"></b> Epic total</span><span><b class="saved"></b> Saved time</span><span><b class="late"></b> Delay</span><span><b class="estimate"></b> Best-case estimate</span>' + (boardSprintStartValue() ? '<span><b class="sprint"></b>Sprint cadence</span>' : '') + '<span class="timelineDependencyHint">Open Dependencies to inspect connections</span></div><div class="ganttChart"><div class="ganttTaskPane"><div class="ganttTaskHead">Task</div>' + labels + '<div class="ganttTaskFoot">Timeline</div></div><div class="ganttSvgScroll" tabindex="0" role="region" aria-label="Scrollable timeline. Hold and drag left or right to move." data-range-start="' + fmtIsoDate(rangeStart) + '" data-range-end="' + fmtIsoDate(rangeEnd) + '" data-day-width="' + dayWidth + '" data-timeline-width="' + timelineWidth + '"><svg class="ganttSvg" width="' + timelineWidth + '" height="' + chartHeight + '" viewBox="0 0 ' + timelineWidth + ' ' + chartHeight + '"' + (focusRange ? ' overflow="hidden"' : '') + ' role="img" aria-label="Gantt chart">' + svg + '</svg></div></div></section>';
   const scroll = root.querySelector('.ganttSvgScroll');
   const svgElement = root.querySelector('.ganttSvg');
   const fitViewport = () => {
@@ -1766,8 +1832,9 @@ function timelineFilteredWork() {
   const items = planningWork();
   if (dependencyFocusIds()) return items;
   if (timelineEpicFilter === 'all') return items;
+  const required = dependencyViewIds();
   const epicId = +timelineEpicFilter;
-  return items.filter(t => +t.id === epicId || +(topEpicFor(t)?.id || 0) === epicId);
+  return items.filter(t => required?.has(+t.id) || +t.id === epicId || +(topEpicFor(t)?.id || 0) === epicId);
 }
 
 // Builds timeline filter, zoom, and clear-path controls.
@@ -1803,7 +1870,7 @@ function wireTimelineControls(root) {
     renderGantt(root);
   };
   root.querySelectorAll('.ganttTaskTitle,.ganttSvgTask').forEach(el => {
-    const select = () => { const id = +(el.dataset.epicToggle || el.dataset.openTicket); const ticket = parentTicket(id); if (ticket?.type === 'epic') toggleEpic(id); else toggleDependencyFocus(id); };
+    const select = () => { const id = +(el.dataset.epicToggle || el.dataset.openTicket); const ticket = parentTicket(id); if (ticket?.type === 'epic') toggleEpic(id); else openTicket(id); };
     el.onclick = select;
     if (el.classList.contains('ganttSvgTask')) el.onkeydown = event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1815,7 +1882,7 @@ function wireTimelineControls(root) {
     if (event.target !== el || !['Enter', ' '].includes(event.key)) return;
     event.preventDefault();
     const ticket = parentTicket(+el.dataset.timelineId);
-    if (ticket?.type === 'epic') toggleEpic(ticket.id); else toggleDependencyFocus(+el.dataset.timelineId);
+    if (ticket?.type === 'epic') toggleEpic(ticket.id); else openTicket(+el.dataset.timelineId);
   });
 }
 
@@ -1831,8 +1898,8 @@ function wireTimelineDependencies(root, tasks) {
     layerRoot,
     layout: 'timeline',
     gutterWidth: GANTT_LEFT_PAD,
-    selectedId: dependencyFocusIds() ? dependencyFocusTicketId : 0,
-    relatedById: dependencyEpicGroups(tasks.map(task => task.ticket)),
+    selectedId: dependencyViewIds() ? dependencyFocusTicketId : 0,
+    labelsById: Object.fromEntries(tasks.map(task => [task.ticket.id, task.ticket.title])),
     edges: dependencyHoverEdges(tasks.map(task => task.ticket)),
   });
 }
@@ -2151,7 +2218,7 @@ function ganttTaskLabel(task, rowHeight) {
   const detailClasses = [task.blocked.length ? 'waiting' : '', delayText ? 'late' : ''].filter(Boolean).join(' ');
 
   const title = task.isAggregate ? epicToggleHtml(task.ticket, 'ganttTaskTitle') : '<button type="button" class="ganttTaskTitle" data-open-ticket="' + task.ticket.id + '">' + esc(ticketLabel(task.ticket)) + '</button>';
-  return '<div class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" style="height:' + rowHeight + 'px">' + title + taskEditHtml(task.ticket) + '<span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + '</div>';
+  return '<div class="' + classes.join(' ') + '" data-timeline-id="' + task.ticket.id + '" tabindex="0" style="height:' + rowHeight + 'px">' + title + '<span>' + esc(typeLabel) + ' · ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + '</span>' + (detailText ? '<em class="' + detailClasses + '" title="' + escAttr(detailText) + '">' + esc(detailText) + '</em>' : '') + taskEditHtml(task.ticket) + '</div>';
 }
 
 // Describes the optimistic finish projection after the live delay segment.
@@ -2282,7 +2349,7 @@ function ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, focusRa
   const delayText = ganttDelayText(task);
   const estimateText = ganttEstimateText(task);
   const clipId = 'ganttTaskClip' + task.ticket.id;
-  return '<g class="ganttSvgTask" data-timeline-id="' + task.ticket.id + '" data-open-ticket="' + task.ticket.id + '" tabindex="0" role="button" aria-label="' + (task.isAggregate ? (collapsedEpics.has(+task.ticket.id) ? 'Expand ' : 'Collapse ') : 'Focus related to ') + escAttr(ticketLabel(task.ticket)) + '">' +
+  return '<g class="ganttSvgTask" data-timeline-id="' + task.ticket.id + '" data-open-ticket="' + task.ticket.id + '" tabindex="0" role="button" aria-label="' + (task.isAggregate ? (collapsedEpics.has(+task.ticket.id) ? 'Expand ' : 'Collapse ') : 'Edit ') + escAttr(ticketLabel(task.ticket)) + '">' +
     '<title>' + esc(ticketLabel(task.ticket)) + ' | ' + fmtDate(task.start) + ' to ' + fmtDate(task.end) + (delayText ? ' | ' + delayText : '') + (estimateText ? ' | ' + estimateText : '') + '</title>' + saved +
     '<rect class="ganttSvgBar ' + type + blocked + aggregate + '" x="' + left + '" y="' + y + '" width="' + width + '" height="' + h + '" rx="7"></rect>' + overrun + late + ganttSvgEstimate(task, rangeStart, dayWidth, railY, railHeight) +
     '<clipPath id="' + clipId + '"><rect x="' + (left + 7) + '" y="' + y + '" width="' + Math.max(0, width - 14) + '" height="' + h + '"></rect></clipPath>' +
@@ -2478,18 +2545,20 @@ function sprintByNumber(number, startValue = boardSprintStartValue(), weeksValue
   return sprintRange(number - 1, start, weeks);
 }
 
-// Returns the active Sprint plus a fixed number of successors for Board planning.
-function sprintWindow(startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks(), today = startOfDay(new Date()), count = 6) {
+// Returns a browsable Sprint window, starting with the current Sprint by default.
+function sprintWindow(startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks(), today = startOfDay(new Date()), count = 6, firstNumber = 0) {
   const start = parseDate(startValue);
   const weeks = validSprintWeeks(weeksValue);
-  if (!start || !weeks || !validDate(today) || count < 1) return [];
+  if (!start || !weeks || !validDate(today) || !Number.isSafeInteger(count) || count < 1 || count > 100 || !Number.isSafeInteger(firstNumber) || firstNumber < 0) return [];
   const span = weeks * 7;
   const beforeCadence = today < start;
-  const firstIndex = beforeCadence ? 0 : Math.floor(dayDiff(start, today) / span);
-  return Array.from({ length: count }, (_, offset) => {
+  const currentIndex = beforeCadence ? 0 : Math.floor(dayDiff(start, today) / span);
+  const firstIndex = firstNumber ? firstNumber - 1 : currentIndex;
+  const sprints = Array.from({ length: count }, (_, offset) => {
     const sprint = sprintRange(firstIndex + offset, start, weeks);
-    return { ...sprint, current: !beforeCadence && offset === 0, next: beforeCadence && offset === 0 };
+    return { ...sprint, current: !beforeCadence && firstIndex + offset === currentIndex, next: beforeCadence && firstIndex + offset === 0, past: !beforeCadence && firstIndex + offset < currentIndex };
   });
+  return sprints.every(sprint => validDate(sprint.start) && validDate(sprint.endExclusive)) ? sprints : [];
 }
 
 // Resolves a calendar date into the board's generated Sprint sequence.

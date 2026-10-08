@@ -38,11 +38,13 @@ Moving the original task out of “Done” and completing it again creates anoth
 
 The "Sprints" panel is visible on the board. Set the first Sprint start date and its length in weeks, then save. Sprint cards appear after a successful save. The panel shows the current Sprint and the next five, or the first six before the saved cadence begins. Changes to the cadence fields are marked as unsaved; the saved cards and their dates remain unchanged until a successful save. Sprint names can be edited directly, and the focus action fits the selected Sprint's date range to the Timeline width. "Show full timeline" restores the complete date range.
 
+Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
+
 Overview and Timeline are directly available in the sidebar. The simplified Overview shows five main columns; "Show planning columns" displays additional fields. Timeline identifies assumed dates as estimates. Saved time, delays, and completion estimates appear on thin rails below the task bars, keeping task names readable.
 
-Hover over a card or task row in Board, Overview, or Timeline to preview its direct prerequisites and dependents. Unrelated tasks fade while the connections are shown. Blue marks prerequisites (1), gold the selected task (2), and teal its direct dependents (3). Numbered source markers and arrowheads show the direction from prerequisite to dependent. Lines use separate routing channels between cards or beside rows. Red is reserved for warnings and delays.
+Select "Dependencies" beside "Edit" to preview a task’s direct connections. Unrelated tasks fade; hovering over a wire emphasizes that connection and its two endpoint tasks. Keyboard focus on a wire does the same. Numbering starts at 1 for the first task in the displayed relationship: blue (1), gold (2), then teal (3). Frames and outgoing arrows use the source task’s color. Arrows point to the tasks that depend on their source.
 
-Click a task to focus on it and its direct neighbors, hiding unrelated tasks. Click it again or select "Show all tasks" to restore the full view. The focus carries between Board, Overview, and Timeline; Timeline fits the related planned dates. Use "Edit" to open the task editor, including its dependencies under "Planning and details". Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
+Within the selected task, "Focus tasks" hides unrelated work and "Show other tasks" returns to the preview. "Back" closes the dependency view. These actions work in Board, Overview, and Timeline; focused Timeline fits the related dates. Click a task or use "Edit" to open its editor. Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
 
 “Export” and “Import” in the board menu transfer a board as JSON. Import adds tasks to the selected destination board; importing again creates additional copies. Accounts and access permissions are not transferred, and assignees are reset.
 

@@ -10,6 +10,7 @@ services:
       KANBANODON_AUTH_MODE: "local"
       KANBANODON_ALLOW_SIGNUP: "true"
       KANBANODON_SESSION_SECRET: "change-this-long-random-secret"
+      KANBANODON_RESET_DEMO_DATA: "${KANBANODON_RESET_DEMO_DATA:-false}"
     volumes:
       - kanbanodon-data:/data
     restart: unless-stopped

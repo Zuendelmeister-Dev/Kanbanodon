@@ -119,4 +119,28 @@
 }
 
 .ganttTaskItem .ganttTaskTitle{width:calc(100% - 36px)}
-.dependencyHoverRelated:not(.dependencyHoverPrerequisite):not(.dependencyHoverDependent){--dependency-color:#a78bfa}
+/* Explicit dependency actions and predictable, centered card ports. */
+.taskActions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
+.taskActions button{padding:4px 8px;font-size:11px;color:var(--muted);background:transparent}
+.taskActions .dependencyAction{color:#cbd5df}
+.card .taskActions .taskEdit{margin-top:0}
+.boardLaneDrop.drop{display:flex;flex-direction:column;align-items:center;gap:24px;padding:18px 40px}
+.boardSwimlanes .boardLaneDrop .card[class]{width:100%;max-width:320px;margin:0}
+.boardSwimlanes[class*="cols"]{--board-task-width:300px;min-width:calc(var(--board-epic-width) + var(--board-columns) * (300px + 56px) + 130px)}
+.boardSwimlanes.simpleBoard[class*="cols"]{min-width:calc(var(--board-columns) * 300px + (var(--board-columns) - 1) * 56px + 130px)}
+.ganttTaskItem .taskActions{margin-top:4px}
+.ganttTaskItem .taskActions button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.ganttTaskItem .taskActions .taskEdit{position:static}
+.ganttTaskItem .ganttTaskTitle{width:100%}
+.dependencyHoverWireDimmed{opacity:.14}
+.dependencyHoverHit{cursor:pointer}
+
+/* Six-card Sprint browsing keeps both paging controls beside the strip. */
+.sprintStrip{display:grid;grid-template-columns:30px minmax(0,1fr) 30px;gap:8px;align-items:stretch}
+.sprintPageControl{display:flex;align-items:stretch}
+.sprintPageButton{width:30px;min-height:70px;padding:0;border-color:#31506a;background:#0d2030;color:#bae6fd;font-size:26px;line-height:1}
+.sprintPageButton:hover:not(:disabled){border-color:var(--teal);background:#102b2a}
+.sprintPageButton:disabled{opacity:.35;cursor:not-allowed}
+.sprintStrip .sprintWindow{min-width:0}
+.dependencyHoverWire:focus{outline:none}
+.dependencyHoverWire:focus-visible .dependencyHoverLine{stroke-width:5}

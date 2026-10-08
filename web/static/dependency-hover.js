@@ -5,7 +5,7 @@
   const SVG_NS = 'http://www.w3.org/2000/svg';
   let nextOverlayId = 0;
 
-  // A hover is a one-hop view: incoming and outgoing edges, never a traversal.
+  // A dependency preview is a one-hop view, never a traversal of the board.
   function directEdges(edges, id) {
     const selected = +id;
     const seen = new Set();
@@ -18,6 +18,38 @@
       return true;
     }).map(edge => ({ from: +edge.from, to: +edge.to }));
   }
+
+  // Number the displayed circuit from its roots, not from the selected card.
+  // This also handles a prerequisite which is itself a root of a short branch.
+  function dependencySteps(edges, selectedId) {
+    const levels = new Map();
+    const incoming = new Map();
+    const outgoing = new Map();
+    if (+selectedId > 0) levels.set(+selectedId, 1);
+    (edges || []).forEach(edge => {
+      const from = +edge.from;
+      const to = +edge.to;
+      if (!(from > 0 && to > 0) || from === to) return;
+      if (!incoming.has(from)) incoming.set(from, 0);
+      incoming.set(to, (incoming.get(to) || 0) + 1);
+      if (!outgoing.has(from)) outgoing.set(from, []);
+      outgoing.get(from).push(to);
+      levels.set(from, 1);
+      levels.set(to, 1);
+    });
+    const queue = [...incoming.keys()].filter(id => incoming.get(id) === 0).sort((a, b) => a - b);
+    for (let index = 0; index < queue.length; index++) {
+      const id = queue[index];
+      (outgoing.get(id) || []).forEach(next => {
+        levels.set(next, Math.max(levels.get(next), levels.get(id) + 1));
+        incoming.set(next, incoming.get(next) - 1);
+        if (incoming.get(next) === 0) queue.push(next);
+      });
+    }
+    return levels;
+  }
+
+  const roleForStep = step => step <= 1 ? 'prerequisite' : step === 2 ? 'active' : 'dependent';
 
   function normalizeRect(rect) {
     const left = +rect.left;
@@ -97,29 +129,31 @@
     const offset = Math.min(10, (rect.bottom - rect.top) / 4);
     const spacing = list ? Math.min(12, 2 * Math.max(0, offset - 3) / Math.max(1, count - 1)) :
       Math.min(18, Math.max(0, (rect.bottom - rect.top - 20) / Math.max(1, count - 1)));
-    const fan = (slot - (count - 1) / 2) * spacing;
+    // One source has one output terminal and forks in the cable channel. Only
+    // separate fan-in terminals when multiple arrowheads would overlap.
+    const fan = output ? 0 : (slot - (count - 1) / 2) * spacing;
     const y = cy + fan + (list ? (output ? offset : -offset) : 0);
     const x = output && !list ? rect.right : rect.left;
     const direction = output && !list ? 1 : -1;
     return { edge: { x, y }, outer: { x: x + direction * clearance, y }, direction };
   }
 
-  function extendPort(port, ownRect, obstacles, bounds, clearance, desired) {
-    for (const lead of [...new Set([desired, 20, 12, clearance])].filter(value => value >= clearance)) {
+  function extendPorts(start, source, end, target, obstacles, bounds, clearance) {
+    const fits = (port, ownRect, lead) => {
       const outer = { x: port.edge.x + port.direction * lead, y: port.edge.y };
       const others = obstacles.filter(rect => !sameRect(rect, ownRect));
-      if (inBounds(outer, bounds) && !segmentBlocked(port.edge, outer, others) &&
-          !others.some(rect => inside(outer, { left: rect.left - clearance, top: rect.top - clearance, right: rect.right + clearance, bottom: rect.bottom + clearance }))) {
-        port.outer = outer;
-        return;
-      }
-    }
+      return inBounds(outer, bounds) && !segmentBlocked(port.edge, outer, others) &&
+        !others.some(rect => inside(outer, { left: rect.left - clearance, top: rect.top - clearance, right: rect.right + clearance, bottom: rect.bottom + clearance }));
+    };
+    const lead = [...new Set([32, 24, 16, clearance])].filter(value => value >= clearance)
+      .find(value => fits(start, source, value) && fits(end, target, value)) || clearance;
+    [start, end].forEach(port => { port.outer = { x: port.edge.x + port.direction * lead, y: port.edge.y }; });
   }
 
-  // Prefer the middle of the physical gaps, with separate halves for incoming
-  // and outgoing cables. Expanded obstacle edges remain an emergency channel,
+  // Prefer the middle of the physical gaps, with fixed neighboring color rails.
+  // Expanded obstacle edges remain an emergency channel,
   // never the first choice that made the former arrows cling to card borders.
-  function boardChannels(obstacles, bounds, clearance, role, lane) {
+  function boardChannels(obstacles, bounds, clearance, offset) {
     const bands = mergedBands(obstacles.map(rect => [rect.left, rect.right]));
     const channels = [];
     const gaps = [];
@@ -134,11 +168,45 @@
       const high = right - clearance;
       if (high < low) return;
       const middle = (left + right) / 2;
-      const separation = Math.min(12, Math.max(0, (high - low) / 4));
-      const fan = Math.min(lane * 7, Math.max(0, separation - 3));
-      channels.push(middle + (role === 'prerequisite' ? -1 : 1) * (separation + fan));
+      channels.push(Math.max(low, Math.min(high, middle + offset)));
     });
     return channels;
+  }
+
+  // Most circuits need just one middle rail or a rectangular loop around a
+  // card column. Try those uniform shapes before the obstacle-grid fallback.
+  function boardCircuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance, offset) {
+    const safe = points => points.every(point => inBounds(point, bounds)) && points.slice(1).every((point, index) =>
+      !segmentBlocked(points[index], point, obstacles) && !sharesTrack(points[index], point, reserved));
+    const midpoint = (start.edge.x + end.edge.x) / 2;
+    const between = channels.filter(x => x >= start.outer.x && x <= end.outer.x)
+      .sort((a, b) => Math.abs(a - midpoint) - Math.abs(b - midpoint));
+    for (const channel of between) {
+      const points = compactPath([start.edge, { x: channel, y: start.edge.y }, { x: channel, y: end.edge.y }, end.edge]);
+      if (safe(points)) return points;
+    }
+    const outputRail = channels.filter(x => x >= start.outer.x).sort((a, b) => a - b)[0];
+    const inputRail = channels.filter(x => x <= end.outer.x).sort((a, b) => b - a)[0];
+    if (!Number.isFinite(outputRail) || !Number.isFinite(inputRail)) return [];
+    const left = Math.min(outputRail, inputRail);
+    const right = Math.max(outputRail, inputRail);
+    const bands = mergedBands(obstacles.filter(rect => rect.left < right && rect.right > left).map(rect => [rect.top, rect.bottom]));
+    const crossings = [];
+    let previous = bounds.top;
+    bands.forEach(([top, bottom]) => {
+      if (top - previous >= clearance * 2) crossings.push(Math.max(previous + clearance, Math.min(top - clearance, (previous + top) / 2 + offset)));
+      previous = Math.max(previous, bottom);
+    });
+    if (bounds.bottom - previous >= clearance * 2) crossings.push(Math.max(previous + clearance,
+      Math.min(bounds.bottom - clearance, (previous + bounds.bottom) / 2 + offset)));
+    const middleY = (start.edge.y + end.edge.y) / 2;
+    crossings.sort((a, b) => Math.abs(a - middleY) - Math.abs(b - middleY) || a - b);
+    for (const crossing of crossings) {
+      const points = compactPath([start.edge, { x: outputRail, y: start.edge.y }, { x: outputRail, y: crossing },
+        { x: inputRail, y: crossing }, { x: inputRail, y: end.edge.y }, end.edge]);
+      if (safe(points)) return points;
+    }
+    return [];
   }
 
   function circuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance) {
@@ -253,7 +321,7 @@
   }
 
   // Route the complete one-hop circuit together, rather than independently
-  // selecting the shortest port for every edge. Stable sorting and fan slots
+  // selecting the shortest port for every edge. Stable sorting and input slots
   // make the same graph draw identically after resize or a different API order.
   function routeConnections(edgeValues, positionValues, obstacleValues, boundsValue, options = {}) {
     const positions = positionValues instanceof Map ? positionValues : new Map(Object.entries(positionValues || {}).map(([id, rect]) => [+id, rect]));
@@ -263,9 +331,14 @@
     const layout = ['overview', 'timeline'].includes(options.layout) ? options.layout : 'board';
     const clearance = Number.isFinite(+options.clearance) && +options.clearance > 0 ? +options.clearance : 6;
     const selected = +options.selectedId;
-    const edges = (edgeValues || []).map(edge => ({ from: +edge.from, to: +edge.to, role: +edge.to === selected ? 'prerequisite' : 'dependent' }))
+    const edgeCandidates = (edgeValues || []).map(edge => ({ from: +edge.from, to: +edge.to }))
       .filter(edge => edge.from > 0 && edge.to > 0 && edge.from !== edge.to && positions.has(edge.from) && positions.has(edge.to))
-      .sort((a, b) => (a.role === b.role ? 0 : a.role === 'prerequisite' ? -1 : 1) || a.from - b.from || a.to - b.to);
+      .sort((a, b) => a.from - b.from || a.to - b.to);
+    const steps = dependencySteps(edgeCandidates, selected);
+    const edges = edgeCandidates.map(edge => ({ ...edge, sourceStep: steps.get(edge.from) || 1, role: roleForStep(steps.get(edge.from) || 1) }))
+      .sort((a, b) => a.sourceStep - b.sourceStep || a.from - b.from || a.to - b.to);
+    const roles = [...new Set(edges.map(edge => edge.role))];
+    const offsetFor = role => (roles.indexOf(role) - (roles.length - 1) / 2) * 16;
     const rectangles = new Map();
     edges.forEach(edge => [edge.from, edge.to].forEach(id => {
       const rect = normalizeRect(positions.get(id));
@@ -290,7 +363,6 @@
     orderPorts(outgoing, edge => edge.to);
     orderPorts(incoming, edge => edge.from);
     const routes = [];
-    const lanes = { prerequisite: 0, dependent: 0 };
     edges.forEach(edge => {
       const source = rectangles.get(edge.from);
       const target = rectangles.get(edge.to);
@@ -299,32 +371,30 @@
       const endGroup = incoming.get(edge.to);
       const start = circuitPort(source, true, startGroup.indexOf(edge), startGroup.length, layout, clearance);
       const end = circuitPort(target, false, endGroup.indexOf(edge), endGroup.length, layout, clearance);
-      extendPort(start, source, obstacles, bounds, clearance, 28);
-      extendPort(end, target, obstacles, bounds, clearance, 16);
-      const lane = lanes[edge.role]++;
+      extendPorts(start, source, end, target, obstacles, bounds, clearance);
+      const offset = offsetFor(edge.role);
       let channels;
-      if (layout === 'board') channels = boardChannels(obstacles, bounds, clearance, edge.role, lane);
+      if (layout === 'board') channels = boardChannels(obstacles, bounds, clearance, offset);
       else {
         const nearest = Math.min(...[...rectangles.values()].map(rect => rect.left));
         const gutterRight = Math.min(nearest, bounds.left + Math.max(36, +options.gutterWidth || 88));
         const gutterLeft = bounds.left + clearance;
         const middle = (gutterLeft + gutterRight) / 2;
         const half = Math.max(0, (gutterRight - gutterLeft) / 2 - clearance);
-        const separation = Math.min(16, half);
-        const fan = Math.min(lane * 8, Math.max(0, half - separation));
-        channels = [middle + (edge.role === 'prerequisite' ? -1 : 1) * (separation + fan)];
+        channels = [middle + Math.max(-half, Math.min(half, offset))];
       }
       const reserved = routes.filter(route => route.role !== edge.role).map(route => route.points);
       let points = [];
-      if (layout !== 'board') {
+      if (layout === 'board') points = boardCircuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance, offset);
+      else {
         const channel = channels[0];
         const direct = compactPath([start.edge, { x: channel, y: start.edge.y }, { x: channel, y: end.edge.y }, end.edge]);
         if (direct.every(point => inBounds(point, bounds)) && direct.slice(1).every((point, index) =>
           !segmentBlocked(direct[index], point, obstacles) && !sharesTrack(direct[index], point, reserved))) points = direct;
       }
       if (!points.length) points = circuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance);
-      if (points.length) routes.push({ ...edge, points, sourceStep: edge.role === 'prerequisite' ? 1 : 2, sourceDirection: start.direction,
-        sourceLead: Math.abs(start.outer.x - start.edge.x) });
+      if (points.length) routes.push({ ...edge, points, sourceDirection: start.direction,
+        sourceLead: Math.abs(start.outer.x - start.edge.x), targetLead: Math.abs(end.outer.x - end.edge.x) });
     });
     return routes;
   }
@@ -336,6 +406,10 @@
 
   function pathData(points) {
     return points.map((point, index) => (index ? 'L' : 'M') + point.x.toFixed(1) + ' ' + point.y.toFixed(1)).join(' ');
+  }
+
+  function escapedText(value) {
+    return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   }
 
   function wire(root, options = {}) {
@@ -353,22 +427,28 @@
     const overlay = document.createElementNS(SVG_NS, 'svg');
     overlay.setAttribute('class', 'dependencyHoverOverlay');
     overlay.setAttribute('aria-hidden', 'true');
+    overlay.setAttribute('role', 'group');
+    overlay.setAttribute('aria-label', 'Task dependencies');
     overlay.setAttribute('focusable', 'false');
     overlay.setAttribute('width', '1');
     overlay.setAttribute('height', '1');
     layerRoot.classList.add('dependencyHoverSurface');
     layerRoot.append(overlay);
     const markerId = 'dependencyHoverArrow' + ++nextOverlayId;
-    const roleClasses = { prerequisite: 'dependencyHoverPrerequisite', dependent: 'dependencyHoverDependent' };
+    const roleClasses = { prerequisite: 'dependencyHoverPrerequisite', active: 'dependencyHoverActive', dependent: 'dependencyHoverDependent' };
     const definitions = '<defs>' + Object.keys(roleClasses).map(role => '<marker id="' + markerId + role + '" class="' + roleClasses[role] + '" viewBox="0 0 16 18" refX="15" refY="9" markerWidth="16" markerHeight="18" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><path d="M5 1 L15 9 L5 17 Z"></path></marker>').join('') + '</defs>';
-    let hovered = 0;
-    let focused = 0;
     let pinned = +options.selectedId || 0;
+    let highlightedEdge = null;
+    let pointerEdge = null;
+    let focusedEdge = null;
+    let visibleSteps = new Map();
+    let visibleRelated = new Set();
     let frame = 0;
     let destroyed = false;
     const listeners = [];
     const resetOverlay = () => {
       overlay.innerHTML = '';
+      overlay.setAttribute('aria-hidden', 'true');
       // Absolute SVG dimensions participate in scroll overflow. Discard the
       // previous drawing's extent before measuring the current content size.
       overlay.setAttribute('width', '1');
@@ -379,28 +459,34 @@
       target.addEventListener(name, handler, capture);
       listeners.push(() => target.removeEventListener(name, handler, capture));
     };
+    const updateHighlight = () => {
+      const endpoints = highlightedEdge ? new Set([highlightedEdge.from, highlightedEdge.to]) : null;
+      nodes.forEach(node => {
+        const id = idOf(node);
+        const step = visibleSteps.get(id) || 0;
+        node.classList.toggle('dependencyHoverSelected', pinned > 0 && id === pinned);
+        node.classList.toggle('dependencyHoverRelated', pinned > 0 && visibleRelated.has(id));
+        Object.entries(roleClasses).forEach(([role, className]) => node.classList.toggle(className, pinned > 0 && step > 0 && roleForStep(step) === role));
+        node.classList.toggle('dependencyHoverDimmed', pinned > 0 && (endpoints ? !endpoints.has(id) : !visibleRelated.has(id)));
+        if (pinned > 0 && step) node.setAttribute('data-dependency-step', String(step));
+        else node.removeAttribute?.('data-dependency-step');
+      });
+      [...overlay.querySelectorAll('[data-dependency-wire]')].forEach(group => {
+        const dimmed = !!highlightedEdge && (+group.getAttribute('data-dependency-from') !== highlightedEdge.from ||
+          +group.getAttribute('data-dependency-to') !== highlightedEdge.to);
+        group.classList.toggle('dependencyHoverWireDimmed', dimmed);
+      });
+    };
     const draw = () => {
       frame = 0;
       if (destroyed) return;
-      const selected = pinned || hovered || focused;
-      const edges = directEdges(options.edges, selected);
-      const related = new Set(edges.flatMap(edge => [edge.from, edge.to]));
-      const prerequisites = new Set(edges.filter(edge => edge.to === selected).map(edge => edge.from));
-      const dependents = new Set(edges.filter(edge => edge.from === selected).map(edge => edge.to));
-      const group = options.relatedById instanceof Map ? options.relatedById.get(selected) : options.relatedById?.[selected];
-      if (group && !edges.length) [...group].forEach(id => { related.add(+id); });
-      nodes.forEach(node => {
-        const id = idOf(node);
-        node.classList.toggle('dependencyHoverActive', selected > 0 && id === selected);
-        node.classList.toggle('dependencyHoverRelated', id !== selected && related.has(id));
-        node.classList.toggle(roleClasses.prerequisite, prerequisites.has(id));
-        node.classList.toggle(roleClasses.dependent, dependents.has(id));
-        node.classList.toggle('dependencyHoverDimmed', selected > 0 && id !== selected && !related.has(id));
-        const step = id === selected ? 2 : prerequisites.has(id) ? 1 : dependents.has(id) ? 3 : 0;
-        if (selected > 0 && step) node.setAttribute('data-dependency-step', String(step));
-        else node.removeAttribute?.('data-dependency-step');
-      });
+      const selected = pinned;
+      const available = new Set(nodes.map(idOf));
+      const edges = directEdges(options.edges, selected).filter(edge => available.has(edge.from) && available.has(edge.to));
+      visibleRelated = new Set(selected > 0 ? [selected, ...edges.flatMap(edge => [edge.from, edge.to])] : []);
+      visibleSteps = dependencySteps(edges, selected);
       resetOverlay();
+      updateHighlight();
       if (!selected || !edges.length || !layerRoot.isConnected) return;
       const surface = layerRoot.getBoundingClientRect();
       if (surface.width < 1 || surface.height < 1) return;
@@ -421,12 +507,9 @@
       overlay.setAttribute('width', String(width));
       overlay.setAttribute('height', String(height));
       overlay.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
-      let outlines = '';
-      let lines = '';
-      let dots = '';
-      let heads = '';
-      let sequences = '';
+      let drawing = '';
       const numberedSources = new Set();
+      const labelFor = id => options.labelsById instanceof Map ? options.labelsById.get(id) : options.labelsById?.[id];
       const routes = routeConnections(edges, positions, obstacles, { left: 1, top: 1, right: width - 1, bottom: height - 1 },
         { layout: options.layout, clearance: routeClearance, gutterWidth: options.gutterWidth, selectedId: selected });
       routes.forEach(edge => {
@@ -434,12 +517,7 @@
         const path = pathData(route);
         const role = edge.role;
         const roleClass = roleClasses[role];
-        outlines += '<path class="dependencyHoverOutline" d="' + path + '"></path>';
-        lines += '<path class="dependencyHoverLine ' + roleClass + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>';
-        dots += '<circle class="dependencyHoverDot ' + roleClass + '" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>';
-        // The head stays wide enough to show direction even when the last bend
-        // is only a few pixels away in a table gutter or between short bars.
-        heads += '<path class="dependencyHoverArrowHead ' + roleClass + '" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + role + ')"></path>';
+        let sequence = '';
         const key = edge.from + ':' + role;
         if (!numberedSources.has(key) && edge.sourceLead >= 25) {
           numberedSources.add(key);
@@ -448,31 +526,69 @@
           const badgeDistance = options.layout === 'timeline' || options.layout === 'overview' ? 25 : 15;
           const x = route[0].x + edge.sourceDirection * badgeDistance;
           const y = route[0].y;
-          sequences += '<g class="dependencyHoverSequence ' + roleClass + '" data-dependency-source="' + edge.from + '" data-dependency-step="' + edge.sourceStep + '"><circle cx="' + x + '" cy="' + y + '" r="10"></circle><text x="' + x + '" y="' + y + '">' + edge.sourceStep + '</text></g>';
+          sequence = '<g class="dependencyHoverSequence ' + roleClass + '" data-dependency-source="' + edge.from + '" data-dependency-step="' + edge.sourceStep + '"><circle cx="' + x + '" cy="' + y + '" r="10"></circle><text x="' + x + '" y="' + y + '">' + edge.sourceStep + '</text></g>';
         }
+        const description = escapedText((labelFor(edge.from) || '#' + edge.from) + ' → ' + (labelFor(edge.to) || '#' + edge.to));
+        drawing += '<g class="dependencyHoverWire" data-dependency-wire="' + edge.from + '>' + edge.to + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" tabindex="0" role="img" aria-label="Dependency: ' + description + '">' +
+          '<title>' + description + '</title>' +
+          '<path class="dependencyHoverOutline" d="' + path + '"></path>' +
+          '<path class="dependencyHoverLine ' + roleClass + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>' +
+          '<circle class="dependencyHoverDot ' + roleClass + '" cx="' + route[0].x + '" cy="' + route[0].y + '" r="3"></circle>' +
+          '<path class="dependencyHoverArrowHead ' + roleClass + '" d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + role + ')"></path>' + sequence +
+          '<path class="dependencyHoverHit" fill="none" stroke="transparent" stroke-width="18" pointer-events="stroke" d="' + path + '"></path></g>';
       });
-      // Incoming arrowheads remain visible where an outgoing line shares a port.
-      overlay.innerHTML = lines ? definitions + outlines + lines + dots + heads + sequences : '';
+      overlay.innerHTML = drawing ? definitions + drawing : '';
+      overlay.setAttribute('aria-hidden', drawing ? 'false' : 'true');
+      updateHighlight();
     };
     const refresh = () => {
       if (!destroyed && !frame) frame = window.requestAnimationFrame(draw);
     };
     const cleanup = () => {
-      hovered = focused = 0;
+      highlightedEdge = pointerEdge = focusedEdge = null;
       if (frame) window.cancelAnimationFrame(frame);
       frame = 0;
       nodes.forEach(node => {
-        node.classList.remove('dependencyHoverActive', 'dependencyHoverRelated', 'dependencyHoverDimmed', roleClasses.prerequisite, roleClasses.dependent);
+        node.classList.remove('dependencyHoverSelected', 'dependencyHoverRelated', 'dependencyHoverDimmed', ...Object.values(roleClasses));
         node.removeAttribute?.('data-dependency-step');
       });
       resetOverlay();
     };
     const clear = () => { cleanup(); if (pinned && !destroyed) draw(); };
-    nodes.forEach(node => {
-      listen(node, 'pointerenter', event => { if (event.pointerType === 'touch') return; hovered = idOf(node); draw(); });
-      listen(node, 'pointerleave', () => { if (hovered === idOf(node)) hovered = 0; draw(); });
-      listen(node, 'focusin', () => { focused = idOf(node); draw(); });
-      listen(node, 'focusout', event => { if (!node.contains(event.relatedTarget) && focused === idOf(node)) { focused = 0; draw(); } });
+    const wireGroup = target => target?.closest?.('[data-dependency-wire]');
+    const edgeFor = group => ({ from: +group.getAttribute('data-dependency-from'), to: +group.getAttribute('data-dependency-to') });
+    const highlight = () => { highlightedEdge = pointerEdge || focusedEdge; updateHighlight(); };
+    listen(overlay, 'pointerover', event => {
+      if (event.pointerType === 'touch') return;
+      const group = wireGroup(event.target);
+      if (!group || !overlay.contains(group)) return;
+      pointerEdge = edgeFor(group);
+      highlight();
+    });
+    listen(overlay, 'pointerout', event => {
+      const from = wireGroup(event.target);
+      const to = wireGroup(event.relatedTarget);
+      if (!from || from === to) return;
+      pointerEdge = null;
+      highlight();
+    });
+    listen(overlay, 'pointerleave', () => { pointerEdge = null; highlight(); });
+    listen(overlay, 'focusin', event => {
+      const group = wireGroup(event.target);
+      if (!group || !overlay.contains(group)) return;
+      focusedEdge = edgeFor(group);
+      highlight();
+    });
+    listen(overlay, 'focusout', event => {
+      if (wireGroup(event.target) === wireGroup(event.relatedTarget)) return;
+      focusedEdge = null;
+      highlight();
+    });
+    listen(overlay, 'keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      pointerEdge = focusedEdge = null;
+      highlight();
     });
     listen(root, 'dragstart', clear);
     listen(window, 'blur', clear);
@@ -484,7 +600,7 @@
     const controller = {
       clear,
       refresh,
-      setSelected(id) { pinned = +id || 0; hovered = focused = 0; draw(); },
+      setSelected(id) { pinned = +id || 0; highlightedEdge = pointerEdge = focusedEdge = null; draw(); },
       destroy() {
         if (destroyed) return;
         cleanup();
@@ -501,7 +617,7 @@
     return controller;
   }
 
-  const api = { directEdges, routeConnection, routeConnections, segmentBlocked, sharesTrack, pathData, wire };
+  const api = { directEdges, dependencySteps, routeConnection, routeConnections, segmentBlocked, sharesTrack, pathData, wire };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (global) global.KanbanodonDependencyHover = api;
 })(typeof window === 'undefined' ? null : window);
