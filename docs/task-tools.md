@@ -36,11 +36,15 @@ Moving the original task out of “Done” and completing it again creates anoth
 
 ## Planning and data exchange
 
-The "Sprints" panel is visible on the board. Set the first Sprint start date and its length in weeks, then save. Sprint cards appear after a successful save. The panel shows the current Sprint and the next five, or the first six before the saved cadence begins. Changes to the cadence fields are marked as unsaved; the saved cards and their dates remain unchanged until a successful save. Sprint names can be edited directly, and the focus action fits the selected Sprint's date range to the Timeline width. "Show full timeline" restores the complete date range.
+The "Sprints" panel is available in Board, Overview, and Timeline. In Board, set the first Sprint start date and its length in weeks, then save. Sprint cards appear after a successful save. Changes to the cadence fields are marked as unsaved; the saved cards and their dates remain unchanged until a successful save. Sprint names can be edited directly in Board.
 
-Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
+Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint and the next five are shown by default, or the first six before the saved cadence begins. Browsing does not select a Sprint. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
+
+Select a Sprint to filter Board or Overview to its tasks; their Epic headings remain visible. In Timeline, selection fits the Sprint's dates to the available width while keeping all task rows. The selected card is highlighted and marked "Selected". The selection remains active when moving between Board, Overview, and Timeline. Select "All sprints", or the same card again, to clear it. Without a selection, Board and Overview show all tasks and Timeline shows the full date range; the current Sprint is not selected automatically.
 
 Overview and Timeline are directly available in the sidebar. The simplified Overview shows five main columns; "Show planning columns" displays additional fields. Timeline identifies assumed dates as estimates. Saved time, delays, and completion estimates appear on thin rails below the task bars, keeping task names readable.
+
+With a Sprint selected, dependency inspection in Board and Overview stays within that Sprint. Choose "All sprints" to inspect connections across Sprint boundaries.
 
 Select "Dependencies" beside "Edit" to preview the complete connected chain, including its predecessors, successors, and branches. Unrelated tasks fade. Numbering starts at 1 for tasks without predecessors; each dependent stage adds one. Colors progress from blue at the start, through gold in the middle, to teal at the end, with mixed colors for intermediate stages. Parallel tasks at the same stage share a color. A two-stage chain uses blue and teal. Frames and outgoing arrows use the source task’s color. Arrows point to dependent tasks, and scrolling keeps their routes unchanged.
 

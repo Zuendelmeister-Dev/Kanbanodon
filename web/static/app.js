@@ -19,7 +19,9 @@ let sprintCadenceDraft = null;
 let sprintStripPage = null;
 let timelineZoom = 1;
 let timelineEpicFilter = 'all';
-let timelineFocusSprint = initialRoute.sprintNumber || 0;
+// The same saved Sprint filters Board/Overview and frames the Timeline calendar.
+let timelineFocusSprint = ['board', 'overview', 'timeline'].includes(view) ? initialRoute.sprintNumber || 0 : 0;
+let planningSprintBoardId = initialRoute.boardId || selectedBoardId;
 let timelineCenterDate = null;
 let dependencyFocusTicketId = 0;
 let dependencyFocusBoardId = 0;
@@ -64,6 +66,10 @@ function invalidateSessionRequests() {
   loadGeneration++;
   sprintCadenceDraft = null;
   sprintSettingsStatus = '';
+  timelineFocusSprint = 0;
+  planningSprintBoardId = 0;
+  timelineCenterDate = null;
+  sprintStripPage = null;
   dependencyFocusTicketId = dependencyFocusBoardId = 0;
   dependencyFocused = false;
   collapsedEpics.clear();
@@ -199,7 +205,7 @@ function render() {
 // The visible route mirrors the current view, selected board, and optional open drawer.
 function syncRoute(mode = 'push', ticketId = editing?.id || 0) {
   if (!router || !state.me) return;
-  router.writeRoute(mode, view, selectedBoardId || currentBoardId(), ticketId, view === 'timeline' ? timelineFocusSprint : 0);
+  router.writeRoute(mode, view, selectedBoardId || currentBoardId(), ticketId, ['board', 'overview', 'timeline'].includes(view) ? timelineFocusSprint : 0);
 }
 
 // Applies a parsed URL hash route to the in-memory UI state.
@@ -212,8 +218,15 @@ function applyRoute(route) {
   if (selectedBoardId) localStorage.setItem('kanbanodon.boardId', selectedBoardId);
   view = route.view || 'board';
   pendingTicketId = route.ticketId || 0;
-  timelineFocusSprint = view === 'timeline' ? +(route.sprintNumber || 0) : 0;
-  if (timelineFocusSprint) { timelineZoom = 1; dependencyFocusTicketId = 0; dependencyFocused = false; }
+  timelineFocusSprint = ['board', 'overview', 'timeline'].includes(view) ? +(route.sprintNumber || 0) : 0;
+  planningSprintBoardId = requestedBoardId;
+  sprintStripPage = null;
+  if (['board', 'overview', 'timeline'].includes(view)) {
+    timelineZoom = 1;
+    dependencyFocusTicketId = 0;
+    dependencyFocused = false;
+  }
+  if (view === 'timeline' && timelineFocusSprint) timelineEpicFilter = 'all';
   timelineCenterDate = null;
   if (route.boardId && route.boardId !== currentBoardId()) {
     return load();
@@ -704,10 +717,41 @@ function filteredWork() {
   return filtered().filter(t => !isBacklogTicket(t));
 }
 
+// A selected Sprint is shared by the three planning views, using saved dates only.
+function selectedPlanningSprint() {
+  if (!['board', 'overview', 'timeline'].includes(view)) return null;
+  // A routed Sprint belongs to the requested board while its state is loading.
+  if (selectedBoardId && currentBoardId() && selectedBoardId !== currentBoardId()) return null;
+  if (planningSprintBoardId && planningSprintBoardId !== currentBoardId()) timelineFocusSprint = 0;
+  planningSprintBoardId = currentBoardId();
+  const sprint = sprintByNumber(timelineFocusSprint);
+  if (timelineFocusSprint && !sprint) timelineFocusSprint = 0;
+  return sprint;
+}
+
+// Board and Overview retain Epic context while showing only work in this Sprint.
+function sprintFilteredWork(tickets) {
+  const sprint = view === 'timeline' ? null : selectedPlanningSprint();
+  if (!sprint) return tickets;
+  const active = workTickets();
+  const visible = new Set(tickets.filter(ticket => ticket.type !== 'epic' && ticketSprint(ticket)?.number === sprint.number).map(ticket => +ticket.id));
+  tickets.filter(ticket => ticket.type === 'epic' && ticketSprint(ticket)?.number === sprint.number && !descendantTickets(ticket.id, new Set(), active).length).forEach(ticket => visible.add(+ticket.id));
+  for (const id of [...visible]) {
+    let ticket = parentTicket(id);
+    const seen = new Set();
+    while (ticket?.parentId && !seen.has(+ticket.id)) {
+      seen.add(+ticket.id);
+      ticket = parentTicket(ticket.parentId);
+      if (ticket?.type === 'epic' && active.some(item => +item.id === +ticket.id)) visible.add(+ticket.id);
+    }
+  }
+  return active.filter(ticket => visible.has(+ticket.id));
+}
+
 // Follow both directions so a dependency view keeps the complete connected chain.
 function dependencyViewIds() {
   if (!dependencyFocusTicketId || dependencyFocusBoardId !== currentBoardId()) return null;
-  const tickets = workTickets();
+  const tickets = sprintFilteredWork(workTickets());
   const selected = tickets.find(ticket => +ticket.id === dependencyFocusTicketId);
   if (!selected) { dependencyFocusTicketId = 0; dependencyFocused = false; return null; }
   const neighbors = new Map();
@@ -733,7 +777,7 @@ function dependencyFocusIds() {
 
 function planningWork() {
   const ids = dependencyViewIds();
-  if (!ids) return filteredWork();
+  if (!ids) return sprintFilteredWork(filteredWork());
   const visible = new Set(dependencyFocused ? ids : filteredWork().map(ticket => +ticket.id));
   ids.forEach(id => visible.add(id));
   ids.forEach(id => {
@@ -745,7 +789,7 @@ function planningWork() {
       if (ticket?.type === 'epic' && !ticket.archivedAt && !ticket.deletedAt && !isBacklogTicket(ticket)) visible.add(+ticket.id);
     }
   });
-  return workTickets().filter(ticket => visible.has(+ticket.id));
+  return sprintFilteredWork(workTickets().filter(ticket => visible.has(+ticket.id)));
 }
 
 function toggleDependencyFocus(id) {
@@ -922,11 +966,30 @@ function sprintPlannerHtml(tickets) {
   const weeks = boardSprintWeeks();
   const draft = currentSprintCadenceDraft();
   const status = draft ? 'Unsaved changes' : sprintSettingsStatus || (start ? 'Cadence saved' : '');
-  return '<section class="panel sprintPlanner"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>Set the first Sprint once. Every following Sprint continues automatically.</p></div><div class="sprintSettings"><label><span>First Sprint starts</span><input id="sprintStartDate" type="date" value="' + escAttr(draft ? draft.start : start) + '"></label><label><span>Duration</span><span class="sprintDurationField"><input id="sprintWeeks" type="number" min="1" max="52" step="1" value="' + escAttr(draft ? draft.weeks : weeks) + '"><em>weeks</em></span></label><button id="saveSprintSettings" type="button">Save Sprint plan</button></div></div><div class="sprintPreview">' + sprintPreviewHtml(tickets, start, weeks) + '</div><div class="sprintPlannerFeedback"><p id="sprintSettingsError" class="formError" role="alert"></p><span id="sprintSettingsStatus" class="sprintSettingsStatus" data-state="' + (status === 'Unsaved changes' ? 'unsaved' : status ? 'saved' : '') + '">' + esc(status) + '</span></div></section>';
+  return '<section class="panel sprintPlanner" data-sprint-view="board"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>Set the first Sprint once. Every following Sprint continues automatically.</p></div><div class="sprintSettings"><label><span>First Sprint starts</span><input id="sprintStartDate" type="date" value="' + escAttr(draft ? draft.start : start) + '"></label><label><span>Duration</span><span class="sprintDurationField"><input id="sprintWeeks" type="number" min="1" max="52" step="1" value="' + escAttr(draft ? draft.weeks : weeks) + '"><em>weeks</em></span></label><button id="saveSprintSettings" type="button">Save Sprint plan</button></div></div>' + sprintSelectionHtml('board') + '<div class="sprintPreview" data-sprint-mode="editable">' + sprintPreviewHtml(tickets, start, weeks) + '</div><div class="sprintPlannerFeedback"><p id="sprintSettingsError" class="formError" role="alert"></p><span id="sprintSettingsStatus" class="sprintSettingsStatus" data-state="' + (status === 'Unsaved changes' ? 'unsaved' : status ? 'saved' : '') + '">' + esc(status) + '</span></div></section>';
+}
+
+// The same saved Sprint strip filters work views and focuses only dates in Timeline.
+function sprintNavigationHtml(tickets, targetView = view) {
+  const start = boardSprintStartValue();
+  const weeks = boardSprintWeeks();
+  const help = targetView === 'timeline' ? 'Choose a Sprint to focus its dates. All tasks stay in the timeline.' : 'Choose a Sprint to show its tasks.';
+  return '<section class="panel sprintNavigation" data-sprint-view="' + escAttr(targetView) + '"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>' + help + '</p></div></div>' + sprintSelectionHtml(targetView) + '<div class="sprintPreview" data-sprint-mode="readonly">' + sprintPreviewHtml(tickets, start, weeks, startOfDay(new Date()), false, targetView) + '</div></section>';
+}
+
+// Keep the active filter visible even when browsing another six-card Sprint window.
+function sprintSelectionHtml(targetView = view) {
+  const selected = selectedPlanningSprint();
+  const summary = selected ? (targetView === 'timeline' ? 'Focused on ' : 'Showing tasks in ') + sprintName(selected) : targetView === 'timeline' ? 'Full timeline' : 'All tasks';
+  return '<div class="sprintSelection"><button class="sprintAll' + (selected ? '' : ' selected') + '" data-sprint-all type="button" aria-pressed="' + !selected + '">All sprints</button><span class="sprintSelectionSummary" aria-live="polite">' + esc(summary) + '</span></div>';
+}
+
+function wireSprintNavigation(root) {
+  wireSprintCards(!!boardSprintStartValue(), root, false);
 }
 
 // Builds six saved Sprints with previous/next controls and explains unscheduled work.
-function sprintPreviewHtml(tickets, startValue, weeksValue, today = startOfDay(new Date())) {
+function sprintPreviewHtml(tickets, startValue, weeksValue, today = startOfDay(new Date()), editable = true, targetView = view) {
   const start = parseDate(startValue);
   if (!start) return '<span class="sprintPreviewNote">Choose the first Sprint start date.</span>';
   const weeks = validSprintWeeks(weeksValue);
@@ -939,7 +1002,7 @@ function sprintPreviewHtml(tickets, startValue, weeksValue, today = startOfDay(n
   const notes = [];
   if (before) notes.push(before + ' scheduled item' + (before === 1 ? ' is' : 's are') + ' before Sprint 1');
   if (unscheduled) notes.push(unscheduled + ' item' + (unscheduled === 1 ? ' has' : 's have') + ' no planned date');
-  const cards = sprints.map(sprintPreviewCardHtml).join('');
+  const cards = sprints.map(sprint => sprintPreviewCardHtml(sprint, editable, targetView)).join('');
   const hasEarlier = sprints[0].number > 1;
   const hasLater = sprintWindow(startValue, weeks, today, 6, sprints[0].number + 6).length === 6;
   const previousTitle = hasEarlier ? 'Show earlier sprints' : 'No earlier sprints';
@@ -950,11 +1013,17 @@ function sprintPreviewHtml(tickets, startValue, weeksValue, today = startOfDay(n
 // Keep browsing on this board without leaking pages into a different session or cadence.
 function sprintStripFirstNumber(startValue = boardSprintStartValue(), weeksValue = boardSprintWeeks()) {
   if (sprintStripPage && (sprintStripPage.boardId !== currentBoardId() || sprintStripPage.session !== sessionGeneration || sprintStripPage.start !== startValue || sprintStripPage.weeks !== +weeksValue)) sprintStripPage = null;
-  return sprintStripPage?.firstNumber || 0;
+  return sprintStripPage?.firstNumber || selectedPlanningSprint()?.number || 0;
 }
 
-// Browse the saved cadence without changing pending date fields or the Timeline focus.
-function pageSprintStrip(direction) {
+// Scope handlers to the visible view; small test surfaces can fall back to document.
+function sprintNavigationScope(root = null) {
+  const candidate = root || $('#' + view);
+  return candidate?.querySelector('.sprintPreview') ? candidate : document;
+}
+
+// Browse the saved cadence without changing pending fields or the selected Sprint.
+function pageSprintStrip(direction, root = null, editable = view === 'board', targetView = view) {
   const start = boardSprintStartValue();
   const weeks = boardSprintWeeks();
   const today = startOfDay(new Date());
@@ -963,20 +1032,23 @@ function pageSprintStrip(direction) {
   const firstNumber = Math.max(1, sprints[0].number + direction * 6);
   if (firstNumber === sprints[0].number || sprintWindow(start, weeks, today, 6, firstNumber).length !== 6) return;
   sprintStripPage = {boardId: currentBoardId(), session: sessionGeneration, start, weeks, firstNumber};
-  const preview = $('.sprintPreview');
+  const scope = sprintNavigationScope(root);
+  const preview = scope.querySelector('.sprintPreview');
   if (!preview) return;
-  preview.innerHTML = sprintPreviewHtml(workTickets(), start, weeks, today);
-  wireSprintCards(!sprintCadenceDirty() && !!start);
+  preview.innerHTML = sprintPreviewHtml(workTickets(), start, weeks, today, editable, targetView);
+  wireSprintCards(!!start && (!editable || !sprintCadenceDirty()), scope, editable, targetView);
 }
 
-// Builds one editable Sprint card with a dedicated Timeline focus action.
-function sprintPreviewCardHtml(sprint) {
+// Keep the current date phase separate from an explicitly selected Sprint.
+function sprintPreviewCardHtml(sprint, editable = true, targetView = view) {
   const fallback = defaultSprintName(sprint.number);
   const name = sprintName(sprint);
   const phase = sprint.current ? 'Current' : sprint.next ? 'Next' : sprint.past ? 'Past' : 'Upcoming';
-  const phaseClass = sprint.current ? ' current' : sprint.next ? ' next' : '';
-  const jumpLabel = 'Open ' + name + ' in Timeline';
-  return '<article class="sprintCard' + phaseClass + '" data-sprint-card="' + sprint.number + '"><button class="sprintJump" data-sprint-jump="' + sprint.number + '" type="button" title="' + escAttr(jumpLabel) + '" aria-label="' + escAttr(jumpLabel) + '"><span aria-hidden="true">⌖</span></button><label><span>' + esc(fallback) + '<em>' + phase + '</em></span><input class="sprintNameInput" data-sprint-name="' + sprint.number + '" data-original-display="' + escAttr(name) + '" maxlength="80" value="' + escAttr(name) + '" title="Edit name · saved automatically" aria-label="Name for ' + escAttr(fallback) + '"></label><small>' + esc(shortRange(sprint.start, sprint.end)) + '</small><span class="sprintNameStatus" data-sprint-name-status="' + sprint.number + '" aria-live="polite"></span></article>';
+  const selected = selectedPlanningSprint()?.number === sprint.number;
+  const phaseClass = (sprint.current ? ' current' : sprint.next ? ' next' : '') + (selected ? ' selected' : '');
+  const jumpLabel = selected ? 'Show all sprints' : (targetView === 'timeline' ? 'Focus on ' : 'Show tasks in ') + name;
+  const nameHtml = editable ? '<label><span>' + esc(fallback) + '<em>' + phase + '</em></span><input class="sprintNameInput" data-sprint-name="' + sprint.number + '" data-original-display="' + escAttr(name) + '" maxlength="80" value="' + escAttr(name) + '" title="Edit name · saved automatically" aria-label="Name for ' + escAttr(fallback) + '"></label>' : '<div class="sprintReadonlyInfo"><span>' + esc(fallback) + '<em>' + phase + '</em></span><strong>' + esc(name) + '</strong></div>';
+  return '<article class="sprintCard' + phaseClass + '" data-sprint-card="' + sprint.number + '"><button class="sprintJump" data-sprint-jump="' + sprint.number + '" type="button" title="' + escAttr(jumpLabel) + '" aria-label="' + escAttr(jumpLabel) + '" aria-pressed="' + selected + '"><span aria-hidden="true">⌖</span></button>' + nameHtml + '<small>' + esc(shortRange(sprint.start, sprint.end)) + '</small><span class="sprintSelectedBadge">' + (selected ? 'Selected' : '') + '</span>' + (editable ? '<span class="sprintNameStatus" data-sprint-name-status="' + sprint.number + '" aria-live="polite"></span>' : '') + '</article>';
 }
 
 // Builds a compact board control for promoting work from Backlog into an Epic lane.
@@ -998,7 +1070,7 @@ function openBacklogView() {
 }
 
 // Attaches the sprint settings save action.
-function wireSprintPlanner() {
+function wireSprintPlanner(root = $('#board')) {
   const button = $('#saveSprintSettings');
   if (!button) return;
   const boardId = currentBoardId();
@@ -1014,7 +1086,7 @@ function wireSprintPlanner() {
     const dirty = captureSprintCadenceDraft();
     setSprintSettingsStatus(dirty ? 'Unsaved changes' : boardSprintStartValue() ? 'Cadence saved' : '', dirty ? 'unsaved' : 'saved');
     $('#sprintSettingsError').textContent = '';
-    wireSprintCards(!dirty && !!boardSprintStartValue());
+    wireSprintCards(!dirty && !!boardSprintStartValue(), root, true, 'board');
   };
   startInput.oninput = updateDraft;
   weeksInput.oninput = updateDraft;
@@ -1039,7 +1111,7 @@ function wireSprintPlanner() {
       weeksInput.disabled = true;
       button.textContent = 'Saving...';
       setSprintSettingsStatus('Saving...', 'saving');
-      wireSprintCards(false);
+      wireSprintCards(false, root, true, 'board');
       await api('/api/board-settings?boardId=' + encodeURIComponent(boardId), { method: 'PUT', body: JSON.stringify({ BoardID: boardId, SprintStartDate: start, SprintWeeks: weeks }) }, isCurrent);
       if (!isCurrent()) return;
       const previousState = state;
@@ -1055,11 +1127,11 @@ function wireSprintPlanner() {
       button.textContent = 'Save Sprint plan';
       const dirty = sprintCadenceDirty();
       setSprintSettingsStatus(dirty ? 'Unsaved changes' : boardSprintStartValue() ? 'Cadence saved' : '', dirty ? 'unsaved' : 'saved');
-      wireSprintCards(!dirty && !!boardSprintStartValue());
+      wireSprintCards(!dirty && !!boardSprintStartValue(), root, true, 'board');
       error.textContent = (err.message || 'Sprint cadence could not be saved.').trim();
     }
   };
-  wireSprintCards(!draft && !!boardSprintStartValue());
+  wireSprintCards(!draft && !!boardSprintStartValue(), root, true, 'board');
 }
 
 // Keep editable fields through same-board renders without applying them to cards.
@@ -1098,29 +1170,45 @@ function setSprintSettingsStatus(message, phase) {
   status.dataset.state = message ? phase : '';
 }
 
-// Attaches editable Sprint names and the icon-only Timeline jump actions.
-function wireSprintCards(jumpEnabled) {
+// Bind only the visible strip, using persisted cadence even with a hidden Board draft.
+function wireSprintCards(jumpEnabled, root = null, editable = true, targetView = view) {
   const boardId = currentBoardId();
   const sessionCurrent = currentSessionGuard();
-  $$('.sprintPageButton').forEach(button => {
+  const scope = sprintNavigationScope(root);
+  const isCurrent = () => sessionCurrent() && boardId === currentBoardId() && (!selectedBoardId || boardId === selectedBoardId) && view === targetView;
+  [...scope.querySelectorAll('[data-sprint-all]')].forEach(button => {
+    button.onclick = () => { if (isCurrent()) clearPlanningSprint(); };
+  });
+  [...scope.querySelectorAll('.sprintPageButton')].forEach(button => {
     button.onclick = () => {
-      if (!button.disabled && sessionCurrent() && boardId === currentBoardId() && (!selectedBoardId || boardId === selectedBoardId)) pageSprintStrip(+button.dataset.sprintPage);
+      if (!button.disabled && isCurrent()) pageSprintStrip(+button.dataset.sprintPage, scope, editable, targetView);
     };
   });
-  $$('.sprintJump').forEach(button => {
+  [...scope.querySelectorAll('.sprintJump')].forEach(button => {
     button.disabled = !jumpEnabled;
-    button.title = jumpEnabled ? 'Open ' + sprintName(sprintByNumber(+button.dataset.sprintJump)) + ' centered in Timeline' : 'Save the Sprint plan before opening it in Timeline';
+    const selected = selectedPlanningSprint()?.number === +button.dataset.sprintJump;
+    button.title = jumpEnabled ? selected ? 'Show all sprints' : (targetView === 'timeline' ? 'Focus on ' : 'Show tasks in ') + sprintName(sprintByNumber(+button.dataset.sprintJump)) : 'Save the Sprint plan before selecting a Sprint';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', String(selected));
     button.onclick = () => {
-      if (!button.disabled && sessionCurrent() && boardId === currentBoardId() && (!selectedBoardId || boardId === selectedBoardId)) jumpToSprint(+button.dataset.sprintJump);
+      if (!button.disabled && isCurrent()) selectPlanningSprint(+button.dataset.sprintJump);
     };
   });
-  $$('.sprintNameInput').forEach(input => {
+  [...scope.querySelectorAll('[data-sprint-card]')].forEach(card => {
+    card.dataset.sprintDisabled = String(!jumpEnabled);
+    card.onclick = event => {
+      if (event.target.closest('input, button') || !jumpEnabled || !isCurrent()) return;
+      selectPlanningSprint(+card.dataset.sprintCard);
+    };
+  });
+  if (!editable) return;
+  [...scope.querySelectorAll('.sprintNameInput')].forEach(input => {
     input.disabled = !jumpEnabled;
     let saveTimer = 0;
     input.oninput = () => {
       clearTimeout(saveTimer);
       if (input.disabled) return;
-      const status = document.querySelector('[data-sprint-name-status="' + input.dataset.sprintName + '"]');
+      const status = scope.querySelector('[data-sprint-name-status="' + input.dataset.sprintName + '"]');
       if (status) status.textContent = 'Unsaved';
       saveTimer = setTimeout(() => saveSprintName(input, boardId, sessionCurrent), 450);
     };
@@ -1165,7 +1253,7 @@ async function saveSprintName(input, boardId = currentBoardId(), sessionCurrent 
       return;
     }
     sprintSettingsStatus = 'Sprint name saved';
-    if (view === 'board') renderBoard();
+    if (['board', 'overview', 'timeline'].includes(view)) renderView();
   } catch (err) {
     if (!isCurrent()) return;
     input.disabled = sprintCadenceDirty() || !boardSprintStartValue();
@@ -1174,20 +1262,39 @@ async function saveSprintName(input, boardId = currentBoardId(), sessionCurrent 
   }
 }
 
-// Opens a generated Sprint fitted to the visible Timeline viewport.
-function jumpToSprint(number) {
+// Select within the current view; choosing the same Sprint returns to all work.
+function selectPlanningSprint(number) {
+  if ((selectedBoardId && selectedBoardId !== currentBoardId()) || !['board', 'overview', 'timeline'].includes(view) || !sprintByNumber(number) || !canLeaveDrawer()) return;
+  applyPlanningSprintSelection(selectedPlanningSprint()?.number === +number ? 0 : +number);
+}
+
+function clearPlanningSprint() {
+  if ((selectedBoardId && selectedBoardId !== currentBoardId()) || !['board', 'overview', 'timeline'].includes(view) || !canLeaveDrawer()) return;
+  applyPlanningSprintSelection(0);
+}
+
+function applyPlanningSprintSelection(number) {
   const range = sprintByNumber(number);
-  if (!range) return;
-  if (!canLeaveDrawer()) return;
   dependencyFocusTicketId = 0;
+  dependencyFocusBoardId = 0;
   timelineFocusSprint = number;
+  planningSprintBoardId = currentBoardId();
   dependencyFocused = false;
   timelineZoom = 1;
-  timelineCenterDate = addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2));
-  view = 'timeline';
+  timelineCenterDate = range ? addDays(range.start, Math.floor(dayDiff(range.start, range.endExclusive) / 2)) : null;
+  if (view === 'timeline') timelineEpicFilter = 'all';
+  const window = sprintWindow(boardSprintStartValue(), boardSprintWeeks(), startOfDay(new Date()), 6, sprintStripFirstNumber());
+  if (!number || !window.some(sprint => sprint.number === number)) sprintStripPage = null;
   closeDrawer(false);
   renderView();
   syncRoute('push', 0);
+}
+
+// Explicit Timeline links remain available independently of the in-view selector.
+function jumpToSprint(number) {
+  if (!sprintByNumber(number) || !canLeaveDrawer()) return;
+  view = 'timeline';
+  applyPlanningSprintSelection(+number);
 }
 
 // Keeps the target Epic selector useful for both Epic and regular backlog items.
@@ -1408,7 +1515,8 @@ function renderOverview() {
   const open = ts.length - done.length;
   const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
-  root.innerHTML = '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + planningFocusHtml() + overviewTable(ts);
+  root.innerHTML = sprintNavigationHtml(workTickets(), 'overview') + '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + planningFocusHtml() + overviewTable(ts);
+  wireSprintNavigation(root);
   wireOverviewControls(ts);
   if (root.querySelector('.ticketTable')) {
     const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'overviewColumnsToggle'; toggle.textContent = 'Show planning columns';
@@ -1730,7 +1838,7 @@ function renderGantt(root) {
   timelineFitObservers.get(root)?.disconnect();
   timelineFitObservers.delete(root);
   // Only promoted, scheduled delivery work reaches the timeline.
-  const controls = timelineControlsHtml();
+  const controls = sprintNavigationHtml(workTickets(), 'timeline') + timelineControlsHtml();
   const tasks = buildGanttRows();
   const focusRange = dependencyTimelineRange(tasks) || sprintByNumber(timelineFocusSprint);
   if (!tasks.length && !focusRange) {
@@ -1888,6 +1996,7 @@ function timelineControlsHtml() {
 
 // Attaches timeline filter, zoom, and path selection handlers.
 function wireTimelineControls(root) {
+  wireSprintNavigation(root);
   const epic = $('#timelineEpicFilter');
   if (epic) epic.onchange = () => {
     rememberTimelineCenter(root);
@@ -1901,13 +2010,7 @@ function wireTimelineControls(root) {
     renderGantt(root);
   };
   const clearFocus = $('#timelineClearFocus');
-  if (clearFocus) clearFocus.onclick = () => {
-    timelineFocusSprint = 0;
-    timelineZoom = 1;
-    timelineCenterDate = null;
-    syncRoute('replace', 0);
-    renderGantt(root);
-  };
+  if (clearFocus) clearFocus.onclick = clearPlanningSprint;
   root.querySelectorAll('.ganttTaskTitle,.ganttSvgTask').forEach(el => {
     const select = () => { const id = +(el.dataset.epicToggle || el.dataset.openTicket); const ticket = parentTicket(id); if (ticket?.type === 'epic') toggleEpic(id); else openTicket(id); };
     el.onclick = select;
@@ -2549,7 +2652,7 @@ function boardSprintStartValue() {
 // Returns the validated board Sprint duration in whole weeks.
 function boardSprintWeeks() {
   const weeks = +(state.board?.sprint_weeks ?? state.board?.SprintWeeks ?? state.board?.sprintWeeks ?? 2);
-  return validSprintWeeks(weeks) || 2;
+  return validSprintWeeks(weeks);
 }
 
 // Validates the editable Sprint duration without silently rounding it.
@@ -2581,7 +2684,8 @@ function sprintByNumber(number, startValue = boardSprintStartValue(), weeksValue
   const weeks = validSprintWeeks(weeksValue);
   number = +number;
   if (!start || !weeks || !Number.isSafeInteger(number) || number < 1) return null;
-  return sprintRange(number - 1, start, weeks);
+  const range = sprintRange(number - 1, start, weeks);
+  return validDate(range.start) && validDate(range.endExclusive) ? range : null;
 }
 
 // Returns a browsable Sprint window, starting with the current Sprint by default.
@@ -3240,7 +3344,8 @@ $$('.navButton').forEach(b => b.onclick = () => {
   if (!canLeaveDrawer()) return;
   $$('.toolsMenu').forEach(menu => menu.open = false);
   view = b.dataset.view;
-  timelineFocusSprint = 0;
+  if (!['board', 'overview', 'timeline'].includes(view)) timelineFocusSprint = 0;
+  if (view === 'timeline' && timelineFocusSprint) { timelineEpicFilter = 'all'; timelineZoom = 1; dependencyFocusTicketId = 0; dependencyFocused = false; }
   timelineCenterDate = null;
   closeDrawer(false);
   renderView();
@@ -3251,7 +3356,6 @@ $('#homeLink').onclick = e => {
   e.preventDefault();
   if (!canLeaveDrawer()) return;
   view = 'board';
-  timelineFocusSprint = 0;
   timelineCenterDate = null;
   closeDrawer(false);
   renderView();
@@ -3293,7 +3397,8 @@ function restoreLoginRoute() {
   view = route.view;
   selectedBoardId = route.boardId || selectedBoardId;
   pendingTicketId = route.ticketId;
-  timelineFocusSprint = route.sprintNumber;
+  timelineFocusSprint = ['board', 'overview', 'timeline'].includes(view) ? route.sprintNumber : 0;
+  planningSprintBoardId = route.boardId || selectedBoardId;
 }
 $('#loginBtn').onclick = async () => {
   invalidateSessionRequests();

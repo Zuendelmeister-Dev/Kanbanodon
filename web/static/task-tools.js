@@ -1,7 +1,9 @@
 // Optional task tools. Core navigation and persistence stay in app.js.
 function resetTaskFilters() {
+  if (selectedPlanningSprint() && !canLeaveDrawer()) return;
   ['search', 'typeFilter', 'labelFilter', 'assigneeFilter', 'dependencyFilter'].forEach(id => { const field = $('#' + id); if (field) field.value = ''; });
-  renderView();
+  if (selectedPlanningSprint()) clearPlanningSprint();
+  else renderView();
   renderTaskTools();
 }
 

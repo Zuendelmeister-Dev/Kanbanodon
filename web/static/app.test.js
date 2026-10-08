@@ -93,7 +93,7 @@ function loadApp(options = {}) {
   source = source.replace(/\nload\(\);\s*$/, '\n');
   source += `\nwindow.__appTest = {
     load, resetClientState, renderView, renderBoard, renderOverview, boardBacklogPickerHtml, wireBoardBacklogPicker, backlogRowHtml, overviewTable,
-    applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
+    applyRoute, openBacklogView, jumpToSprint, selectedPlanningSprint, selectPlanningSprint, clearPlanningSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
     GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml,
@@ -117,7 +117,7 @@ function loadApp(options = {}) {
     ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands, ganttSvgAxis,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
-    calculatedSprints, sprintName, sprintPlannerHtml, sprintPreviewHtml, sprintPreviewCardHtml, sprintStripFirstNumber, pageSprintStrip, shortRange,
+    calculatedSprints, sprintName, sprintPlannerHtml, sprintNavigationHtml, wireSprintNavigation, sprintPreviewHtml, sprintPreviewCardHtml, sprintStripFirstNumber, pageSprintStrip, shortRange,
     wireSprintPlanner, wireSprintCards, saveSprintName, sprintCadenceDirty, currentSessionGuard,
     wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
     fmtDate, shortDate, card, avatar, esc, escAttr,
@@ -754,7 +754,7 @@ test('Overview rendering wires explicit dependencies in the table and supports k
 test('Board shows full Sprint planning without a disclosure and keeps backlog promotion available', () => {
   const app=loadApp(); app.setState(stateWithHierarchy()); app.renderBoard();
   const html=app.elements.get('#board').innerHTML;
-  assert.match(html,/<section class="panel sprintPlanner">/);
+  assert.match(html,/<section class="panel sprintPlanner"[^>]*>/);
   assert.doesNotMatch(html,/<details class="panel sprintPlanner"|<summary>|workDependencyOverlay/);
   assert.match(html,/id="sprintStartDate"/); assert.match(html,/id="sprintWeeks"/);
   assert.match(html,/id="saveSprintSettings"/); assert.match(html,/data-sprint-name=/); assert.match(html,/data-sprint-jump=/);
@@ -897,7 +897,7 @@ test('same-board rerenders preserve cadence drafts while Sprint cards keep the s
   const html = app.elements.get('#board').innerHTML;
   assert.match(html, /id="sprintStartDate"[^>]*value="2026-10-22"/);
   assert.match(html, /id="sprintWeeks"[^>]*value="1.5"/);
-  assert.ok(html.includes('<div class="sprintPreview">' + savedPreview + '</div>'));
+  assert.ok(html.includes(savedPreview), 'Sprint cards continue to use the saved cadence');
   assert.match(html, /data-state="unsaved">Unsaved changes/);
   assert.equal(planner.start.value, '2026-10-22'); assert.equal(planner.weeks.value, '1.5');
   assert.equal(name.disabled, true);
@@ -1717,4 +1717,302 @@ test('an empty focused Sprint keeps matching timeline header and axis heights wi
   assert.match(root.innerHTML,/<div class="ganttTaskRows"><\/div><div class="ganttTaskFoot">Timeline<\/div>/);
   assert.match(root.innerHTML,/<svg class="ganttSvg"[^>]*height="118"/);
   assert.doesNotMatch(root.innerHTML,/<rect class="ganttSvgRow /);
+});
+
+function stateWithSprintAssignments() {
+  const state = stateWithHierarchy();
+  const task = (id, title, extra = {}) => ({
+    id, ref: String(id), title, body: '', type: 'task', columnId: 1,
+    parentId: 10, position: id, duration: 0, labels: [], links: [],
+    createdAt: '2026-01-01T10:00:00Z', ...extra,
+  });
+  state.tickets.forEach(ticket => { ticket.createdAt = '2026-01-01T10:00:00Z'; });
+  Object.assign(state.tickets[0], {dueDate: '2026-02-02'});
+  Object.assign(state.tickets[1], {dueDate: '2026-01-03'});
+  Object.assign(state.tickets[2], {dueDate: '2026-01-20'});
+  Object.assign(state.tickets[4], {dueDate: '2026-01-03'});
+  state.tickets.push(
+    task(15, 'Unscheduled work'),
+    task(16, 'Before the first sprint', {dueDate: '2025-12-31'}),
+    task(17, 'Derived finish date', {startDate: '2026-01-17', duration: 3}),
+    task(18, 'Archived sprint task', {dueDate: '2026-01-20', archivedAt: '2026-01-21'}),
+    task(19, 'Trashed sprint task', {dueDate: '2026-01-20', deletedAt: '2026-01-21'}),
+    task(20, 'Backlog sprint task', {dueDate: '2026-01-20', isBacklog: true}),
+    task(21, 'Empty dated epic', {type: 'epic', parentId: 0, dueDate: '2026-01-20'}),
+    task(22, 'Epic scheduled in another sprint', {type: 'epic', parentId: 0, dueDate: '2026-01-03'}),
+    task(23, 'Sprint two child', {parentId: 22, dueDate: '2026-01-15'}),
+  );
+  return state;
+}
+
+const planningIds = app => Array.from(app.planningWork(), ticket => ticket.id).sort((a, b) => a - b);
+
+for (const targetView of ['board', 'overview']) {
+  test(targetView + ' selects a Sprint locally and filters assigned tasks while preserving Epic context', () => {
+    const app = loadApp(); const state = stateWithSprintAssignments();
+    app.setState(state); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const all = planningIds(app);
+    assert.equal(app.selectedPlanningSprint(), null, 'the current Sprint window does not implicitly filter tasks');
+    assert.ok(all.includes(15) && all.includes(16), 'undated and pre-cadence work remains visible by default');
+    app.selectPlanningSprint(2);
+    assert.equal(app.getView(), targetView, 'Sprint selection must keep the current workspace');
+    assert.equal(app.selectedPlanningSprint().number, 2);
+    assert.equal(app.window.location.hash, '#/' + targetView + '/1/sprint/2');
+    assert.deepEqual(planningIds(app), [10, 12, 17, 21, 22, 23]);
+    const html = app.elements.get('#' + targetView).innerHTML;
+    for (const id of [12, 17, 23]) assert.match(html, new RegExp('data-work-id="' + id + '"'));
+    for (const id of [11, 13, 15, 16, 18, 19, 20]) assert.doesNotMatch(html, new RegExp('data-work-id="' + id + '"'));
+    app.selectPlanningSprint(1);
+    assert.deepEqual(planningIds(app), [10, 11, 13]);
+    assert.ok(!planningIds(app).includes(22), 'an Epic date alone cannot bring in children from another Sprint');
+    app.selectPlanningSprint(1);
+    assert.equal(app.selectedPlanningSprint(), null, 'clicking the selected Sprint restores all Sprints');
+    assert.deepEqual(planningIds(app), all);
+    assert.equal(app.window.location.hash, '#/' + targetView + '/1');
+  });
+
+  test(targetView + ' keeps normal search filters and cannot leak other Sprints through dependencies', () => {
+    const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    app.openDependencies(12); app.toggleDependencyFocus(12);
+    app.selectPlanningSprint(2);
+    assert.equal(app.dependencyViewIds(), null);
+    app.openDependencies(12); app.toggleDependencyFocus(12);
+    assert.ok(planningIds(app).includes(12));
+    assert.ok(!planningIds(app).includes(13), 'the prerequisite assigned to Sprint 1 stays outside the Sprint 2 filter');
+    app.clearPlanningSprint();
+    assert.equal(app.dependencyViewIds(), null, 'All sprints must also remove dependency isolation');
+    assert.ok(planningIds(app).includes(15));
+    app.document.querySelector('#search').value = 'Derived finish';
+    app.selectPlanningSprint(2);
+    assert.deepEqual(planningIds(app), [10, 17]);
+    assert.equal(app.document.querySelector('#search').value, 'Derived finish');
+    app.clearPlanningSprint();
+    assert.equal(app.document.querySelector('#search').value, 'Derived finish');
+  });
+}
+
+test('Sprint selection follows planning navigation and browser routes restore or clear the filter', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+  app.selectPlanningSprint(2);
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  assert.equal(app.selectedPlanningSprint().number, 2);
+  assert.equal(app.window.location.hash, '#/overview/1/sprint/2');
+  assert.deepEqual(planningIds(app), [10, 12, 17, 21, 22, 23]);
+  app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
+  assert.equal(app.selectedPlanningSprint().number, 2);
+  assert.equal(app.window.location.hash, '#/timeline/1/sprint/2');
+  assert.ok(planningIds(app).includes(11) && planningIds(app).includes(15));
+  app.navButtons.find(button => button.dataset.view === 'board').onclick();
+  assert.deepEqual(planningIds(app), [10, 12, 17, 21, 22, 23]);
+  app.applyRoute({view: 'overview', boardId: 1, ticketId: 0, sprintNumber: 1});
+  assert.deepEqual(planningIds(app), [10, 11, 13]);
+  app.applyRoute({view: 'board', boardId: 1, ticketId: 0, sprintNumber: 0});
+  assert.equal(app.selectedPlanningSprint(), null);
+  assert.ok(planningIds(app).includes(15) && planningIds(app).includes(16));
+});
+
+test('Sprint deep links remain bound to the requested board through loads and stale responses', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch});
+  app.setState(stateWithSprintAssignments()); app.selectBoard(1); app.selectPlanningSprint(2);
+  const loading = app.applyRoute({view: 'board', boardId: 2, ticketId: 0, sprintNumber: 1});
+  assert.equal(app.selectedPlanningSprint(), null, 'a pending board cannot use the old board cadence');
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  assert.equal(app.window.location.hash, '#/overview/2/sprint/1');
+  const second = stateWithSprintAssignments(); second.board.id = 2;
+  queue.respond(0, second); await loading;
+  assert.equal(app.getState().board.id, 2);
+  assert.equal(app.selectedPlanningSprint().number, 1);
+  assert.equal(app.window.location.hash, '#/overview/2/sprint/1');
+  assert.deepEqual(planningIds(app), [10, 11, 13]);
+  const stale = app.applyRoute({view: 'board', boardId: 3, ticketId: 0, sprintNumber: 2});
+  app.applyRoute({view: 'board', boardId: 2, ticketId: 0, sprintNumber: 0});
+  const third = stateWithSprintAssignments(); third.board.id = 3;
+  queue.respond(1, third); await stale;
+  assert.equal(app.getState().board.id, 2);
+  assert.equal(app.selectedPlanningSprint(), null);
+  assert.equal(app.window.location.hash, '#/board/2');
+  assert.ok(planningIds(app).includes(15));
+});
+
+test('Timeline Sprint navigation fits saved date ranges without filtering task rows', () => {
+  const app = loadApp(); const state = stateWithSprintAssignments(); app.setState(state); app.selectBoard(1);
+  const surface = timelineSurface(app, 720);
+  app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
+  const allRows = Array.from(app.buildGanttRows(), row => row.ticket.id);
+  app.setTimelineEpicFilter('22'); app.openDependencies(12); app.toggleDependencyFocus(12);
+  app.selectPlanningSprint(1);
+  assert.equal(app.getView(), 'timeline');
+  assert.equal(app.dependencyViewIds(), null);
+  assert.deepEqual(Array.from(app.buildGanttRows(), row => row.ticket.id), allRows);
+  assert.equal(surface.scroll.dataset.rangeStart, '2026-01-01');
+  assert.equal(surface.scroll.dataset.rangeEnd, '2026-01-15');
+  // A real innerHTML rerender creates new scroll and SVG nodes for the next Sprint.
+  const secondSurface = timelineSurface(app, 720);
+  app.selectPlanningSprint(2);
+  assert.equal(secondSurface.scroll.dataset.rangeStart, '2026-01-15');
+  assert.equal(secondSurface.scroll.dataset.rangeEnd, '2026-01-29');
+  assert.match(secondSurface.root.innerHTML, /data-range-start="2026-01-15" data-range-end="2026-01-29"/);
+  assert.deepEqual(Array.from(app.buildGanttRows(), row => row.ticket.id), allRows);
+  assert.equal((surface.root.innerHTML.match(/class="ganttTaskItem/g) || []).length, allRows.length);
+  app.clearPlanningSprint();
+  assert.equal(app.window.location.hash, '#/timeline/1');
+  assert.deepEqual(Array.from(app.buildGanttRows(), row => row.ticket.id), allRows);
+  assert.doesNotMatch(surface.root.innerHTML, /timelineFocusBadge|ganttCalendarClip/);
+});
+
+test('invalid or missing saved cadence never activates a Sprint filter', () => {
+  for (const cadence of [{sprint_start_date: ''}, {sprint_weeks: 0}]) {
+    const app = loadApp(); const state = stateWithSprintAssignments(); Object.assign(state.board, cadence);
+    app.setState(state); app.selectBoard(1); const all = planningIds(app);
+    app.selectPlanningSprint(2);
+    assert.equal(app.selectedPlanningSprint(), null);
+    assert.deepEqual(planningIds(app), all);
+    app.applyRoute({view: 'overview', boardId: 1, ticketId: 0, sprintNumber: 2});
+    assert.equal(app.selectedPlanningSprint(), null);
+    assert.deepEqual(planningIds(app), all);
+  }
+});
+
+test('Sprint selections protect unsaved ticket edits and remain scoped to the active board', () => {
+  const app = loadApp(); const state = stateWithSprintAssignments(); app.setState(state); app.selectBoard(1);
+  app.selectPlanningSprint(2);
+  const fields = openEditor(app, 12); fields.dTitle.value = 'Unsaved sprint title';
+  const hash = app.window.location.hash;
+  app.setConfirm(() => false); app.selectPlanningSprint(1); app.clearPlanningSprint();
+  assert.equal(app.selectedPlanningSprint().number, 2);
+  assert.equal(app.getEditing().id, 12);
+  assert.equal(app.window.location.hash, hash);
+  app.setConfirm(() => true); app.selectPlanningSprint(1);
+  assert.equal(app.getEditing(), null);
+  assert.equal(app.selectedPlanningSprint().number, 1);
+  app.selectBoard(2); app.setState({...state, board: {...state.board, id: 2}});
+  assert.equal(app.selectedPlanningSprint(), null, 'another board cannot inherit the previous board Sprint');
+  assert.ok(planningIds(app).includes(15));
+  app.resetClientState(); app.setState(state); app.selectBoard(1);
+  assert.equal(app.selectedPlanningSprint(), null, 'a new session starts with all Sprints');
+});
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' exposes selected Sprint and All sprints states without confusing Current with selection', () => {
+    const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    let html = targetView === 'board' ? app.sprintPlannerHtml(app.workTickets()) : app.sprintNavigationHtml(app.workTickets(), targetView);
+    assert.equal((html.match(/data-sprint-card=/g) || []).length, 6);
+    assert.match(html, /class="[^"]*sprintAll[^"]*"[^>]*data-sprint-all[^>]*aria-pressed="true"/);
+    assert.doesNotMatch(html, /class="sprintCard [^"]*\bselected\b/);
+    app.selectPlanningSprint(2);
+    html = targetView === 'board' ? app.sprintPlannerHtml(app.workTickets()) : app.sprintNavigationHtml(app.workTickets(), targetView);
+    assert.match(html, /<article class="sprintCard [^"]*\bselected\b[^>]*data-sprint-card="2"/);
+    assert.match(html, /data-sprint-jump="2"[^>]*aria-pressed="true"/);
+    assert.match(html, /class="sprintSelectedBadge">Selected/);
+    assert.match(html, /data-sprint-all[^>]*aria-pressed="false"/);
+    if (targetView !== 'board') {
+      assert.doesNotMatch(html, /sprintNameInput|id="sprintStartDate"|id="sprintWeeks"|id="saveSprintSettings"/);
+    }
+    const selected = app.selectedPlanningSprint().number;
+    const before = planningIds(app); app.pageSprintStrip(1);
+    assert.equal(app.selectedPlanningSprint().number, selected, 'browsing the strip changes its window, not its selection');
+    assert.deepEqual(planningIds(app), before);
+    app.clearPlanningSprint();
+    html = targetView === 'board' ? app.sprintPlannerHtml(app.workTickets()) : app.sprintNavigationHtml(app.workTickets(), targetView);
+    assert.match(html, /data-sprint-all[^>]*aria-pressed="true"/);
+  });
+}
+
+test('Overview and Timeline Sprint navigation use saved cadence and preserve a Board cadence draft', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+  const planner = prepareSprintPlanner(app);
+  planner.start.value = '2027-02-01'; planner.start.oninput();
+  planner.weeks.value = '3'; planner.weeks.oninput();
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  app.selectPlanningSprint(2);
+  assert.equal(app.fmtIsoDate(app.selectedPlanningSprint().start), '2026-01-15');
+  assert.deepEqual(planningIds(app), [10, 12, 17, 21, 22, 23]);
+  app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
+  assert.equal(app.fmtIsoDate(app.selectedPlanningSprint().start), '2026-01-15');
+  app.navButtons.find(button => button.dataset.view === 'board').onclick();
+  const html = app.elements.get('#board').innerHTML;
+  assert.match(html, /id="sprintStartDate"[^>]*value="2027-02-01"/);
+  assert.match(html, /id="sprintWeeks"[^>]*value="3"/);
+  assert.equal(app.getState().board.sprint_start_date, '2026-01-01');
+  assert.equal(app.getState().board.sprint_weeks, 2);
+});
+
+test('readonly Sprint buttons act on their visible workspace and ignore stale controls', () => {
+  const app = loadApp(); const state = stateWithSprintAssignments(); app.setState(state); app.selectBoard(1);
+  const planner = prepareSprintPlanner(app);
+  planner.start.value = '2027-02-01'; planner.start.oninput();
+  const savedBoardPreview = planner.preview.innerHTML;
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  const root = app.document.querySelector('#overview');
+  const preview = fakeElement(); const jump = fakeElement(); const all = fakeElement(); const next = fakeElement();
+  jump.dataset.sprintJump = '2'; next.dataset.sprintPage = '1';
+  root.querySelector = selector => selector === '.sprintPreview' ? preview : null;
+  root.querySelectorAll = selector => selector === '.sprintJump' ? [jump] : selector === '[data-sprint-all]' ? [all] : selector === '.sprintPageButton' ? [next] : [];
+  app.wireSprintNavigation(root);
+  assert.equal(jump.disabled, false, 'saved readonly Sprint selection is independent of hidden Board draft fields');
+  jump.onclick();
+  assert.equal(app.getView(), 'overview');
+  assert.equal(app.selectedPlanningSprint().number, 2);
+  next.onclick();
+  assert.match(preview.innerHTML, /data-sprint-card="8"/);
+  assert.equal(app.selectedPlanningSprint().number, 2);
+  assert.equal(planner.preview.innerHTML, savedBoardPreview, 'paging Overview cannot redraw a hidden Board strip');
+  all.onclick();
+  assert.equal(app.selectedPlanningSprint(), null);
+  app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
+  jump.onclick();
+  assert.equal(app.selectedPlanningSprint(), null, 'a control retained from another view cannot change the current selection');
+  app.selectPlanningSprint(1);
+  app.selectBoard(2); app.setState({...state, board: {...state.board, id: 2}});
+  jump.onclick(); all.onclick(); next.onclick();
+  assert.equal(app.selectedPlanningSprint(), null, 'stale controls cannot apply or clear a Sprint on another board');
+});
+
+test('a pending Sprint name save refreshes the workspace reached through navigation', async () => {
+  for (const targetView of ['overview', 'timeline']) {
+    const queue = deferredResponseQueue(); const app = loadApp({fetch: queue.fetch});
+    app.setState(stateWithSprintAssignments()); app.selectBoard(1); prepareSprintPlanner(app);
+    app.selectPlanningSprint(1);
+    const name = fakeElement();
+    name.dataset = {sprintName: '1', originalDisplay: 'Sprint 1'};
+    name.value = 'Jurassic Disco Sprint';
+    const saving = app.saveSprintName(name);
+    assert.equal(queue.pending[0].url, '/api/sprint-names?boardId=1');
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const root = app.document.querySelector('#' + targetView);
+    assert.doesNotMatch(root.innerHTML, /Jurassic Disco Sprint/);
+    queue.respond(0, {}); await saving;
+    assert.equal(app.getView(), targetView);
+    assert.equal(app.selectedPlanningSprint().number, 1);
+    assert.match(root.innerHTML, /Jurassic Disco Sprint/);
+    assert.doesNotMatch(root.innerHTML, /sprintNameInput/);
+    assert.equal(app.sprintName(app.selectedPlanningSprint()), 'Jurassic Disco Sprint');
+  }
+});
+
+test('Reset filters clears Sprint isolation and preserves all filters when discarding an editor is canceled', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+  const values = {search: 'Hidden work', typeFilter: 'task', labelFilter: 'blue', assigneeFilter: '3', dependencyFilter: 'waiting'};
+  for (const [id, value] of Object.entries(values)) app.document.querySelector('#' + id).value = value;
+  app.selectPlanningSprint(4);
+  assert.deepEqual(planningIds(app), []);
+  assert.match(app.elements.get('#board').innerHTML, /id="boardEmptyAction"[^>]*>Reset filters/);
+  const fields = openEditor(app, 12); fields.dTitle.value = 'Unsaved sprint edit';
+  let confirmations = 0;
+  app.setConfirm(() => { confirmations++; return false; });
+  app.document.querySelector('#boardEmptyAction').onclick();
+  assert.equal(app.selectedPlanningSprint().number, 4);
+  assert.equal(app.getEditing().id, 12);
+  for (const [id, value] of Object.entries(values)) assert.equal(app.document.querySelector('#' + id).value, value);
+  app.setConfirm(() => { confirmations++; return true; });
+  app.document.querySelector('#boardEmptyAction').onclick();
+  assert.equal(confirmations, 2, 'each reset asks once when the editor contains unsaved changes');
+  assert.equal(app.selectedPlanningSprint(), null);
+  assert.equal(app.getEditing(), null);
+  assert.equal(app.window.location.hash, '#/board/1');
+  for (const id of Object.keys(values)) assert.equal(app.document.querySelector('#' + id).value, '');
+  assert.ok(planningIds(app).includes(15) && planningIds(app).includes(16));
 });

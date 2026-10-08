@@ -54,13 +54,15 @@ Select "Dependencies" beside "Edit" to preview the complete connected chain, inc
 
 ### Sprints
 
-The "Sprints" panel is visible on the board. Configure the first Sprint start date and a duration of 1 to 52 whole weeks, then save. Sprint cards appear after a successful save. Following Sprints are calculated from the saved cadence. The board shows the current Sprint and the next five; before the cadence starts, it shows the first six. Changing the cadence fields marks them as unsaved and leaves the saved cards unchanged until the next successful save.
+The "Sprints" panel is available in Board, Overview, and Timeline. Configure the first Sprint start date and a duration of 1 to 52 whole weeks in Board, then save. Sprint cards appear after a successful save. Following Sprints are calculated from the saved cadence. Changing the cadence fields marks them as unsaved and leaves the saved cards unchanged until the next successful save. Sprint names can be edited directly in Board; without a custom name, a Sprint is called "Sprint N".
 
-Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
+Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default, followed by the next five; before the cadence starts, the panel shows the first six. Browsing cards does not select a Sprint. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
 
-Sprint names can be edited directly. Without a custom name, a Sprint is called "Sprint N". The focus action opens Timeline with the selected Sprint's date range fitted to the available width. "Show full timeline" returns to the complete date range.
+Select a Sprint to show only its tasks in Board or Overview, while keeping their Epic headings. In Timeline, selection fits the Sprint's date range to the available width and keeps all task rows. The selected card is highlighted and marked "Selected"; the selection stays active when switching between these three views. "All sprints", or selecting the same card again, clears the selection. With no Sprint selected, Board and Overview show all tasks and Timeline shows its complete date range. The current Sprint is not selected automatically.
 
 A task belongs to the Sprint in which it is planned to finish: its due date, when available, otherwise its start date plus duration. Tasks without a usable date remain unscheduled. Sprint assignment does not calculate team capacity.
+
+Dependency inspection in Board and Overview stays within the selected Sprint. Choose "All sprints" to inspect connections across Sprint boundaries.
 
 ### Overview and Timeline
 
