@@ -434,12 +434,27 @@ func blockedDependenciesForLinks(store rowQuerier, boardID int64, links []int64,
 	if targetBoardID != boardID {
 		return nil, errors.New("target column does not belong to board")
 	}
-	var startPosition int
-	if err := store.QueryRow("select position from columns where board_id=? and lower(name)='in progress' order by position limit 1", boardID).Scan(&startPosition); err != nil {
-		startPosition = 2
-	}
-	if targetPosition < startPosition || strings.EqualFold(targetName, "To Do") || strings.EqualFold(targetName, "Backlog") || strings.EqualFold(targetName, "Ready") {
+	// Work may start while prerequisites are open; validation starts at Review.
+	name := strings.ToLower(strings.TrimSpace(targetName))
+	if name == "to do" || name == "backlog" || name == "ready" || name == "in progress" {
 		return nil, nil
+	}
+	if name != "review" && name != "done" {
+		gatePosition := 3
+		if err := store.QueryRow("select position from columns where board_id=? and lower(trim(name))='review' order by position,id limit 1", boardID).Scan(&gatePosition); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			var inProgressPosition int
+			if err := store.QueryRow("select position from columns where board_id=? and lower(trim(name))='in progress' order by position,id limit 1", boardID).Scan(&inProgressPosition); err == nil {
+				gatePosition = inProgressPosition + 1
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+		}
+		if targetPosition < gatePosition {
+			return nil, nil
+		}
 	}
 
 	var blocked []string

@@ -424,21 +424,31 @@ func TestCreateTicketRejectsTaskParentForTask(t *testing.T) {
 	}
 }
 
-// TestDependencyBlocksStartUntilDependencyDone verifies workflow moves respect dependencies.
-func TestDependencyBlocksStartUntilDependencyDone(t *testing.T) {
+// Work can start immediately, but Review requires completed prerequisites.
+func TestDependencyAllowsStartAndBlocksReviewUntilDependencyDone(t *testing.T) {
 	s := newTestServer(t)
 	parentID := createTestTicket(t, s, `{"Title":"Foundation"}`)
 	childID := createTestTicket(t, s, `{"Title":"Build on it","Links":[`+strconv.FormatInt(parentID, 10)+`]}`)
 
 	inProgressID := testColumnID(t, s, "In Progress")
+	reviewID := testColumnID(t, s, "Review")
 	doneID := testColumnID(t, s, "Done")
 	childUpdate := `{"ColumnID":` + strconv.FormatInt(inProgressID, 10) + `,"Title":"Build on it","Type":"task","Links":[` + strconv.FormatInt(parentID, 10) + `]}`
+	startedRec := httptest.NewRecorder()
+	s.withUser(s.ticketAction).ServeHTTP(startedRec, httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(childID, 10), bytes.NewBufferString(childUpdate)))
+	if startedRec.Code != http.StatusOK {
+		t.Fatalf("In Progress must allow open prerequisites: %d %q", startedRec.Code, startedRec.Body.String())
+	}
+	childUpdate = `{"ColumnID":` + strconv.FormatInt(reviewID, 10) + `,"Title":"Build on it","Type":"task","Links":[` + strconv.FormatInt(parentID, 10) + `]}`
 	blockedReq := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(childID, 10), bytes.NewBufferString(childUpdate))
 	blockedRec := httptest.NewRecorder()
 	s.withUser(s.ticketAction).ServeHTTP(blockedRec, blockedReq)
 
 	if blockedRec.Code != http.StatusConflict {
 		t.Fatalf("expected dependency conflict, got %d with body %q", blockedRec.Code, blockedRec.Body.String())
+	}
+	if !strings.Contains(blockedRec.Body.String(), "Foundation") {
+		t.Fatalf("Review conflict must name the prerequisite: %q", blockedRec.Body.String())
 	}
 
 	parentUpdate := `{"ColumnID":` + strconv.FormatInt(doneID, 10) + `,"Title":"Foundation","Type":"task"}`
@@ -460,7 +470,7 @@ func TestDependencyBlocksStartUntilDependencyDone(t *testing.T) {
 	allowedRec := httptest.NewRecorder()
 	s.withUser(s.ticketAction).ServeHTTP(allowedRec, allowedReq)
 	if allowedRec.Code != http.StatusOK {
-		t.Fatalf("expected start after dependency is done, got %d with body %q", allowedRec.Code, allowedRec.Body.String())
+		t.Fatalf("expected Review after dependency is done, got %d with body %q", allowedRec.Code, allowedRec.Body.String())
 	}
 }
 

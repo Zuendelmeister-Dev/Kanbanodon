@@ -8,7 +8,7 @@ On the board, enter a title in “New ticket” and confirm with “Create task�
 
 Open a card by clicking it or using Tab and Enter. The editor lets you change its title, description, status, due date, and assignee. “Planning and details” contains the type, duration, start date, milestone, parent task, labels, dependencies, and repeat settings. “Save” saves the task. Unsaved changes trigger a confirmation when closing the editor, navigating away, or logging out; “Cancel” lets you continue editing.
 
-Change the status in the editor or by dragging the card. Unfinished dependencies prevent moving into active work and later columns. Move the task to “Done” to complete it.
+Change the status in the editor or by dragging the card. Tasks can enter “In Progress” while their dependencies are unfinished, so partial work can begin. “Review”, “Done”, and later workflow stages require completed prerequisites. Move the task to “Done” to complete it.
 
 ## Checklists and filters
 
@@ -44,6 +44,8 @@ Select a Sprint to filter Board or Overview to its tasks; their Epic headings re
 
 Overview and Timeline are directly available in the sidebar. The simplified Overview shows five main columns; "Show planning columns" displays additional fields. Timeline identifies assumed dates as estimates. Saved time, delays, and completion estimates appear on thin rails below the task bars, keeping task names readable.
 
+Timeline marks Sprint starts and ends with visible vertical boundaries and contrasting background bands. Each Sprint header includes its name and date range. A permanent turquoise "Today" line identifies the current calendar day when it falls inside the displayed range, independently of the pointer's date cursor.
+
 With a Sprint selected, dependency inspection in Board and Overview stays within that Sprint. Choose "All sprints" to inspect connections across Sprint boundaries.
 
 Select "Dependencies" beside "Edit" to preview the complete connected chain, including its predecessors, successors, and branches. Unrelated tasks fade. Numbering starts at 1 for tasks without predecessors; each dependent stage adds one. Colors progress from blue at the start, through gold in the middle, to teal at the end, with mixed colors for intermediate stages. Parallel tasks at the same stage share a color. A two-stage chain uses blue and teal. Frames and outgoing arrows use the source task’s color. Arrows point to dependent tasks, and scrolling keeps their routes unchanged. Hover over an arrow to highlight its two endpoint tasks and fade other arrows and tasks. Hover over a task to keep all its incoming and outgoing arrows and their directly connected tasks visible. Hovering over a numbered source shows its outgoing arrows and neighbors. Moving away restores the opened chain; task hover in the normal view does not open dependencies.
@@ -52,7 +54,7 @@ Select "Dependencies" beside "Edit" to preview the complete connected chain, inc
 
 Use "Sort tasks" in the dependency bar to choose "Dependency order" or "Normal order". Dependency order arranges connected tasks by stage within each Epic and Board status column. Normal order follows Board's saved manual positions, Overview's selected table column, or Timeline's hierarchy and schedule. In Overview, click a column heading to sort by it and click again to reverse the direction; this also switches an open dependency view to Normal order. The chain, numbers, and colors remain the same. Closing dependencies restores normal sorting, and switching sorts does not change saved task positions.
 
-Drag Board cards to choose a new position within a column or in another column of the same Epic lane. The line shows the insertion point before you release the card, and the target column is highlighted. Moving the second To Do card before the third Done card sets both the new status and third position in one operation. The order remains after reloading. Parent relationships stay the same. If "Dependency order" is selected, choose "Normal order" before dragging. Moves into In Progress or later columns still require completed prerequisites.
+Drag Board cards to choose a new position within a column or in another column of the same Epic lane. The line shows the insertion point before you release the card, and the target column is highlighted. Moving the second To Do card before the third Done card sets both the new status and third position in one operation. The order remains after reloading. Parent relationships stay the same. If "Dependency order" is selected, choose "Normal order" before dragging. An allowed destination is highlighted turquoise; a destination blocked by unfinished prerequisites is highlighted red, with a tooltip listing the unfinished tickets. "In Progress" remains available even with unfinished dependencies. Reordering within the current column remains available.
 
 For current examples with past, current, and future Sprints, see the separate [clear and fill test data flags](demo-data.md). The example stories also include Backlog tasks that can be moved onto the board.
 

@@ -515,10 +515,10 @@ func TestTicketCommentsCompletionAndErrorPaths(t *testing.T) {
 func TestIncomingDependenciesBlockCreateAndCombinedMove(t *testing.T) {
 	s := newTestServer(t)
 	dependencyID := createTestTicket(t, s, `{"Title":"Unfinished dependency"}`)
-	inProgressID := testColumnID(t, s, "In Progress")
+	reviewID := testColumnID(t, s, "Review")
 
 	createRec := httptest.NewRecorder()
-	createReq := httptest.NewRequest(http.MethodPost, "/api/tickets", strings.NewReader(`{"Title":"Cannot start","ColumnID":`+strconv.FormatInt(inProgressID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/tickets", strings.NewReader(`{"Title":"Cannot review","ColumnID":`+strconv.FormatInt(reviewID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
 	s.withUser(s.createTicket).ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusConflict {
 		t.Fatalf("expected blocked create status 409, got %d: %q", createRec.Code, createRec.Body.String())
@@ -526,14 +526,14 @@ func TestIncomingDependenciesBlockCreateAndCombinedMove(t *testing.T) {
 
 	ticketID := createTestTicket(t, s, `{"Title":"Initially unlinked"}`)
 	moveRec := httptest.NewRecorder()
-	moveReq := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(ticketID, 10), strings.NewReader(`{"Title":"Initially unlinked","Type":"task","ColumnID":`+strconv.FormatInt(inProgressID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
+	moveReq := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(ticketID, 10), strings.NewReader(`{"Title":"Initially unlinked","Type":"task","ColumnID":`+strconv.FormatInt(reviewID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
 	s.withUser(s.ticketAction).ServeHTTP(moveRec, moveReq)
 	if moveRec.Code != http.StatusConflict {
 		t.Fatalf("expected combined link and move status 409, got %d: %q", moveRec.Code, moveRec.Body.String())
 	}
 	stored := mustLoadTickets(t, s, 1)
 	for _, item := range stored {
-		if item.ID == ticketID && (item.ColumnID == inProgressID || len(item.Links) != 0) {
+		if item.ID == ticketID && (item.ColumnID == reviewID || len(item.Links) != 0) {
 			t.Fatalf("blocked update must not partially persist, got %#v", item)
 		}
 	}

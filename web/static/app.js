@@ -1524,6 +1524,33 @@ function unfinishedDependencies(t) {
   return dependencyTickets(t).filter(dep => !done || dep.columnId != done.id);
 }
 
+// Starting work is allowed; Review and subsequent workflow stages need completed prerequisites.
+function columnRequiresCompletedDependencies(columnId) {
+  const target = state.columns.find(column => +column.id === +columnId);
+  if (!target) return false;
+  const name = String(target.name || '').trim().toLowerCase();
+  if (['to do', 'backlog', 'ready', 'in progress'].includes(name)) return false;
+  if (['review', 'done'].includes(name)) return true;
+  const review = state.columns.find(column => String(column.name || '').trim().toLowerCase() === 'review');
+  if (review) return +target.position >= +review.position;
+  const progress = state.columns.find(column => String(column.name || '').trim().toLowerCase() === 'in progress');
+  return progress ? +target.position > +progress.position : +target.position >= 3;
+}
+
+// Match the server's move check, including freely reordering within the current column.
+function boardMoveBlockedTasks(ticket, columnId) {
+  if (+ticket.columnId === +columnId || !columnRequiresCompletedDependencies(columnId)) return [];
+  return [...new Map(dependencyTickets(ticket).filter(dependency => {
+    const column = state.columns.find(item => +item.id === +dependency.columnId);
+    return column && String(column.name || '').trim().toLowerCase() !== 'done';
+  }).map(dependency => [+dependency.id, dependency])).values()];
+}
+
+function boardMoveBlockedReason(columnId, blocked) {
+  return 'Cannot move to ' + columnName(columnId) + '. Finish these prerequisites first:\n' +
+    blocked.map(ticket => ticketRef(ticket) + ' ' + ticket.title).join('\n');
+}
+
 // Returns the normalized duration in days for a ticket.
 function ticketDuration(t) {
   return Math.max(0, +(t.duration ?? t.points ?? 0) || 0);
@@ -1619,11 +1646,50 @@ function wireDnD() {
   const isCurrentBoard = () => view === 'board' && currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId);
   let draggedId = 0;
   let marker = null;
+  let tooltip = null;
+  let blockedDrop = null;
+  let blockedReason = '';
+  const blockedNodes = new Map();
   let suppressedClickId = 0;
   let suppressUntil = 0;
   const clearPreview = () => {
     marker?.remove(); marker = null;
+    tooltip?.remove(); tooltip = null; blockedDrop = null; blockedReason = '';
+    blockedNodes.forEach((description, node) => {
+      node.classList.remove('boardDropBlocked');
+      if (description) node.setAttribute('aria-describedby', description);
+      else node.removeAttribute('aria-describedby');
+    });
+    blockedNodes.clear();
     $$('.boardDropTarget').forEach(node => node.classList.remove('boardDropTarget'));
+  };
+  const showBlockedPreview = (drop, blocked, event) => {
+    const reason = boardMoveBlockedReason(+drop.dataset.col, blocked);
+    if (blockedDrop !== drop || blockedReason !== reason) {
+      clearPreview();
+      blockedDrop = drop; blockedReason = reason;
+      tooltip = document.createElement('div');
+      tooltip.className = 'boardDropBlockedTooltip';
+      tooltip.id = 'boardDropBlockReason';
+      tooltip.setAttribute('role', 'tooltip');
+      tooltip.textContent = reason;
+      [drop, drop.closest('.boardLaneCell'), $('.boardLaneColumnHead[data-col="' + drop.dataset.col + '"]')].filter(Boolean).forEach(node => {
+        blockedNodes.set(node, node.getAttribute('aria-describedby') || '');
+        node.classList.add('boardDropBlocked');
+        node.setAttribute('aria-describedby', [blockedNodes.get(node), tooltip.id].filter(Boolean).join(' '));
+      });
+      drop.append(tooltip);
+    }
+    const viewportWidth = window.innerWidth || 1024;
+    const viewportHeight = window.innerHeight || 768;
+    const pointerX = Number.isFinite(event.clientX) ? event.clientX : (drop.getBoundingClientRect().left || 12);
+    const pointerY = Number.isFinite(event.clientY) ? event.clientY : 12;
+    const box = tooltip.getBoundingClientRect?.();
+    const tooltipWidth = box?.width || Math.min(420, viewportWidth - 24);
+    const tooltipHeight = box?.height || 80;
+    const preferredY = pointerY + 18 + tooltipHeight + 12 > viewportHeight ? pointerY - tooltipHeight - 18 : pointerY + 18;
+    tooltip.style.setProperty('left', Math.max(12, Math.min(pointerX + 16, viewportWidth - tooltipWidth - 12)) + 'px');
+    tooltip.style.setProperty('top', Math.max(12, Math.min(preferredY, viewportHeight - tooltipHeight - 12)) + 'px');
   };
   const emptyAction = $('#boardEmptyAction');
   if (emptyAction) emptyAction.onclick = () => { if (workTickets().length) resetTaskFilters(); else $('#newTitle').focus(); };
@@ -1652,7 +1718,14 @@ function wireDnD() {
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
         clearPreview(); return;
       }
-      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+      e.preventDefault();
+      const blocked = boardMoveBlockedTasks(ticket, +d.dataset.col);
+      if (blocked.length) {
+        e.dataTransfer.dropEffect = 'none';
+        showBlockedPreview(d, blocked, e);
+        return;
+      }
+      e.dataTransfer.dropEffect = 'move';
       const placement = boardDropPlacement(d, e.clientY, draggedId);
       clearPreview();
       d.classList.add('boardDropTarget');
@@ -1673,6 +1746,8 @@ function wireDnD() {
       clearPreview();
       if (!isCurrentBoard() || !t || +(topEpicFor(t)?.id || 0) !== +d.dataset.epic || (dependencyViewIds() && dependencySortMode !== 'normal')) return;
       suppressedClickId = id; suppressUntil = Date.now() + 400;
+      const blocked = boardMoveBlockedTasks(t, +d.dataset.col);
+      if (blocked.length) { showFormError(boardMoveBlockedReason(+d.dataset.col, blocked)); return; }
       await moveBoardTicket(t, +d.dataset.col, placement);
     };
   });
@@ -2590,27 +2665,42 @@ function ganttDelayText(task) {
 function ganttSvg(tasks, rangeStart, totalDays, dayWidth, width, headHeight, rowHeight, bodyHeight, axisHeight, focusRange = sprintByNumber(timelineFocusSprint)) {
   const bodyTop = headHeight;
   const axisTop = headHeight + bodyHeight;
+  const today = ganttSvgToday(rangeStart, totalDays, dayWidth, width, bodyTop, axisTop + axisHeight);
   const calendarClip = focusRange ? '<clipPath id="ganttCalendarClip"><rect x="' + GANTT_LEFT_PAD + '" y="' + bodyTop + '" width="' + (totalDays * dayWidth) + '" height="' + bodyHeight + '"></rect></clipPath>' : '';
   const defs = '<defs><pattern id="ganttSavedPattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgSavedBase"></rect><rect width="5" height="12" class="ganttSvgSavedStripe"></rect></pattern><pattern id="ganttLatePattern" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="12" height="12" class="ganttSvgLateBase"></rect><rect width="5" height="12" class="ganttSvgLateStripe"></rect></pattern></defs>';
   return defs + calendarClip +
     '<rect class="ganttSvgPanel" x="0" y="0" width="' + width + '" height="' + (headHeight + bodyHeight + axisHeight) + '"></rect>' +
     '<rect class="ganttSvgHead" x="0" y="0" width="' + width + '" height="' + headHeight + '"></rect>' +
-    '<text class="ganttSvgHeadText" x="' + GANTT_LEFT_PAD + '" y="34">Date range</text>' +
+    (today && width < 300 ? '' : '<text class="ganttSvgHeadText" x="8" y="22">Date range</text>') +
     ganttSvgGrid(rangeStart, totalDays, dayWidth, width, bodyTop, bodyHeight, axisTop, axisHeight, rowHeight, tasks) +
-    ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight) +
+    ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight, 'background') +
     '<g class="ganttCalendarTasks"' + (focusRange ? ' clip-path="url(#ganttCalendarClip)"' : '') + '>' + tasks.map(task => ganttSvgTask(task, rangeStart, dayWidth, headHeight, rowHeight, focusRange)).join('') + '</g>' +
+    ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight, 'foreground') +
+    today +
     ganttSvgAxis(rangeStart, totalDays, dayWidth, axisTop, axisHeight, width) +
     ganttSvgCursor(headHeight + bodyHeight + axisHeight);
 }
 
-// Draws quiet alternating Sprint bands and a clear but restrained end boundary.
-function ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight) {
+// Bands sit behind tasks; shared Sprint boundaries and header dates remain
+// above task bars. The first visible Sprint start has its own boundary too.
+function ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeight, axisTop, axisHeight, layer = 'all') {
   const cadenceStart = parseDate(boardSprintStartValue());
-  if (!cadenceStart) return '';
+  const weeks = boardSprintWeeks();
+  if (!cadenceStart || !weeks || !validDate(rangeStart) || !(totalDays > 0 && dayWidth > 0)) return '';
   const rangeEnd = addDays(rangeStart, totalDays);
-  const span = boardSprintWeeks() * 7;
+  const span = weeks * 7;
   const firstIndex = Math.max(0, Math.floor(dayDiff(cadenceStart, rangeStart) / span));
-  const parts = [];
+  const bands = [];
+  const labels = [];
+  const boundaries = new Map();
+  const boundary = (date, number, kind) => {
+    if (date < rangeStart || date > rangeEnd) return;
+    const key = fmtIsoDate(date);
+    if (!boundaries.has(key)) boundaries.set(key, { date, descriptions: [], focused: false });
+    const mark = boundaries.get(key);
+    mark.descriptions.push(sprintName({ number }) + (kind === 'start' ? ' starts ' + key : ' ends ' + fmtIsoDate(addDays(date, -1))));
+    mark.focused ||= number === timelineFocusSprint;
+  };
   for (let index = firstIndex; ; index++) {
     const start = addDays(cadenceStart, index * span);
     const endExclusive = addDays(start, span);
@@ -2620,14 +2710,50 @@ function ganttSvgSprintBands(rangeStart, totalDays, dayWidth, bodyTop, bodyHeigh
     const visibleEnd = endExclusive > rangeEnd ? rangeEnd : endExclusive;
     const x1 = ganttPx(visibleStart, rangeStart, dayWidth);
     const x2 = ganttPx(visibleEnd, rangeStart, dayWidth);
-    const boundaryX = ganttPx(endExclusive, rangeStart, dayWidth);
     const sprintNumber = index + 1;
+    const name = sprintName({ number: sprintNumber });
+    const end = addDays(endExclusive, -1);
+    const description = name + ' · ' + fmtIsoDate(start) + ' to ' + fmtIsoDate(end);
+    const visibleWidth = Math.max(0, x2 - x1);
     const focused = sprintNumber === timelineFocusSprint ? ' focused' : '';
-    parts.push('<rect class="ganttSvgSprintBand sprint' + ((index % 2) + 1) + focused + '" x="' + x1 + '" y="' + bodyTop + '" width="' + Math.max(0, x2 - x1) + '" height="' + (bodyHeight + axisHeight) + '"></rect>');
-    if (endExclusive >= rangeStart && endExclusive <= rangeEnd) parts.push('<line class="ganttSvgSprintBoundary" x1="' + boundaryX + '" x2="' + boundaryX + '" y1="' + bodyTop + '" y2="' + (axisTop + axisHeight) + '"></line>');
-    parts.push('<text class="ganttSvgSprintLabel' + focused + '" x="' + (x1 + 7) + '" y="51">' + esc(sprintName({ number: sprintNumber })) + '</text>');
+    bands.push('<rect class="ganttSvgSprintBand sprint' + ((index % 2) + 1) + focused + '" x="' + x1 + '" y="' + bodyTop + '" width="' + visibleWidth + '" height="' + (bodyHeight + axisHeight) + '"><title>' + esc(description) + '</title></rect>');
+    boundary(start, sprintNumber, 'start');
+    boundary(endExclusive, sprintNumber, 'end');
+    const labelLimit = Math.floor((visibleWidth - 14) / 6);
+    if (labelLimit >= 4) labels.push('<text class="ganttSvgSprintLabel' + focused + '" x="' + (x1 + 7) + '" y="39">' + esc(truncateSvgText(name, labelLimit)) + '<title>' + esc(description) + '</title></text>');
+    if (visibleWidth >= 100) labels.push('<text class="ganttSvgSprintRange' + focused + '" x="' + (x1 + 7) + '" y="51">' + esc(shortRange(start, end)) + '<title>' + esc(description) + '</title></text>');
   }
-  return parts.join('');
+  const marks = [...boundaries].map(([date, mark]) => {
+    const x = ganttPx(mark.date, rangeStart, dayWidth);
+    const focused = mark.focused ? ' focused' : '';
+    return '<g class="ganttSvgSprintMark' + focused + '" data-sprint-boundary-date="' + date + '"><title>' + esc(mark.descriptions.join(' · ')) + '</title>' +
+      '<line class="ganttSvgSprintBoundary' + focused + '" x1="' + x + '" x2="' + x + '" y1="' + bodyTop + '" y2="' + (axisTop + axisHeight) + '"></line>' +
+      '<path class="ganttSvgSprintBoundaryCap' + focused + '" d="M' + (x - 5) + ' ' + (bodyTop - 5) + ' L' + (x + 5) + ' ' + (bodyTop - 5) + ' L' + x + ' ' + bodyTop + ' Z"></path></g>';
+  }).join('');
+  if (layer === 'background') return bands.join('');
+  if (layer === 'foreground') return marks + labels.join('');
+  return bands.join('') + marks + labels.join('');
+}
+
+// A permanent local-day marker is independent of the mouse-following cursor.
+// It is omitted outside the actual calendar interval rather than clamped in.
+function ganttSvgToday(rangeStart, totalDays, dayWidth, width, bodyTop, height, today = startOfDay(new Date())) {
+  if (!validDate(rangeStart) || !validDate(today) || !(totalDays > 0 && dayWidth > 0 && width > 0)) return '';
+  const date = startOfDay(today);
+  if (date < startOfDay(rangeStart) || date >= addDays(rangeStart, totalDays)) return '';
+  const x = ganttPx(date, rangeStart, dayWidth);
+  if (x < 0 || x > width) return '';
+  const label = 'Today · ' + fmtIsoDate(date);
+  const minX = width >= 300 ? GANTT_LEFT_PAD + 4 : 4;
+  const tagWidth = Math.max(1, Math.min(144, width - minX - 4));
+  const tagX = Math.max(minX, Math.min(x - tagWidth / 2, width - tagWidth - 4));
+  const tagLabel = tagWidth >= 130 ? label : truncateSvgText(label, Math.max(4, Math.floor((tagWidth - 12) / 6)));
+  return '<g class="ganttSvgToday" data-today-date="' + fmtIsoDate(date) + '" role="img" aria-label="' + escAttr(label) + '"><title>' + esc(label) + '</title>' +
+    '<line class="ganttSvgTodayHalo" x1="' + x + '" x2="' + x + '" y1="' + bodyTop + '" y2="' + height + '"></line>' +
+    '<line class="ganttSvgTodayLine" x1="' + x + '" x2="' + x + '" y1="' + bodyTop + '" y2="' + height + '"></line>' +
+    '<circle class="ganttSvgTodayCap" cx="' + x + '" cy="' + bodyTop + '" r="4"></circle>' +
+    '<rect class="ganttSvgTodayTag" x="' + tagX + '" y="5" width="' + tagWidth + '" height="26" rx="6"></rect>' +
+    '<text class="ganttSvgTodayText" x="' + (tagX + tagWidth / 2) + '" y="22">' + esc(tagLabel) + '</text></g>';
 }
 
 // Builds the pointer-following date line and its top label.
@@ -3254,7 +3380,7 @@ function openTicket(id, updateRoute = true) {
   const typeOptions = ['epic', 'story', 'task', 'bug', 'idea'].map(type => '<option>' + type + '</option>').join('');
   const planningFields = idea ? '' : '<label>Duration (days)<input id="dDuration" type="number" min="0" max="365" value="' + ticketDuration(editing) + '"></label><label>Start date<input id="dStart" type="date" value="' + (editing.startDate || '') + '"></label><label>Due date<input id="dDue" type="date" value="' + (editing.dueDate || '') + '"></label><label>Assignee<select id="dAssignee"><option value="0">Nobody</option>' + users + '</select></label><label>Milestone<select id="dMilestone">' + miles + '</select></label>' + parentSelectHtml(editing) + dependencyPickerHtml(editing);
   $('#drawer').classList.remove('hidden');
-  $('#drawer').innerHTML = '<div class="drawerHeader"><h2>' + esc(ticketRef(editing)) + '</h2><button id="drawerCloseBtn" class="iconBtn" type="button" title="Close" aria-label="Close editor">&times;</button></div><p id="drawerError" class="drawerError" role="alert"></p>' + (blocked.length && !idea ? '<p class="dependencyWarning">Can start after these tickets are done: ' + blocked.map(t => esc(ticketLabel(t))).join(', ') + '</p>' : '') + '<label>Title<input id="dTitle" value="' + escAttr(editing.title) + '"></label><label>Description<textarea id="dBody">' + esc(editing.body) + '</textarea></label><label>Type<select id="dType">' + typeOptions + '</select></label>' + planningFields + '<label>Labels<input id="dLabels" value="' + escAttr(labelText) + '"></label><div style="margin-top:12px"><button id="saveBtn">Save</button> <button id="deleteBtn" class="ghost">Delete</button> <button id="closeBtn" class="ghost">Close</button></div><section class="comments"><strong>Comments</strong><div id="commentList"></div><textarea id="commentBody" placeholder="Comment"></textarea><button id="commentBtn">Comment</button></section>';
+  $('#drawer').innerHTML = '<div class="drawerHeader"><h2>' + esc(ticketRef(editing)) + '</h2><button id="drawerCloseBtn" class="iconBtn" type="button" title="Close" aria-label="Close editor">&times;</button></div><p id="drawerError" class="drawerError" role="alert"></p>' + (blocked.length && !idea ? '<p class="dependencyWarning">Review and completion require these tickets to be done: ' + blocked.map(t => esc(ticketLabel(t))).join(', ') + '</p>' : '') + '<label>Title<input id="dTitle" value="' + escAttr(editing.title) + '"></label><label>Description<textarea id="dBody">' + esc(editing.body) + '</textarea></label><label>Type<select id="dType">' + typeOptions + '</select></label>' + planningFields + '<label>Labels<input id="dLabels" value="' + escAttr(labelText) + '"></label><div style="margin-top:12px"><button id="saveBtn">Save</button> <button id="deleteBtn" class="ghost">Delete</button> <button id="closeBtn" class="ghost">Close</button></div><section class="comments"><strong>Comments</strong><div id="commentList"></div><textarea id="commentBody" placeholder="Comment"></textarea><button id="commentBtn">Comment</button></section>';
   $('#dType').value = editing.type;
   if (!idea) {
     $('#dAssignee').value = editing.assigneeId;

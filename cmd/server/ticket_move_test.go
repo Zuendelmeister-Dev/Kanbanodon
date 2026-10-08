@@ -210,6 +210,113 @@ func TestBoardMoveDependenciesRejectsStatusAtomicallyButAllowsReorder(t *testing
 	moveTestAssertOrder(t, s, toDo, []int64{blocked, dependency})
 }
 
+func TestDependencyWorkflowGateAcrossCreateEditAndBoardMove(t *testing.T) {
+	for _, action := range []string{"create", "edit", "move"} {
+		for _, columnName := range []string{"Ready", "In Progress", "Review", "Done"} {
+			t.Run(action+"/"+columnName, func(t *testing.T) {
+				s := newTestServer(t)
+				dependency := createTestTicket(t, s, `{"Title":"Unfinished foundation"}`)
+				column := testColumnID(t, s, columnName)
+				var id int64
+				if action != "create" {
+					id = createTestTicket(t, s, fmt.Sprintf(`{"Title":"Dependent task","Links":[%d]}`, dependency))
+				}
+				body := fmt.Sprintf(`{"Title":"Dependent task","Type":"task","ColumnID":%d,"Links":[%d]}`, column, dependency)
+				var rec *httptest.ResponseRecorder
+				switch action {
+				case "create":
+					rec = httptest.NewRecorder()
+					s.withUser(s.createTicket).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tickets", strings.NewReader(body)))
+				case "edit":
+					rec = httptest.NewRecorder()
+					s.withUser(s.ticketAction).ServeHTTP(rec, httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/tickets/%d", id), strings.NewReader(body)))
+				case "move":
+					rec = moveTestRequest(s, id, fmt.Sprintf(`{"ColumnID":%d}`, column))
+				}
+				want := http.StatusOK
+				if columnName == "Review" || columnName == "Done" {
+					want = http.StatusConflict
+				}
+				if rec.Code != want {
+					t.Fatalf("workflow gate: got %d %q; want %d", rec.Code, rec.Body.String(), want)
+				}
+				items := mustLoadTickets(t, s, 1)
+				if want == http.StatusConflict {
+					if !strings.Contains(rec.Body.String(), "Unfinished foundation") {
+						t.Fatalf("conflict must name prerequisite: %q", rec.Body.String())
+					}
+					for _, item := range items {
+						if item.Title == "Dependent task" && (item.ColumnID == column || item.CompletedAt != "") {
+							t.Fatalf("blocked operation persisted status or completion: %#v", item)
+						}
+					}
+					if action == "create" && len(items) != 1 {
+						t.Fatalf("blocked create persisted a task: %#v", items)
+					}
+				} else {
+					found := false
+					for _, item := range items {
+						if item.Title == "Dependent task" {
+							found = item.ColumnID == column
+						}
+					}
+					if !found {
+						t.Fatalf("allowed early workflow move did not persist: %#v", items)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDependencyWorkflowGateUsesReviewThenInProgressThenDefaultForCustomColumns(t *testing.T) {
+	s := newTestServer(t)
+	dependency := createTestTicket(t, s, `{"Title":"Open prerequisite"}`)
+	res, err := s.db.Exec("insert into columns(board_id,name,position) values(1,'Custom checkpoint',3)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(column int64, blocked bool) {
+		t.Helper()
+		pending, err := s.blockedDependenciesForLinks(1, []int64{dependency}, column)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (len(pending) > 0) != blocked {
+			t.Fatalf("column %d blocked=%v; want %v", column, len(pending) > 0, blocked)
+		}
+	}
+	check(custom, true)
+	if _, err := s.db.Exec("update columns set position=4 where id=?", testColumnID(t, s, "Review")); err != nil {
+		t.Fatal(err)
+	}
+	check(custom, false) // still before the explicitly configured Review boundary.
+	if _, err := s.db.Exec("update columns set name='Inspection' where name='Review' and board_id=1"); err != nil {
+		t.Fatal(err)
+	}
+	check(custom, true) // absent Review: custom position 3 follows In Progress 2.
+	if _, err := s.db.Exec("update columns set name='Doing' where name='In Progress' and board_id=1"); err != nil {
+		t.Fatal(err)
+	}
+	check(custom, true) // neither named boundary: default late-work position 3.
+	if _, err := s.db.Exec("update columns set position=2 where id=?", custom); err != nil {
+		t.Fatal(err)
+	}
+	check(custom, false)
+	if _, err := s.db.Exec("update columns set position=0 where name='Done' and board_id=1"); err != nil {
+		t.Fatal(err)
+	}
+	check(testColumnID(t, s, "Done"), true) // explicit Done is gated even when reordered.
+	if _, err := s.db.Exec("update columns set name='In Progress',position=8 where name='Doing' and board_id=1"); err != nil {
+		t.Fatal(err)
+	}
+	check(testColumnID(t, s, "In Progress"), false) // explicit start remains available.
+}
+
 func TestBoardMoveSQLFailureRollsBackColumnCompletionAndOrder(t *testing.T) {
 	s := newTestServer(t)
 	toDo, done := testColumnID(t, s, "To Do"), testColumnID(t, s, "Done")

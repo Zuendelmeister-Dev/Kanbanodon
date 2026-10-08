@@ -23,6 +23,7 @@ function fakeElement() {
     addEventListener() {},
     setAttribute(name, value) { this[name] = value; },
     getAttribute(name) { return this[name] === undefined ? null : String(this[name]); },
+    removeAttribute(name) { delete this[name]; },
     append() {}, before() {}, after() {}, insertAdjacentHTML() {},
     closest() { return this.parentElement; },
     matches(selector) { return selector.split(',').some(part => part.startsWith('.') && classes.has(part.slice(1))); },
@@ -108,13 +109,13 @@ function loadApp(options = {}) {
     normalizeTicketType, normTicket, normSprintName, ticketRef, ticketLabel, isIdea, isBacklogTicket, workTickets, backlogTickets, ideaTickets,
     normalizePromotionType, backlogDescendants,
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
-    blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
+    blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, columnRequiresCompletedDependencies, boardMoveBlockedTasks, boardMoveBlockedReason, ticketDuration, durationLabel,
     boardSwimlaneData, boardLaneColumnItems, boardNormalGroupSort, boardCardDepth, wireDnD, boardDropPlacement, moveBoardTicket, overviewRows, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     boardDependencyHtml, dependencyHoverEdges, wireWorkDependencies, wireTimelineDependencies,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
     renderGantt, ganttTaskLabel, timelineGeometry,
     ganttDelayText, ganttEstimateText, ganttSvg, ganttSvgTask, ganttSvgBarLabel, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
-    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands, ganttSvgAxis,
+    ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands, ganttSvgToday, ganttSvgAxis,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
     calculatedSprints, sprintName, sprintPlannerHtml, sprintNavigationHtml, wireSprintNavigation, sprintPreviewHtml, sprintPreviewCardHtml, sprintStripFirstNumber, pageSprintStrip, shortRange,
@@ -268,6 +269,83 @@ test('dependency Board sorting disables manual drag until Normal order is select
   app.setDependencySort('normal');
   assert.match(app.card(state.tickets.find(t=>t.id===12)),/draggable="true"/);
   assert.doesNotMatch(app.planningFocusHtml(),/Choose Normal order to drag cards/);
+});
+
+test('Board prerequisites permit starting work but guard Review, Done and subsequent custom columns', () => {
+  const app=loadApp(); const state=stateWithHierarchy();
+  state.columns=['To Do','Ready','In Progress','Review','Done'].map((name,position)=>({id:position+1,name,position}));
+  const task=state.tickets.find(t=>t.id===12), prerequisite=state.tickets.find(t=>t.id===13);
+  prerequisite.columnId=2; task.links=[13,13]; app.setState(state);
+  for (const column of [1,2,3]) assert.equal(app.boardMoveBlockedTasks(task,column).length,0);
+  for (const column of [4,5]) assert.deepEqual(Array.from(app.boardMoveBlockedTasks(task,column),t=>t.id),[13]);
+  state.columns.push({id:6,name:'Testing',position:4},{id:7,name:'Preparation',position:2});
+  assert.equal(app.boardMoveBlockedTasks(task,6).length,1);
+  assert.equal(app.boardMoveBlockedTasks(task,7).length,0);
+  state.columns=state.columns.filter(c=>c.name!=='Review');
+  assert.equal(app.boardMoveBlockedTasks(task,6).length,1,'without Review, custom stages after In Progress remain guarded');
+  assert.equal(app.boardMoveBlockedTasks(task,3).length,0);
+  state.columns=state.columns.filter(c=>c.name!=='In Progress');
+  assert.equal(app.boardMoveBlockedTasks(task,6).length,1,'fully custom workflows guard stages from position 3 onward');
+  task.columnId=6;
+  assert.equal(app.boardMoveBlockedTasks(task,6).length,0,'sorting an existing card within a guarded column is still allowed');
+  task.columnId=1; prerequisite.columnId=5;
+  assert.equal(app.boardMoveBlockedTasks(task,6).length,0,'completed prerequisites allow the later move');
+});
+
+test('blocked Board drag highlights Review red and immediately shows all unfinished prerequisites', async () => {
+  let requests=0;
+  const app=loadApp({fetch:()=>{requests++;return new Promise(()=>{});}}), state=stateWithHierarchy();
+  state.columns=['To Do','Ready','In Progress','Review','Done'].map((name,position)=>({id:position+1,name,position}));
+  const task=state.tickets.find(t=>t.id===12), prerequisite=state.tickets.find(t=>t.id===13);
+  prerequisite.columnId=2; prerequisite.title='Fern check <script>example</script>';
+  const other={...prerequisite,id:15,ref:'15',title:'Coffee calibration',columnId:1};
+  const done={...prerequisite,id:16,ref:'16',title:'Already completed',columnId:5};
+  state.tickets.push(other,done); task.links=[13,15,16,13];
+  app.setState(state); app.selectBoard(1);
+  const source=boardDragFixture(app,[task],1,10), review=boardDragFixture(app,[],4,10), progress=boardDragFixture(app,[],3,10);
+  const fixtures=[source,review,progress]; const original=app.document.querySelectorAll;
+  app.document.querySelectorAll=selector=>selector==='.card'?source.cards:selector==='.drop'?fixtures.map(f=>f.drop):selector==='.boardDropTarget'?fixtures.flatMap(f=>[f.drop,f.cell,f.header]):original(selector);
+  review.header.setAttribute('aria-describedby','existing-description');
+  app.wireDnD(); source.cards[0].ondragstart(source.event(source.cards[0],110));
+  const over=review.event(review.drop,120); over.dataTransfer=source.transfer; over.clientX=700;
+  review.drop.ondragover(over);
+  assert.equal(source.transfer.dropEffect,'none');
+  for (const node of [review.drop,review.cell,review.header]) assert.equal(node.classList.contains('boardDropBlocked'),true);
+  const tooltip=review.drop.marker;
+  assert.equal(tooltip.className,'boardDropBlockedTooltip');
+  assert.equal(tooltip.getAttribute('role'),'tooltip');
+  assert.match(tooltip.textContent,/Cannot move to Review/);
+  assert.match(tooltip.textContent,/#2 Fern check <script>example<\/script>/);
+  assert.match(tooltip.textContent,/#15 Coffee calibration/);
+  assert.doesNotMatch(tooltip.textContent,/Already completed/);
+  assert.equal(tooltip.innerHTML,'','ticket titles are text, never injected HTML');
+  assert.equal((tooltip.textContent.match(/Fern check/g)||[]).length,1);
+  assert.equal(review.header.getAttribute('aria-describedby'),'existing-description boardDropBlockReason');
+  review.drop.ondragover(over);
+  assert.equal(review.drop.marker,tooltip,'repeated drag events reuse the visible tooltip');
+  tooltip.getBoundingClientRect=()=>({width:420,height:600});
+  over.clientY=400;
+  review.drop.ondragover(over);
+  assert.equal(tooltip.properties.get('top'),'12px','a long list near the lower viewport half must not be translated above the screen');
+  assert.equal(tooltip.properties.get('left'),'592px');
+  const allowed=progress.event(progress.drop,120); allowed.dataTransfer=source.transfer;
+  progress.drop.ondragover(allowed);
+  assert.equal(source.transfer.dropEffect,'move');
+  assert.equal(progress.drop.classList.contains('boardDropTarget'),true);
+  assert.equal(progress.drop.marker.className,'boardDropMarker');
+  assert.equal(tooltip.removed,true);
+  assert.equal(review.header.classList.contains('boardDropBlocked'),false);
+  assert.equal(review.header.getAttribute('aria-describedby'),'existing-description');
+  review.drop.ondragover(over);
+  await review.drop.ondrop(over);
+  assert.equal(requests,0,'a known blocked drop sends no mutation');
+  assert.equal(task.columnId,1);
+  assert.match(app.elements.get('#formError').textContent,/Coffee calibration/);
+  for (const node of [review.drop,review.cell,review.header]) assert.equal(node.classList.contains('boardDropBlocked'),false);
+  review.drop.ondragover(over); const lastTooltip=review.drop.marker;
+  source.cards[0].ondragend();
+  assert.equal(lastTooltip.removed,true);
+  assert.equal(review.drop.getAttribute('aria-describedby'),null);
 });
 
 test('failed Board move preserves order and editor discard Cancel sends no request', async () => {
@@ -865,6 +943,9 @@ test('dependency summaries remain inline without buttons or a detached dependenc
 
   state.tickets[3].columnId = 1;
   assert.match(app.boardDependencyHtml(state.tickets[2]), /Waiting for 1 task/);
+  app.openTicket(12);
+  assert.match(app.elements.get('#drawer').innerHTML, /Review and completion require these tickets to be done/);
+  assert.doesNotMatch(app.elements.get('#drawer').innerHTML, /Can start after/);
 });
 
 test('dependency hover edges preserve direction and omit filtered, deleted, archived and self links', () => {
@@ -967,7 +1048,87 @@ test('sprint helpers assign planned finishes and stop after the last scheduled t
   assert.equal(app.ticketSprint({ startDate: '', dueDate: '' }), null);
   const bands = app.ganttSvgSprintBands(app.parseDate('2026-01-01'), 28, 10, 50, 200, 250, 60);
   assert.equal((bands.match(/ganttSvgSprintBand/g) || []).length, 2);
-  assert.equal((bands.match(/ganttSvgSprintBoundary/g) || []).length, 2);
+  assert.equal((bands.match(/<line class="ganttSvgSprintBoundary/g) || []).length, 3, 'both ends and the shared boundary are visible');
+});
+
+test('Sprint boundaries include the cadence start and appear once at shared dates with readable ranges', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  state.board.sprint_start_date = '2026-10-05'; state.board.sprint_weeks = 2;
+  state.sprintNames = [{boardId: 1, sprintNumber: 1, name: 'First <Sprint> & launch'}];
+  app.setState(state);
+  const start = app.parseDate('2026-10-01');
+  const markup = app.ganttSvgSprintBands(start, 33, 10, 56, 240, 296, 62);
+  const dates = [...markup.matchAll(/data-sprint-boundary-date="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(dates, ['2026-10-05', '2026-10-19', '2026-11-02']);
+  assert.equal(new Set(dates).size, dates.length, 'adjacent Sprints share one boundary instead of two overlaid strokes');
+  assert.match(markup, /<line class="ganttSvgSprintBoundary" x1="128" x2="128" y1="56" y2="358"/);
+  assert.match(markup, /starts 2026-10-05/);
+  assert.match(markup, /ends 2026-10-18/);
+  assert.match(markup, /ganttSvgSprintRange[^>]*>05 Oct – 18 Oct/);
+  assert.match(markup, /First &lt;Sprint&gt; &amp; launch/);
+  assert.doesNotMatch(markup, /<Sprint>/);
+  assert.doesNotMatch(markup, /\bstyle=/);
+  const cut = app.ganttSvgSprintBands(app.parseDate('2026-10-08'), 20, 10, 56, 240, 296, 62);
+  assert.deepEqual([...cut.matchAll(/data-sprint-boundary-date="([^"]+)"/g)].map(match => match[1]), ['2026-10-19'], 'a partial Sprint does not invent a boundary at the viewport edge');
+  state.board.sprint_weeks = 0;
+  assert.equal(app.ganttSvgSprintBands(start, 33, 10, 56, 240, 296, 62), '', 'an invalid cadence cannot hang the band loop');
+});
+
+test('a focused Sprint shows both exact boundary dates even in a narrow viewport', () => {
+  const app = loadApp(); const state = stateWithHierarchy(); state.board.sprint_start_date = '2026-10-05';
+  app.setState(state); app.selectBoard(1); app.applyRoute({view: 'timeline', boardId: 1, ticketId: 0, sprintNumber: 2});
+  const start = app.parseDate('2026-10-19');
+  const markup = app.ganttSvgSprintBands(start, 14, 4, 56, 240, 296, 62);
+  assert.deepEqual([...markup.matchAll(/data-sprint-boundary-date="([^"]+)"/g)].map(match => match[1]), ['2026-10-19', '2026-11-02']);
+  const lines = [...markup.matchAll(/<line class="ganttSvgSprintBoundary focused" x1="([^"]+)" x2="([^"]+)"/g)];
+  assert.deepEqual(lines.map(match => +match[1]), [88, 144]);
+  assert.equal(lines.every(match => match[1] === match[2]), true);
+  assert.equal((markup.match(/class="ganttSvgSprintLabel focused"/g) || []).length, 1);
+  assert.match(markup, /Sprint 2 · 2026-10-19 to 2026-11-01/, 'the complete inclusive range is available in a native tooltip when the short header cannot fit');
+  assert.doesNotMatch(markup, /class="ganttSvgSprintRange/, 'narrow header text cannot run into the next Sprint');
+});
+
+test('Today is a fixed local-day line with a date label and is omitted outside the calendar interval', () => {
+  const app = loadApp();
+  const start = app.parseDate('2026-10-05');
+  const today = new Date(2026, 9, 8, 23, 57);
+  const markup = app.ganttSvgToday(start, 14, 20, 500, 56, 358, today);
+  assert.match(markup, /data-today-date="2026-10-08"/);
+  assert.match(markup, /aria-label="Today · 2026-10-08"/);
+  assert.match(markup, /<line class="ganttSvgTodayLine" x1="148" x2="148" y1="56" y2="358"/);
+  assert.match(markup, /ganttSvgTodayHalo/);
+  assert.match(markup, /class="ganttSvgTodayText"[^>]*>Today · 2026-10-08<\/text>/);
+  assert.doesNotMatch(markup, /ganttSvgCursor|\bstyle=|visible/);
+  assert.equal(app.ganttSvgToday(start, 14, 20, 500, 56, 358, app.parseDate('2026-10-04')), '');
+  assert.equal(app.ganttSvgToday(start, 14, 20, 500, 56, 358, app.parseDate('2026-10-19')), '', 'the end date belongs to the next Sprint');
+  assert.match(app.ganttSvgToday(start, 14, 20, 500, 56, 358, start), /x1="88" x2="88"/);
+  const narrow = app.ganttSvgToday(start, 14, 4, 160, 56, 358, today);
+  const tag = /class="ganttSvgTodayTag" x="([^"]+)"[^>]*width="([^"]+)"/.exec(narrow);
+  assert.ok(+tag[1] >= 4 && +tag[1] + +tag[2] <= 156, 'the permanent date label fits inside a narrow SVG');
+  assert.match(narrow, />Today · 2026-10-08<\/text>/);
+  const localToday = app.startOfDay(new Date());
+  const current = app.ganttSvgToday(app.addDays(localToday, -1), 3, 20, 500, 56, 358);
+  assert.match(current, new RegExp('data-today-date="' + app.fmtIsoDate(localToday) + '"'), 'the default marker uses the current local day');
+});
+
+test('calendar foreground marks stay above task bars without changing track dimensions or cursor behavior', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  const today = app.startOfDay(new Date());
+  state.board.sprint_start_date = app.fmtIsoDate(today);
+  app.setState(state);
+  const ticket = {id: 100, ref: '100', title: 'Current work', type: 'task', duration: 2, startDate: app.fmtIsoDate(today), dueDate: app.fmtIsoDate(app.addDays(today, 2)), links: []};
+  const task = {...app.ganttTask(ticket), row: 0};
+  const markup = app.ganttSvg([task], today, 14, 20, 500, 56, 120, 120, 62);
+  const bar = markup.indexOf('class="ganttSvgBar ');
+  assert.ok(markup.indexOf('class="ganttSvgSprintBand ') < bar, 'Sprint shading stays behind task colors');
+  assert.ok(markup.indexOf('class="ganttSvgSprintBoundary"') > bar, 'task bars cannot cover Sprint boundaries');
+  assert.ok(markup.indexOf('class="ganttSvgToday"') > bar, 'the Today line stays visible through task bars');
+  assert.ok(markup.indexOf('class="ganttSvgToday"') < markup.indexOf('class="ganttSvgCursor"'), 'the existing pointer cursor remains independently rendered');
+  assert.ok(markup.indexOf('class="ganttSvgAxisDay"') > markup.indexOf('class="ganttSvgToday"'), 'permanent calendar lines cannot paint over axis dates');
+  assert.match(markup, /class="ganttSvgTodayLine"[^>]*y1="56" y2="238"/);
+  assert.match(markup, /class="ganttSvgRow odd"[^>]*y="56"[^>]*height="120"/);
+  assert.match(markup, /class="ganttSvgSprintLabel"[^>]*y="39"/);
+  assert.match(markup, /class="ganttSvgSprintRange"[^>]*y="51"/);
 });
 
 test('sprint planning explains work before the cadence without hiding a valid saved plan', () => {

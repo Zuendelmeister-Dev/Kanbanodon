@@ -94,6 +94,10 @@
 .boardLaneCell.boardDropTarget{outline:2px solid #37c7ad;outline-offset:-2px;background:#37c7ad12}
 .boardLaneDrop.boardDropTarget{background:#37c7ad0a}
 .boardLaneColumnHead.boardDropTarget{color:#d8fff7;background:#123f38;box-shadow:inset 0 -3px #37c7ad}
+.boardLaneCell.boardDropBlocked{outline:2px solid #fb7185;outline-offset:-2px;background:#fb71851c}
+.boardLaneDrop.boardDropBlocked{background:#fb71850d;cursor:not-allowed}
+.boardLaneColumnHead.boardDropBlocked{color:#ffe4e6;background:#57202b;box-shadow:inset 0 -3px #fb7185}
+.boardDropBlockedTooltip{position:fixed;z-index:80;width:min(420px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:12px 14px;border:1px solid #fb7185;border-radius:8px;background:#26131b;color:#ffe4e6;font-size:12px;line-height:1.5;white-space:pre-line;box-shadow:0 8px 24px #0009;pointer-events:none}
 .boardDropMarker{position:absolute;left:8px;right:8px;height:4px;border-radius:3px;background:#7de9d4;box-shadow:0 0 0 1px #07111a,0 0 8px #37c7ad88;pointer-events:none;z-index:8}
 .card.boardDragging{opacity:.4}
 .boardDragHint{color:#f4b83f;font-size:11px;font-weight:650}
@@ -195,3 +199,22 @@
 .sprintCard.next .sprintReadonlyInfo em{background:#2e1f57;color:#ddd6fe}
 .sprintReadonlyInfo strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f8fafc;font-size:11px;font-weight:800}
 .sprintCard .sprintJump:focus-visible,.sprintAll:focus-visible{outline:2px solid #bae6fd;outline-offset:3px}
+
+/* Calendar boundaries remain visible above bars; Today never follows the cursor. */
+.ganttSvgSprintBand.sprint1{opacity:.08}
+.ganttSvgSprintBand.sprint2{opacity:.1}
+.ganttSvgSprintBand.focused{opacity:.13}
+.ganttSvgSprintBoundary{stroke:#7dd3fc;stroke-width:2.5;stroke-dasharray:7 4;opacity:.9;vector-effect:non-scaling-stroke}
+.ganttSvgSprintBoundary.focused{stroke:#f4b83f;stroke-width:3;stroke-dasharray:none;opacity:1}
+.ganttSvgSprintBoundaryCap{fill:#7dd3fc;stroke:#07111a;stroke-width:1;vector-effect:non-scaling-stroke}
+.ganttSvgSprintBoundaryCap.focused{fill:#f4b83f}
+.ganttSvgSprintLabel{fill:#bae6fd;font-size:10px;font-weight:800;opacity:1;paint-order:stroke;stroke:#0b1219;stroke-width:2px;stroke-linejoin:round}
+.ganttSvgSprintRange{fill:#9fb9d0;font-size:9px;font-weight:650;paint-order:stroke;stroke:#0b1219;stroke-width:2px;stroke-linejoin:round}
+.ganttSvgSprintRange.focused{fill:#fde68a}
+.ganttSvgToday{pointer-events:none}
+.ganttSvgTodayHalo{stroke:#07111a;stroke-width:6.5;opacity:.95;vector-effect:non-scaling-stroke}
+.ganttSvgTodayLine{stroke:#5eead4;stroke-width:2.5;vector-effect:non-scaling-stroke}
+.ganttSvgTodayCap{fill:#5eead4;stroke:#07111a;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.ganttSvgTodayTag{fill:#103c36;stroke:#5eead4;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.ganttSvgTodayText{fill:#d8fff7;font-size:11px;font-weight:800;text-anchor:middle}
+.ganttSvgAxisDay,.ganttSvgAxisMonth{paint-order:stroke;stroke:#0b1219;stroke-width:3px;stroke-linejoin:round}
