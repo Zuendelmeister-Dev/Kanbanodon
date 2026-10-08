@@ -90,6 +90,13 @@
 .ganttSvgTask.dependencyHoverSelected .ganttSvgBar{stroke:var(--dependency-color);stroke-width:5}
 @media(max-width:620px){.dependencyFocusBar{align-items:flex-start;flex-direction:column}.dependencyFocusBar button{align-self:flex-start}}
 .card{position:relative}
+.boardLaneDrop{position:relative;height:100%}
+.boardLaneCell.boardDropTarget{outline:2px solid #37c7ad;outline-offset:-2px;background:#37c7ad12}
+.boardLaneDrop.boardDropTarget{background:#37c7ad0a}
+.boardLaneColumnHead.boardDropTarget{color:#d8fff7;background:#123f38;box-shadow:inset 0 -3px #37c7ad}
+.boardDropMarker{position:absolute;left:8px;right:8px;height:4px;border-radius:3px;background:#7de9d4;box-shadow:0 0 0 1px #07111a,0 0 8px #37c7ad88;pointer-events:none;z-index:8}
+.card.boardDragging{opacity:.4}
+.boardDragHint{color:#f4b83f;font-size:11px;font-weight:650}
 .taskEdit{padding:3px 8px;font-size:10px;color:var(--muted);background:transparent}
 .card .taskEdit{margin-top:8px;cursor:pointer}
 .ticketRow .taskEdit{margin-left:8px}

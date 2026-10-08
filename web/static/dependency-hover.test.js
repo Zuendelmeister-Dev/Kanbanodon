@@ -218,6 +218,54 @@ test('branching sources choose a nearby port for each neighbor instead of sharin
   assert.deepEqual(routed(edges.slice().reverse(), positions, { clearance: 12 }), routes);
 });
 
+test('an occupied input terminal moves the next output locally instead of surrounding the neighboring card', () => {
+  const original = new Map([[1, rect(184, 1, 458, 94)], [2, rect(630, 100, 903, 392)],
+    [3, rect(184, 126, 458, 436)], [4, rect(184, 467, 458, 690)]]);
+  const edges = [{ from: 1, to: 2 }, { from: 2, to: 3 }, { from: 3, to: 4 }];
+  // This is the Prepare snack bar -> Order fern salad shape from the Board.
+  // The first wire enters the side needed by the second wire's short output.
+  for (const mirror of [false, true]) {
+    const positions = new Map([...original].map(([id, box]) => [id, mirror ?
+      rect(1174 - box.right, box.top, 1174 - box.left, box.bottom) : box]));
+    const obstacles = [...positions.values()];
+    const routes = routed(edges, positions, { clearance: 4 }, obstacles, rect(64, 1, 1110, 720));
+    assert.equal(routes.length, edges.length);
+    routes.forEach(route => assertSafeRoute(route.points, obstacles));
+    const incoming = routes.find(route => route.from === 1);
+    const outgoing = routes.find(route => route.from === 2);
+    assert.equal(outgoing.points[0].x, incoming.points.at(-1).x, 'both terminals use the facing side');
+    assert.ok(Math.abs(outgoing.points[0].y - incoming.points.at(-1).y) >= 18, 'terminals stay visibly separated');
+    assert.ok(Math.abs(outgoing.points[0].y - incoming.points.at(-1).y) <= 36, 'the output only moves a short distance');
+    assert.ok(length(outgoing.points) <= 200, 'the old bottom-to-top loop was over 800 px');
+    assert.ok(outgoing.points.every(point => point.x >= (mirror ? 544 : 458) && point.x <= (mirror ? 716 : 630)), 'the arrow remains in the shared column gap');
+    assert.ok(outgoing.points.every(point => point.y >= 246 && point.y <= 282), 'no segment circles above or below the target card');
+    outgoing.points.slice(1).forEach((point, index) => assert.equal(hover.sharesTrack(outgoing.points[index], point, [incoming.points]), false));
+    assert.deepEqual(routed(edges.slice().reverse(), positions, { clearance: 4 }, obstacles, rect(64, 1, 1110, 720)), routes,
+      'input edge order cannot change the route');
+  }
+});
+
+test('a full branching Board circuit retains all arrows and keeps the snack-bar output inside the column gap', () => {
+  const positions = new Map([[2, rect(184, 30, 458, 234)], [5, rect(184, 264, 458, 468)],
+    [7, rect(184, 498, 458, 702)], [8, rect(184, 732, 458, 936)], [9, rect(184, 966, 458, 1170)],
+    [10, rect(184, 1200, 458, 1404)], [1, rect(630, 30, 903, 234)], [3, rect(630, 264, 903, 468)],
+    [4, rect(630, 498, 903, 702)], [6, rect(630, 732, 903, 936)]]);
+  const edges = [{ from: 1, to: 3 }, { from: 1, to: 5 }, { from: 2, to: 4 }, { from: 3, to: 6 },
+    { from: 4, to: 9 }, { from: 5, to: 10 }, { from: 6, to: 7 }, { from: 7, to: 8 },
+    { from: 8, to: 10 }, { from: 9, to: 10 }];
+  const obstacles = [...positions.values()];
+  const routes = routed(edges, positions, { clearance: 4 }, obstacles, rect(64, 1, 1110, 1430));
+  assert.equal(routes.length, edges.length, 'shortening a branch never removes another arrow');
+  routes.forEach((route, index) => {
+    assertSafeRoute(route.points, obstacles);
+    const reserved = routes.slice(0, index).filter(previous => previous.from !== route.from).map(previous => previous.points);
+    route.points.slice(1).forEach((point, offset) => assert.equal(hover.sharesTrack(route.points[offset], point, reserved), false));
+  });
+  const snackBar = routes.find(route => route.from === 6 && route.to === 7);
+  assert.ok(snackBar.points.every(point => point.x >= 458 && point.x <= 630), 'a free local gap beats going around either card');
+  assert.ok(length(snackBar.points) < 450);
+});
+
 test('connections route around intervening cards without crossing text', () => {
   const source = rect(20, 30, 110, 90);
   const target = rect(320, 30, 410, 90);
@@ -323,9 +371,11 @@ test('normal task and Epic hover do not open dependency previews', () => {
   ui.nodes.forEach(node => {
     node.fire('pointerenter', { pointerType: 'mouse' });
     node.fire('focusin');
+    ui.root.fire('pointerover', { target: node, pointerType: 'mouse' });
     assert.equal(node.listenerCount('pointerenter'), 0);
     assert.equal(node.listenerCount('focusin'), 0);
     assert.equal(node.getAttribute('data-dependency-step'), undefined);
+    assert.equal(node.classList.contains('dependencyHoverDimmed'), false);
   });
   assert.equal(ui.overlay().innerHTML, '');
   controller.destroy();
@@ -412,7 +462,7 @@ test('source circles and numbers are always painted above all Overview wire path
   controller.destroy();
 });
 
-test('pointer hit targets isolate only their wire in Board, Overview and Timeline without rerouting', () => {
+test('pointer hit targets isolate their wire and endpoint cards in every view without rerouting', () => {
   for (const layout of ['board', 'overview', 'timeline']) {
     const ui = uiFixture();
     if (layout === 'overview') ui.nodes.forEach((node, index) => { node.bounds = rect(88, 20 + index * 60, 620, 80 + index * 60); });
@@ -431,14 +481,18 @@ test('pointer hit targets isolate only their wire in Board, Overview and Timelin
     ui.root.scrollTop = 40;
     overlay.fire('pointerover', { target: firstHit, pointerType: 'mouse' });
     assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [false, true, true], layout);
+    assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [false, false, true, true]);
     const marks = overlay.querySelectorAll('[data-dependency-source]');
     marks.forEach(mark => assert.equal(mark.classList.contains('dependencyHoverWireDimmed'), mark.getAttribute('data-dependency-source') !== '1'));
-    // Move straight to the next wire; the old one fades without an intervening
-    // redraw, selection change, scroll adjustment or task-opacity change.
+    // Moving to another wire or a card changes opacity without a redraw,
+    // selection change, scroll adjustment or geometry read.
     const secondHit = groups[1].querySelector('.dependencyHoverHit');
     overlay.fire('pointerout', { target: firstHit, relatedTarget: secondHit, pointerType: 'mouse' });
     assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [true, false, true]);
+    assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [true, false, false, true]);
     overlay.fire('pointerout', { target: secondHit, relatedTarget: ui.nodes[0], pointerType: 'mouse' });
+    assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [false, true, true]);
+    ui.root.fire('pointerout', { target: ui.nodes[0], relatedTarget: ui.root, pointerType: 'mouse' });
     groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), false));
     marks.forEach(mark => assert.equal(mark.classList.contains('dependencyHoverWireDimmed'), false));
     ui.flush();
@@ -452,6 +506,63 @@ test('pointer hit targets isolate only their wire in Board, Overview and Timelin
     assert.doesNotMatch(drawing, /tabindex=|\bstyle=/);
     controller.destroy();
   }
+});
+
+test('card hover keeps every incoming and outgoing neighbor visible and restores the pinned circuit on leaving', () => {
+  for (const layout of ['board', 'overview', 'timeline']) {
+    const ui = uiFixture();
+    if (layout === 'overview') ui.nodes.forEach((node, index) => { node.bounds = rect(88, 20 + index * 60, 620, 80 + index * 60); });
+    const unrelated = ui.element(10, rect(460, 230, 570, 290));
+    ui.root.append(unrelated);
+    const tool = ui.element();
+    ui.nodes[1].append(tool);
+    const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 1, layout });
+    const overlay = ui.overlay();
+    const groups = overlay.querySelectorAll('[data-dependency-wire]');
+    const markup = overlay.innerHTML;
+    const reads = ui.nodes.reduce((sum, node) => sum + node.layoutReads, ui.root.layoutReads);
+    const steps = ui.nodes.map(node => node.getAttribute('data-dependency-step'));
+    ui.root.fire('pointerover', { target: tool, pointerType: 'mouse' });
+    assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [false, false, true], layout);
+    assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [false, false, false, true]);
+    const sources = overlay.querySelectorAll('[data-dependency-source]');
+    sources.forEach(mark => assert.equal(mark.classList.contains('dependencyHoverWireDimmed'), mark.getAttribute('data-dependency-source') === '3'));
+    ui.root.fire('pointerout', { target: tool, relatedTarget: ui.nodes[1], pointerType: 'mouse' });
+    assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [false, false, true], 'moving inside a card keeps the same incident edges');
+    ui.root.fire('pointerout', { target: ui.nodes[1], relatedTarget: ui.nodes[2], pointerType: 'mouse' });
+    assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [true, false, false]);
+    assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [true, false, false, false]);
+    assert.equal(ui.nodes[0].classList.contains('dependencyHoverSelected'), true, 'hover never changes the pinned selection');
+    ui.root.fire('pointerleave');
+    assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [false, false, false, false]);
+    assert.equal(unrelated.classList.contains('dependencyHoverDimmed'), true);
+    [...groups, ...sources].forEach(node => assert.equal(node.classList.contains('dependencyHoverWireDimmed'), false));
+    ui.root.fire('pointerover', { target: tool, pointerType: 'touch' });
+    assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [false, false, false, false]);
+    ui.flush();
+    assert.equal(overlay.innerHTML, markup);
+    assert.deepEqual(ui.nodes.map(node => node.getAttribute('data-dependency-step')), steps);
+    assert.equal(ui.nodes.reduce((sum, node) => sum + node.layoutReads, ui.root.layoutReads), reads);
+    controller.destroy();
+    for (const event of ['pointerover', 'pointerout', 'pointerleave', 'pointercancel']) assert.equal(ui.root.listenerCount(event), 0);
+  }
+});
+
+test('hovering a branching card includes both prerequisites and all direct dependents without later tasks', () => {
+  const ui = uiFixture();
+  const otherRoot = ui.element(5, rect(460, 230, 570, 290));
+  ui.root.append(otherRoot);
+  const edges = [{ from: 1, to: 2 }, { from: 5, to: 2 }, { from: 2, to: 3 }, { from: 2, to: 4 }, { from: 3, to: 4 }];
+  const controller = hover.wire(ui.root, { layerRoot: ui.root, edges, selectedId: 3 });
+  const overlay = ui.overlay();
+  ui.root.fire('pointerover', { target: ui.nodes[1], pointerType: 'mouse' });
+  overlay.querySelectorAll('[data-dependency-wire]').forEach(group => {
+    assert.equal(group.classList.contains('dependencyHoverWireDimmed'), group.getAttribute('data-dependency-wire') === '3>4');
+  });
+  [...ui.nodes, otherRoot].forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
+  ui.window.fire('blur');
+  overlay.querySelectorAll('[data-dependency-wire]').forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), false));
+  controller.destroy();
 });
 
 test('source badge hover keeps its outgoing branches visible and leaving restores every arrow decoration', () => {
@@ -580,6 +691,15 @@ test('Timeline labels and bars share explicit selection using only main bars as 
   assert.equal(ui.nodes[1].classList.contains('dependencyHoverSelected'), true);
   assert.equal(label.getAttribute('data-dependency-step'), '2');
   assert.equal(unrelated.classList.contains('dependencyHoverDimmed'), true);
+  const drawing = ui.overlay().innerHTML;
+  const reads = ui.root.layoutReads;
+  eventRoot.fire('pointerover', { target: label, pointerType: 'mouse' });
+  assert.deepEqual(ui.nodes.map(node => node.classList.contains('dependencyHoverDimmed')), [false, false, false, true]);
+  assert.equal(label.classList.contains('dependencyHoverDimmed'), false, 'the text label and its bar share the same hover');
+  assert.equal(ui.overlay().innerHTML, drawing);
+  assert.equal(ui.root.layoutReads, reads);
+  eventRoot.fire('pointerleave');
+  ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
   controller.destroy();
 });
 

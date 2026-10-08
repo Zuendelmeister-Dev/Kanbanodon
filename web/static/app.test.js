@@ -109,7 +109,7 @@ function loadApp(options = {}) {
     normalizePromotionType, backlogDescendants,
     childTickets, descendantTickets, parentTypeAllowed, parentCandidates, childCount, ticketOrder,
     blockingTicketIds, dependencyTickets, dependentTickets, unfinishedDependencies, ticketDuration, durationLabel,
-    boardSwimlaneData, boardCardDepth, overviewRows, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
+    boardSwimlaneData, boardLaneColumnItems, boardNormalGroupSort, boardCardDepth, wireDnD, boardDropPlacement, moveBoardTicket, overviewRows, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     boardDependencyHtml, dependencyHoverEdges, wireWorkDependencies, wireTimelineDependencies,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
     renderGantt, ganttTaskLabel, timelineGeometry,
@@ -150,6 +150,174 @@ function stateWithHierarchy() {
     ],
   };
 }
+
+function boardDragFixture(app, tickets, column = 1, epic = 0) {
+  const drop = fakeElement(); drop.dataset = {col: String(column), epic: String(epic)};
+  const cell = fakeElement(); const header = app.document.querySelector('.boardLaneColumnHead[data-col="' + column + '"]');
+  drop.closest = () => cell;
+  drop.getBoundingClientRect = () => ({top: 80, bottom: 80 + tickets.length * 140, height: tickets.length * 140});
+  drop.contains = node => cards.includes(node);
+  const cards = tickets.map((ticket, index) => {
+    const card = fakeElement(); card.dataset = {id: String(ticket.id)};
+    card.closest = selector => selector === '.boardLaneCell' ? cell : null;
+    card.getBoundingClientRect = () => ({top:100+index*140,bottom:220+index*140,height:120});
+    return card;
+  });
+  drop.querySelectorAll = selector => selector === '.card' ? cards : [];
+  const markers = [];
+  app.document.createElement = () => {
+    const marker = fakeElement(); marker.properties = new Map();
+    marker.style = {setProperty:(name,value) => marker.properties.set(name,value)};
+    marker.remove = () => { marker.removed = true; };
+    markers.push(marker); return marker;
+  };
+  drop.append = marker => { drop.marker = marker; };
+  const transfer = {data: {}, setData(type,value) { this.data[type]=value; }, getData(type) { return this.data[type] || ''; }};
+  const event = (target, y) => ({target, clientY:y, dataTransfer:transfer, prevented:false, preventDefault() { this.prevented=true; }});
+  return {drop,cell,header,cards,markers,transfer,event};
+}
+
+test('Board insertion preview chooses first, middle, last and filtered neighbor anchors', () => {
+  const app = loadApp();
+  const tickets = [1,2,3].map(id => ({id}));
+  const fixture = boardDragFixture(app,tickets);
+  assert.deepEqual(JSON.parse(JSON.stringify(app.boardDropPlacement(fixture.drop,90,9))), {beforeId:1,afterId:0,top:12});
+  assert.equal(app.boardDropPlacement(fixture.drop,250,9).beforeId,2);
+  assert.equal(app.boardDropPlacement(fixture.drop,600,9).afterId,3);
+  assert.equal(app.boardDropPlacement(fixture.drop,250,2).beforeId,3, 'the dragged card is never its own anchor');
+  fixture.drop.querySelectorAll = () => [fixture.cards[0],fixture.cards[2]];
+  assert.equal(app.boardDropPlacement(fixture.drop,600,9).afterId,3, 'bottom of filtered view anchors after the last visible task');
+  fixture.drop.querySelectorAll = () => [];
+  assert.deepEqual(JSON.parse(JSON.stringify(app.boardDropPlacement(fixture.drop,90,9))), {beforeId:0,afterId:0,top:14});
+});
+
+test('Board reference ties use the same natural numeric runs as the atomic move endpoint', () => {
+  const app=loadApp();
+  const refs=['A10','A2','1.1','1.01','A0002','A90071992547409930','A90071992547409929','İ2','i2'];
+  const tickets=refs.map((ref,index)=>({id:index+1,ref,type:'task',columnId:1,position:0}));
+  assert.deepEqual(Array.from(app.boardLaneColumnItems({items:tickets},1),t=>t.id),[3,4,2,5,1,7,6,9,8]);
+  tickets.find(t=>t.id===6).position=-1;
+  assert.equal(app.boardLaneColumnItems({items:tickets},1)[0].id,6,'manual position still takes precedence over reference ties');
+});
+
+test('Board drag marks the exact target position and destination column without changing hierarchy', async () => {
+  const requests = [];
+  const state = stateWithHierarchy();
+  state.tickets = [1,2,3,4].map((id,index) => ({id,title:'Task '+id,ref:String(10-id),type:'task',columnId:id<3?1:5,parentId:0,position:index%2+1,labels:[],links:[]}));
+  const app = loadApp({fetch:async(url,options) => {
+    requests.push({url,options});
+    if (url.endsWith('/move')) {
+      const moved = state.tickets.find(ticket => ticket.id === 2); moved.columnId=5; moved.position=2;
+      state.tickets.find(ticket => ticket.id===4).position=3;
+      return {ok:true,text:async()=>'{}'};
+    }
+    return {ok:true,text:async()=>JSON.stringify(state)};
+  }});
+  app.setState(state); app.selectBoard(1);
+  const source = boardDragFixture(app,state.tickets.filter(t=>t.columnId===1));
+  const destination = boardDragFixture(app,state.tickets.filter(t=>t.columnId===5),5);
+  const originalQueryAll = app.document.querySelectorAll;
+  app.document.querySelectorAll = selector => selector === '.card' ? [...source.cards,...destination.cards] : selector === '.drop' ? [source.drop,destination.drop] : selector === '.boardDropTarget' ? [source.drop,destination.drop,source.cell,destination.cell,source.header,destination.header] : originalQueryAll(selector);
+  app.wireDnD();
+  const selected = source.cards[1];
+  selected.ondragstart(source.event(selected,280));
+  assert.equal(source.transfer.effectAllowed,'move');
+  const over = destination.event(destination.drop,250); over.dataTransfer = source.transfer;
+  destination.drop.ondragover(over);
+  assert.equal(over.prevented,true);
+  assert.equal(destination.drop.classList.contains('boardDropTarget'),true);
+  assert.equal(destination.cell.classList.contains('boardDropTarget'),true);
+  assert.equal(destination.header.classList.contains('boardDropTarget'),true);
+  assert.equal(destination.drop.marker.className,'boardDropMarker');
+  assert.equal(destination.drop.marker.properties.get('top'),'150px');
+  await destination.drop.ondrop(over);
+  assert.equal(requests[0].url,'/api/tickets/2/move');
+  assert.deepEqual(JSON.parse(requests[0].options.body), {ColumnID:5,BeforeID:4,AfterID:0});
+  assert.equal(requests[0].options.method,'POST');
+  assert.deepEqual(Object.keys(JSON.parse(requests[0].options.body)).sort(),['AfterID','BeforeID','ColumnID']);
+  assert.equal(requests[1].url,'/api/state?boardId=1');
+  const lane = app.boardSwimlaneData(app.workTickets())[0];
+  assert.deepEqual(Array.from(app.boardLaneColumnItems(lane,5), ticket=>ticket.id),[3,2,4], 'reload obeys saved positions rather than the old ticket reference order');
+  assert.equal(app.getState().tickets.find(t=>t.id===2).parentId,0);
+  assert.equal(destination.header.classList.contains('boardDropTarget'),false);
+  selected.ondragend();
+  assert.equal(selected.classList.contains('boardDragging'),false);
+});
+
+test('Board drag cannot move tasks into another Epic lane and cancels its preview', () => {
+  const app = loadApp(); const state=stateWithHierarchy(); app.setState(state);
+  const task=state.tickets.find(t=>t.id===12);
+  const source=boardDragFixture(app,[task],1,10);
+  const invalid=boardDragFixture(app,[],5,0);
+  const original=app.document.querySelectorAll;
+  app.document.querySelectorAll=selector=>selector==='.card'?source.cards:selector==='.drop'?[source.drop,invalid.drop]:selector==='.boardDropTarget'?[source.drop,source.cell,source.header]:original(selector);
+  app.wireDnD(); source.cards[0].ondragstart(source.event(source.cards[0],110));
+  const over=invalid.event(invalid.drop,100); over.dataTransfer=source.transfer;
+  invalid.drop.ondragover(over);
+  assert.equal(over.prevented,false);
+  assert.equal(source.transfer.dropEffect,'none');
+  assert.equal(invalid.markers.length,0);
+  assert.equal(task.parentId,11);
+});
+
+test('dependency Board sorting disables manual drag until Normal order is selected', () => {
+  const app=loadApp({hover:{wire(){}}}); const state=stateWithHierarchy(); app.setState(state); app.selectBoard(1);
+  app.openDependencies(12);
+  assert.match(app.planningFocusHtml(),/Choose Normal order to drag cards/);
+  assert.match(app.card(state.tickets.find(t=>t.id===12)),/draggable="false"/);
+  app.setDependencySort('normal');
+  assert.match(app.card(state.tickets.find(t=>t.id===12)),/draggable="true"/);
+  assert.doesNotMatch(app.planningFocusHtml(),/Choose Normal order to drag cards/);
+});
+
+test('failed Board move preserves order and editor discard Cancel sends no request', async () => {
+  const requests=[];
+  const app=loadApp({fetch:async(url,options)=>{requests.push({url,options});return {ok:false,status:409,text:async()=>'blocked by unfinished dependencies'};}});
+  const state=stateWithHierarchy(); app.setState(state); app.selectBoard(1);
+  const ticket=state.tickets.find(t=>t.id===12), before=JSON.stringify(state.tickets);
+  await app.moveBoardTicket(ticket,5,{beforeId:0,afterId:13});
+  assert.equal(JSON.stringify(state.tickets),before);
+  assert.match(app.elements.get('#formError').textContent,/blocked by unfinished dependencies/);
+  assert.equal(requests.length,1,'failed move needs no additional mutating request or optimistic rollback');
+  app.setDraft(ticket,'different snapshot'); app.setConfirm(()=>false);
+  await app.moveBoardTicket(ticket,5,{beforeId:0,afterId:13});
+  assert.equal(requests.length,1);
+  assert.equal(app.getEditing().id,12);
+});
+
+test('late Board move completion does not reload or show errors over another board or session', async () => {
+  const pending=deferredResponseQueue(); const app=loadApp({fetch:pending.fetch}); const state=stateWithHierarchy(); app.setState(state); app.selectBoard(1);
+  const promise=app.moveBoardTicket(state.tickets.find(t=>t.id===12),5,{beforeId:0,afterId:13});
+  app.selectBoard(2);
+  pending.respond(0,{});
+  await promise;
+  assert.equal(pending.pending.length,1,'an old board completion must not refresh the newly selected board');
+  app.selectBoard(1);
+  const rejected=app.moveBoardTicket(state.tickets.find(t=>t.id===12),5,{beforeId:0,afterId:13});
+  app.resetClientState();
+  pending.respond(1,'blocked by unfinished dependencies',409);
+  await rejected;
+  assert.equal(app.elements.get('#formError').textContent,'');
+});
+
+test('Board drag ignores external transfers and stale controls while another board is loading', async () => {
+  let requests=0;
+  const app=loadApp({fetch:()=>{requests++;return new Promise(()=>{});}});
+  const state=stateWithHierarchy(); app.setState(state); app.selectBoard(1);
+  const task=state.tickets.find(t=>t.id===12), fixture=boardDragFixture(app,[task],1,10);
+  const original=app.document.querySelectorAll;
+  app.document.querySelectorAll=selector=>selector==='.card'?fixture.cards:selector==='.drop'?[fixture.drop]:original(selector);
+  app.wireDnD();
+  fixture.transfer.setData('text/plain','12');
+  await fixture.drop.ondrop(fixture.event(fixture.drop,110));
+  assert.equal(requests,0,'an external text transfer is not a Board card drag');
+  app.selectBoard(2);
+  const start=fixture.event(fixture.cards[0],110);
+  fixture.cards[0].ondragstart(start);
+  assert.equal(start.prevented,true);
+  await app.moveBoardTicket(task,5,{beforeId:0,afterId:13});
+  assert.equal(requests,0,'the pending-board guard must run before editor closure or sending a move');
+});
 
 test('board and backlog navigation render immediately and preserve browser history', () => {
   const app = loadApp();

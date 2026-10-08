@@ -38,6 +38,8 @@ See [Organizing tasks](docs/task-tools.md) for more detailed instructions. [Dino
 
 A task can contain a description, checklist, assignee, due date, labels, duration, start date, milestone, parent, and dependencies. Comments support collaboration. Mentions and assignments by other users create notifications inside the application.
 
+Drag Board cards to reorder them within a column or insert them at a chosen position in another column. A line marks the insertion point, and the target column is highlighted. For example, drag the second To Do card before the third Done card to change both its status and position. The manual order is saved within its Epic lane. Use "Normal order" to drag when dependencies are open; "Dependency order" follows the chain instead.
+
 "Duplicate" creates a copy with a fresh work state. Archive and Trash remove tasks from active views and allow restoration. Recurring tasks create their successor when completed.
 
 ## Optional planning
@@ -46,9 +48,9 @@ A task can contain a description, checklist, assignee, due date, labels, duratio
 
 Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs can belong to an Epic or Story. A board without Epics uses the available width for its workflow columns.
 
-Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
+Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status and manual position; use "Parent" in the editor to change its parent.
 
-Select "Dependencies" beside "Edit" to preview the complete connected chain, including its predecessors, successors, and branches. Unrelated tasks fade. Numbering starts at 1 for tasks without predecessors; each dependent stage adds one. Colors progress from blue at the start, through gold in the middle, to teal at the end, with mixed colors for intermediate stages. Parallel tasks at the same stage share a color. A two-stage chain uses blue and teal. Frames and outgoing arrows use the source task’s color. Arrows point to dependent tasks, and scrolling keeps their routes unchanged. Hover over an arrow to fade the other arrows; moving away restores them. Hovering over a numbered source shows that source's outgoing arrows. This hover changes only the arrows, keeping the task frames and selection in place.
+Select "Dependencies" beside "Edit" to preview the complete connected chain, including its predecessors, successors, and branches. Unrelated tasks fade. Numbering starts at 1 for tasks without predecessors; each dependent stage adds one. Colors progress from blue at the start, through gold in the middle, to teal at the end, with mixed colors for intermediate stages. Parallel tasks at the same stage share a color. A two-stage chain uses blue and teal. Frames and outgoing arrows use the source task’s color. Arrows point to dependent tasks, and scrolling keeps their routes unchanged. Hover over an arrow to highlight its endpoints and fade other arrows and tasks. Hover over a task to show all its incoming and outgoing arrows and their neighboring tasks. Moving away restores the opened chain's appearance; hovering in the normal view does not open dependencies. Hovering over a numbered source shows that source's outgoing arrows and neighbors.
 
 "Focus tasks" hides unrelated work while keeping the whole connected chain. Each other task in the focused view has a focus button for selecting it without losing the rest of the chain. The highlighted "Show other tasks" button returns to the preview. The highlighted "Back" button, "Back to normal view" above the task area, and "Close dependencies" in the top bar close the dependency view. The selected task has a thicker frame, and the view identifies its reference and title. These actions work in Board, Overview, and Timeline; focused Timeline fits the connected tasks’ dates. Click a task or use "Edit" to open its editor. Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
 
@@ -142,7 +144,7 @@ Checklists, recurrence, Archive and Trash status, and comments with timestamps a
 
 A board export supplements backups but does not replace a backup of the entire installation.
 
-For disposable demonstrations, separate [test data flags](docs/demo-data.md) clear old task data or fill boards with three dated example Epics, current Sprint plans, and matching Backlog tasks. Both are disabled by default. Enable both to replace the old work with fresh examples; enable only filling to retain existing tasks.
+For disposable demonstrations, use [clear-task-data.ps1](scripts/clear-task-data.ps1) to empty task data and Sprint plans, or [seed-demo-data.ps1](scripts/seed-demo-data.ps1) to fill boards with three dated example Epics, current Sprints, and matching Backlog tasks. Run cleanup followed by seeding to refresh old examples. Both commands use a one-shot maintenance container and leave ordinary startup flags unchanged. The separate Compose flags remain available, disabled by default. See [test data instructions](docs/demo-data.md) for commands and cleanup details.
 
 ## Architecture
 

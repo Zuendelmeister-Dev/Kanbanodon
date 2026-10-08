@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -13,12 +14,20 @@ import (
 
 // main wires the databases, routes, middleware, and HTTP server.
 func main() {
+	prepareOnly := flag.Bool("prepare-demo-data", false, "apply explicitly enabled demo-data actions and exit without starting HTTP")
+	flag.Parse()
 	data := env("KANBANODON_DATA_DIR", "data")
 	must(os.MkdirAll(data, 0755))
 	s := &server{db: open(filepath.Join(data, "app.db")), cfg: open(filepath.Join(data, "config.db")), authMode: env("KANBANODON_AUTH_MODE", "local"), allowSignup: env("KANBANODON_ALLOW_SIGNUP", "true") == "true", secret: []byte(env("KANBANODON_SESSION_SECRET", "change-me-kanbanodon"))}
 	must(s.migrate())
 	must(s.seed())
 	must(s.prepareDemoDataIfEnabled(env("KANBANODON_CLEAR_TASK_DATA", "false"), env("KANBANODON_SEED_DEMO_DATA", "false"), env("KANBANODON_RESET_DEMO_DATA", "false"), time.Now()))
+	if *prepareOnly {
+		must(s.db.Close())
+		must(s.cfg.Close())
+		log.Print("One-shot demo data preparation finished; HTTP server was not started")
+		return
+	}
 	addr := env("KANBANODON_ADDR", ":8080")
 	log.Printf("Kanbanodon listening on %s (%s mode)", addr, s.authMode)
 	log.Fatal(http.ListenAndServe(addr, newHandler(s)))

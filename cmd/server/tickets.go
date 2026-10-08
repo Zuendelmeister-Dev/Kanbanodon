@@ -129,8 +129,9 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	isComments := len(parts) == 2 && parts[1] == "comments"
+	isMove := len(parts) == 2 && parts[1] == "move"
 	isFeature := len(parts) == 2 && (parts[1] == "duplicate" || parts[1] == "archive" || parts[1] == "trash" || parts[1] == "restore")
-	if len(parts) > 2 || (len(parts) == 2 && !isComments && !isFeature) {
+	if len(parts) > 2 || (len(parts) == 2 && !isComments && !isFeature && !isMove) {
 		http.NotFound(w, r)
 		return
 	}
@@ -141,6 +142,10 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	if !s.canAccessBoard(u, bid) {
 		http.Error(w, "board access required", 403)
+		return
+	}
+	if isMove {
+		s.moveTicket(w, r, u, id, bid)
 		return
 	}
 	if isFeature {
@@ -412,20 +417,25 @@ func (s *server) ticketBoardID(ticketID int64) (int64, error) {
 
 // blockedDependenciesForLinks checks the incoming dependency set for a workflow move.
 func (s *server) blockedDependenciesForLinks(boardID int64, links []int64, targetColumnID int64) ([]string, error) {
+	return blockedDependenciesForLinks(s.db, boardID, links, targetColumnID)
+}
+
+// A move checks workflow constraints inside the same transaction as the reorder.
+func blockedDependenciesForLinks(store rowQuerier, boardID int64, links []int64, targetColumnID int64) ([]string, error) {
 	if targetColumnID == 0 {
 		return nil, nil
 	}
 	var targetPosition int
 	var targetName string
 	var targetBoardID int64
-	if err := s.db.QueryRow("select board_id,position,name from columns where id=?", targetColumnID).Scan(&targetBoardID, &targetPosition, &targetName); err != nil {
+	if err := store.QueryRow("select board_id,position,name from columns where id=?", targetColumnID).Scan(&targetBoardID, &targetPosition, &targetName); err != nil {
 		return nil, err
 	}
 	if targetBoardID != boardID {
 		return nil, errors.New("target column does not belong to board")
 	}
 	var startPosition int
-	if err := s.db.QueryRow("select position from columns where board_id=? and lower(name)='in progress' order by position limit 1", boardID).Scan(&startPosition); err != nil {
+	if err := store.QueryRow("select position from columns where board_id=? and lower(name)='in progress' order by position limit 1", boardID).Scan(&startPosition); err != nil {
 		startPosition = 2
 	}
 	if targetPosition < startPosition || strings.EqualFold(targetName, "To Do") || strings.EqualFold(targetName, "Backlog") || strings.EqualFold(targetName, "Ready") {
@@ -440,7 +450,7 @@ func (s *server) blockedDependenciesForLinks(boardID int64, links []int64, targe
 		}
 		seen[id] = true
 		var title, columnName string
-		if err := s.db.QueryRow(`select dep.title,c.name
+		if err := store.QueryRow(`select dep.title,c.name
 			from tickets dep join columns c on c.id=dep.column_id
 			where dep.id=? and dep.board_id=? and dep.deleted_at=''`, id, boardID).Scan(&title, &columnName); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

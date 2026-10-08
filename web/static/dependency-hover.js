@@ -215,6 +215,23 @@
       .find(value => fits(start, source, value) && fits(end, target, value)) || clearance;
     [start, end].forEach(port => { port.outer = { x: port.edge.x + port.dx * lead, y: port.edge.y + port.dy * lead }; });
   }
+
+  // An incoming wire can already occupy the center terminal on the side
+  // facing the next task. Give the output a nearby terminal instead of forcing
+  // it around the entire card to an unrelated side. Free terminals stay centered.
+  function outputOffsets(port, source, target, reserved) {
+    if (!sharesTrack(port.edge, port.outer, reserved)) return [0];
+    const horizontal = port.axis === 1;
+    const low = (horizontal ? source.top : source.left) + 10;
+    const high = (horizontal ? source.bottom : source.right) - 10;
+    const center = horizontal ? port.edge.y : port.edge.x;
+    const neighbor = horizontal ? (target.top + target.bottom) / 2 : (target.left + target.right) / 2;
+    const toward = neighbor >= center ? 1 : -1;
+    const aligned = Math.max(-36, Math.min(36, neighbor - center));
+    return [...new Set([0, toward * 18, -toward * 18, toward * 36, -toward * 36,
+      ...(Math.abs(aligned) >= 18 ? [aligned] : [])])]
+      .filter(offset => offset === 0 || center + offset >= low && center + offset <= high);
+  }
   // Prefer the middle of physical gaps. Neighboring lanes are available when
   // a span is occupied; expanded obstacle edges are emergency channels.
   function boardChannels(obstacles, bounds, clearance, offset) {
@@ -464,45 +481,54 @@
       pairs.forEach(([outputSide, preferredInputSide], pairIndex) => {
         const inputSide = layout === 'timeline' && endGroup.length > 1 && target.right - target.left < 20 &&
           (preferredInputSide === 'top' || preferredInputSide === 'bottom') ? 'left' : preferredInputSide;
-        const start = circuitPort(source, outputSide, 0, 1, clearance, layout === 'overview', true);
-        const slot = endGroup.indexOf(edge);
-        const end = circuitPort(target, inputSide, slot, endGroup.length, clearance, layout === 'overview', false);
-        if (layout === 'timeline') {
-          // Vertical connectors still originate at the prerequisite's finish
-          // and arrive near the dependent's start, preserving time semantics
-          // without a wide U when those dates coincide or overlap.
-          if (start.axis === 2) start.edge.x = source.right;
-          if (end.axis === 2) {
-            const fan = end.edge.x - (target.left + target.right) / 2;
-            const inset = endGroup.length > 1 ? Math.min(18, (target.right - target.left) / 2) : 0;
-            end.edge.x = Math.max(target.left, Math.min(target.right, target.left + inset + fan));
-          }
-        }
-        extendPorts(start, source, end, target, obstacles, bounds, clearance);
-        let channelBase;
-        if (layout === 'overview') {
-          const nearest = Math.min(source.left, target.left);
-          const gutterLeft = bounds.left + clearance;
-          const gutterRight = Math.min(nearest, bounds.left + Math.max(36, +options.gutterWidth || 88));
-          channelBase = [(gutterLeft + gutterRight) / 2];
-        } else channelBase = boardChannels(obstacles, bounds, clearance, 0);
-        const channels = [...new Set(channelBase.flatMap(value => [value, value - 16, value + 16, value - 32, value + 32]))]
-          .filter(value => value >= bounds.left + clearance && value <= bounds.right - clearance);
-        let points;
-        if (layout === 'overview') {
-          for (const channel of channels) {
-            const candidate = compactPath([start.edge, { x: channel, y: start.edge.y }, { x: channel, y: end.edge.y }, end.edge]);
-            if (candidate.every(point => inBounds(point, bounds)) && candidate.slice(1).every((point, index) =>
-              !segmentBlocked(candidate[index], point, obstacles) && !sharesTrack(candidate[index], point, reserved))) {
-              points = candidate;
-              break;
+        const centeredStart = circuitPort(source, outputSide, 0, 1, clearance, layout === 'overview', true);
+        const offsets = layout === 'board' ? outputOffsets(centeredStart, source, target, reserved) : [0];
+        offsets.forEach(offset => {
+          const start = circuitPort(source, outputSide, 0, 1, clearance, layout === 'overview', true);
+          if (start.axis === 1) { start.edge.y += offset; start.outer.y += offset; }
+          else { start.edge.x += offset; start.outer.x += offset; }
+          // A used terminal cannot lead to a valid route. Skip its graph
+          // search; the neighboring terminal candidates remain available.
+          if (layout === 'board' && sharesTrack(start.edge, start.outer, reserved)) return;
+          const slot = endGroup.indexOf(edge);
+          const end = circuitPort(target, inputSide, slot, endGroup.length, clearance, layout === 'overview', false);
+          if (layout === 'timeline') {
+            // Vertical connectors still originate at the prerequisite's finish
+            // and arrive near the dependent's start, preserving time semantics
+            // without a wide U when those dates coincide or overlap.
+            if (start.axis === 2) start.edge.x = source.right;
+            if (end.axis === 2) {
+              const fan = end.edge.x - (target.left + target.right) / 2;
+              const inset = endGroup.length > 1 ? Math.min(18, (target.right - target.left) / 2) : 0;
+              end.edge.x = Math.max(target.left, Math.min(target.right, target.left + inset + fan));
             }
           }
-        } else points = boardCircuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance);
-        if (!points?.length) points = circuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance);
-        if (!points.length || !points.slice(1).every((point, index) => !sharesTrack(points[index], point, reserved))) return;
-        const score = pathLength(points) + (points.length - 2) * 12 + pairIndex * (layout === 'timeline' ? 80 : 24);
-        if (!chosen || score < chosen.score) chosen = { score, points, start, end };
+          extendPorts(start, source, end, target, obstacles, bounds, clearance);
+          let channelBase;
+          if (layout === 'overview') {
+            const nearest = Math.min(source.left, target.left);
+            const gutterLeft = bounds.left + clearance;
+            const gutterRight = Math.min(nearest, bounds.left + Math.max(36, +options.gutterWidth || 88));
+            channelBase = [(gutterLeft + gutterRight) / 2];
+          } else channelBase = boardChannels(obstacles, bounds, clearance, 0);
+          const channels = [...new Set(channelBase.flatMap(value => [value, value - 16, value + 16, value - 32, value + 32]))]
+            .filter(value => value >= bounds.left + clearance && value <= bounds.right - clearance);
+          let points;
+          if (layout === 'overview') {
+            for (const channel of channels) {
+              const candidate = compactPath([start.edge, { x: channel, y: start.edge.y }, { x: channel, y: end.edge.y }, end.edge]);
+              if (candidate.every(point => inBounds(point, bounds)) && candidate.slice(1).every((point, index) =>
+                !segmentBlocked(candidate[index], point, obstacles) && !sharesTrack(candidate[index], point, reserved))) {
+                points = candidate;
+                break;
+              }
+            }
+          } else points = boardCircuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance);
+          if (!points?.length) points = circuitPath(source, target, obstacles, bounds, start, end, channels, reserved, clearance);
+          if (!points.length || !points.slice(1).every((point, index) => !sharesTrack(points[index], point, reserved))) return;
+          const score = pathLength(points) + (points.length - 2) * 12 + pairIndex * (layout === 'timeline' ? 80 : 24) + Math.abs(offset) * 0.25;
+          if (!chosen || score < chosen.score) chosen = { score, points, start, end };
+        });
       });
       if (chosen) routes.push({ ...edge, points: chosen.points, sourceDirection: chosen.start.direction, sourceAxis: chosen.start.axis,
         sourceLead: pathLength(chosen.points.slice(0, 2)), targetLead: pathLength(chosen.points.slice(-2)) });
@@ -549,6 +575,7 @@
     let pinned = +options.selectedId || 0;
     let visibleSteps = new Map();
     let visibleRelated = new Set();
+    let visibleEdges = [];
     let maxStep = 1;
     const originalColors = new Map();
     let frame = 0;
@@ -573,34 +600,59 @@
       if (wire && overlay.contains(wire)) return {
         key: wire.getAttribute('data-dependency-wire'),
         source: wire.getAttribute('data-dependency-from'),
+        target: wire.getAttribute('data-dependency-to'),
       };
       const mark = target.closest?.('[data-dependency-source]');
       return mark && overlay.contains(mark) ? { source: mark.getAttribute('data-dependency-source') } : null;
     };
+    const pointerFocus = target => {
+      const connection = pointerConnection(target);
+      if (connection) return connection;
+      if (!pinned || !target || overlay.contains(target)) return null;
+      const node = target.closest?.('[' + idAttribute + ']');
+      const id = node && idOf(node);
+      // Epic context and unrelated, dimmed cards do not open another circuit.
+      return node && nodes.includes(node) && visibleRelated.has(id) ? { node: id } : null;
+    };
     const isolateConnection = connection => {
       // Only presentation classes change. Pointer movement never reroutes the
-      // circuit, reads card geometry or changes the pinned task's highlighting.
+      // circuit, reads card geometry or changes the selected task or its stage.
+      const focusedEdges = connection ? visibleEdges.filter(edge => connection.node ?
+        edge.from === connection.node || edge.to === connection.node : connection.key ?
+          edge.from + '>' + edge.to === connection.key : edge.from === +connection.source) : [];
+      const keys = new Set(focusedEdges.map(edge => edge.from + '>' + edge.to));
+      const sources = new Set(focusedEdges.map(edge => String(edge.from)));
+      const focusedNodes = connection ? new Set([
+        ...(connection.node ? [connection.node] : [+connection.source, +connection.target].filter(id => id > 0)),
+        ...focusedEdges.flatMap(edge => [edge.from, edge.to]),
+      ]) : visibleRelated;
       overlay.querySelectorAll('[data-dependency-wire]').forEach(wire => {
-        const related = connection && (connection.key ? wire.getAttribute('data-dependency-wire') === connection.key :
-          wire.getAttribute('data-dependency-from') === connection.source);
+        const related = keys.has(wire.getAttribute('data-dependency-wire'));
         wire.classList.toggle('dependencyHoverWireDimmed', !!connection && !related);
       });
       overlay.querySelectorAll('[data-dependency-source]').forEach(mark => {
-        mark.classList.toggle('dependencyHoverWireDimmed', !!connection && mark.getAttribute('data-dependency-source') !== connection.source);
+        mark.classList.toggle('dependencyHoverWireDimmed', !!connection && !sources.has(mark.getAttribute('data-dependency-source')));
       });
+      nodes.forEach(node => node.classList.toggle('dependencyHoverDimmed', pinned > 0 && !focusedNodes.has(idOf(node))));
     };
     const onPointerConnection = event => {
       if (event.pointerType === 'touch') return;
-      isolateConnection(pointerConnection(event.target));
+      isolateConnection(pointerFocus(event.target));
     };
     const onPointerOut = event => {
       if (event.pointerType === 'touch') return;
-      isolateConnection(pointerConnection(event.relatedTarget));
+      isolateConnection(pointerFocus(event.relatedTarget));
     };
     listen(overlay, 'pointerover', onPointerConnection);
     listen(overlay, 'pointerout', onPointerOut);
     listen(overlay, 'pointerleave', () => isolateConnection(null));
     listen(overlay, 'pointercancel', () => isolateConnection(null));
+    // Delegation includes Timeline text labels outside the SVG drawing layer.
+    // No card event renders arrows before Dependencies is explicitly opened.
+    listen(root, 'pointerover', onPointerConnection);
+    listen(root, 'pointerout', onPointerOut);
+    listen(root, 'pointerleave', () => isolateConnection(null));
+    listen(root, 'pointercancel', () => isolateConnection(null));
     listen(window, 'blur', () => isolateConnection(null));
     const setStep = (node, step) => {
       [node, node.querySelector('td:first-child')].filter(Boolean).forEach(target => {
@@ -642,6 +694,7 @@
       const selected = pinned;
       const available = new Set(nodes.map(idOf));
       const edges = connectedEdges((options.edges || []).filter(edge => available.has(+edge.from) && available.has(+edge.to)), selected);
+      visibleEdges = edges;
       visibleRelated = new Set(selected > 0 ? [selected, ...edges.flatMap(edge => [edge.from, edge.to])] : []);
       visibleSteps = dependencySteps(edges, selected);
       maxStep = Math.max(1, ...visibleSteps.values());

@@ -1,5 +1,31 @@
 # Task cleanup and current demo data
 
+## One-shot PowerShell scripts
+
+From the repository directory, run either script directly:
+
+```powershell
+.\scripts\clear-task-data.ps1
+.\scripts\seed-demo-data.ps1
+```
+
+**The clear script permanently deletes all tickets and sprint plans across every board in this Compose database.** It does not create examples. The seed script retains existing tickets and adds three Epics, eighteen planned tasks, and six Backlog tasks per board that has not already received samples. It also sets the current demo Sprint cadence on that board.
+
+To replace old examples with fresh dates, run the clear script followed by the seed script. Both build the current image first. After the first build, you may pass `-SkipBuild` to reuse it:
+
+```powershell
+.\scripts\clear-task-data.ps1
+.\scripts\seed-demo-data.ps1 -SkipBuild
+```
+
+The scripts use the volume configured in `docker-compose.yml`, including its existing data. A temporary container runs `/app/kanbanodon -prepare-demo-data` and exits after the database transaction. It has no HTTP listener and is removed afterward. The scripts do not restart the main application or change its environment, so they do not leave a cleanup flag enabled. Refresh the browser after completion.
+
+Use `-ComposeFile` for another Compose file or `-DockerPath` for a Docker executable outside the usual PATH/Docker Desktop location. The commands must target the same Compose project and volume as your application; these helpers use the repository directory as the default Compose project directory. If you previously enabled startup cleanup flags, disable those separately as described below before keeping new work. If another writer briefly locks SQLite, the script reports the database error without applying a partial change; retry after that writer finishes.
+
+Accounts, boards, ownership, access permissions, workflow columns, label definitions, and milestones remain. Export or back up any tickets you want to keep before running the clear script. No script has to be run as part of a normal build or startup.
+
+## Startup flags
+
 Kanbanodon normally starts without deleting work or creating sample tasks. The standard `docker-compose.yml` offers two independent startup flags, both defaulting to `false`:
 
 | Flag | Action when enabled |

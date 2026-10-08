@@ -942,10 +942,11 @@ function planningFocusHtml() {
     return '<span class="dependencyStageKey" data-dependency-color="' + color + '" title="Stage ' + step + (label ? ' · ' + label.toLowerCase() : '') + '"><b>' + step + '</b>' + (label ? '<em>' + label + '</em>' : '') + '</span>';
   }).join('');
   const selected = parentTicket(dependencyFocusTicketId);
-  const normalOrder = view === 'overview' ? 'Table column order' : view === 'timeline' ? 'Epic hierarchy and schedule' : 'Ticket order within each status';
+  const normalOrder = view === 'overview' ? 'Table column order' : view === 'timeline' ? 'Epic hierarchy and schedule' : 'Manual order within each status';
   const orderDescription = dependencySortMode === 'dependencies' ? 'Tasks follow dependency order' : normalOrder;
   const sorting = '<label class="dependencySortControl">Sort tasks<select data-dependency-sort aria-label="Sort tasks"><option value="dependencies"' + (dependencySortMode === 'dependencies' ? ' selected' : '') + '>Dependency order</option><option value="normal"' + (dependencySortMode === 'normal' ? ' selected' : '') + '>Normal order</option></select></label>';
-  return '<div class="dependencyFocusBar" role="region" aria-label="Dependency view"><div><strong>Dependencies of ' + esc(ticketRef(selected)) + ' · ' + esc(ticketLabel(selected)) + '</strong><span>' + (dependencyFocused ? 'Connected tasks only' : 'Unrelated tasks are dimmed') + ' · ' + orderDescription + '</span></div><div class="dependencyFocusActions">' + sorting + '<button type="button" class="dependenciesBack" data-dependencies-back>Back to normal view</button></div></div><div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
+  const dragHint = view === 'board' && dependencySortMode === 'dependencies' ? '<small class="boardDragHint">Choose Normal order to drag cards.</small>' : '';
+  return '<div class="dependencyFocusBar" role="region" aria-label="Dependency view"><div><strong>Dependencies of ' + esc(ticketRef(selected)) + ' · ' + esc(ticketLabel(selected)) + '</strong><span>' + (dependencyFocused ? 'Connected tasks only' : 'Unrelated tasks are dimmed') + ' · ' + orderDescription + '</span>' + dragHint + '</div><div class="dependencyFocusActions">' + sorting + '<button type="button" class="dependenciesBack" data-dependencies-back>Back to normal view</button></div></div><div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
 }
 
 function taskEditHtml(ticket) {
@@ -1424,7 +1425,7 @@ function boardSwimlanes(tickets) {
   if (!lanes.length) return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + (workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.') + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section><section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
   const colClass = 'cols' + Math.max(1, Math.min(8, visibleColumns.length || 1)) + (lanes.every(lane => !lane.epic) ? ' simpleBoard' : '');
   const counts = visibleColumns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
-  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + visibleColumns.map((c, index) => '<div class="boardLaneColumnHead">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(lane => boardSwimlane(lane, visibleColumns)).join('') + '</section>';
+  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + visibleColumns.map((c, index) => '<div class="boardLaneColumnHead" data-col="' + c.id + '">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(lane => boardSwimlane(lane, visibleColumns)).join('') + '</section>';
 }
 
 // Groups filtered tickets into visual Epic swimlanes.
@@ -1470,23 +1471,36 @@ function boardLaneColumnItems(lane, columnId) {
   return lane.items.filter(t => t.columnId == columnId).sort(boardGroupSort);
 }
 
-// Sorts cards inside an Epic lane while keeping nested refs stable.
+// Board order follows saved positions; dependency sorting is a display choice.
 function boardGroupSort(a, b) {
   return planningCompare(a, b, boardNormalGroupSort);
 }
 
 function boardNormalGroupSort(a, b) {
-  if (a.type === 'epic' && b.type !== 'epic') return -1;
-  if (a.type !== 'epic' && b.type === 'epic') return 1;
-  const ar = timelineRefParts(a);
-  const br = timelineRefParts(b);
-  if (ar[0] !== br[0]) return br[0] - ar[0];
-  for (let i = 1; i < Math.max(ar.length, br.length); i++) {
-    if (ar[i] == null) return -1;
-    if (br[i] == null) return 1;
-    if (ar[i] !== br[i]) return ar[i] - br[i];
+  return (+a.position || 0) - (+b.position || 0) || boardRefCompare(String(a.ref || a.id), String(b.ref || b.id)) || (+a.id || 0) - (+b.id || 0);
+}
+
+// Keep import reference ties identical to the server's manual Board ordering.
+function boardRefCompare(first, second) {
+  const fold = value => String(value).replace(/[A-Z]/g, char => char.toLowerCase());
+  const a = fold(first).match(/[0-9]+|[^0-9]+/g) || [];
+  const b = fold(second).match(/[0-9]+|[^0-9]+/g) || [];
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    let left = a[index], right = b[index];
+    if (/^[0-9]+$/.test(left) && /^[0-9]+$/.test(right)) {
+      left = left.replace(/^0+/, '') || '0'; right = right.replace(/^0+/, '') || '0';
+      if (left.length !== right.length) return left.length - right.length;
+    }
+    if (left !== right) {
+      const firstPoints = [...left].map(char => char.codePointAt(0));
+      const secondPoints = [...right].map(char => char.codePointAt(0));
+      for (let i = 0; i < Math.min(firstPoints.length, secondPoints.length); i++) {
+        if (firstPoints[i] !== secondPoints[i]) return firstPoints[i] - secondPoints[i];
+      }
+      return firstPoints.length - secondPoints.length;
+    }
   }
-  return ticketOrder(a, b);
+  return a.length - b.length;
 }
 
 // Finds the Done column by name.
@@ -1531,7 +1545,8 @@ function card(t) {
   const assigneeName = assignee ? (assignee.name || assignee.username || 'user') : '';
   const assigneeHtml = assignee ? '<span class="cardAssignee" title="Assigned to ' + escAttr(assigneeName) + '">' + avatar(assignee.avatar, 'Assigned to ' + assigneeName) + '</span>' : '';
   const sprint = ticketSprint(t);
-  return '<article draggable="true" class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + (ticketDuration(t) ? '<span class="pill">' + durationLabel(t) + '</span>' : '') + (checklistProgress(t) ? '<span class="pill checklistPill" title="Checklist progress">' + checklistProgress(t) + ' steps</span>' : '') + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + taskEditHtml(t) + '</article>';
+  const draggable = !dependencyViewIds() || dependencySortMode === 'normal';
+  return '<article draggable="' + draggable + '"' + (draggable ? '' : ' title="Choose Normal order to drag cards"') + ' class="card ' + escAttr(t.type) + depthClass + (blocked.length ? ' blocked' : '') + (assignee ? ' hasAssignee' : '') + '" data-id="' + t.id + '" data-work-id="' + t.id + '">' + assigneeHtml + '<h3>' + esc(t.title) + '</h3><div class="labels">' + t.labels.map(l => '<span class="pill">' + esc(l) + '</span>').join('') + '</div><div class="meta"><span class="pill">' + esc(t.type) + '</span>' + (parent ? '<span class="pill parentPill">under ' + esc(ticketLabel(parent)) + '</span>' : '') + (children ? '<span class="pill">' + children + ' child items</span>' : '') + (ticketDuration(t) ? '<span class="pill">' + durationLabel(t) + '</span>' : '') + (checklistProgress(t) ? '<span class="pill checklistPill" title="Checklist progress">' + checklistProgress(t) + ' steps</span>' : '') + (t.dueDate ? '<span class="pill">' + esc(t.dueDate) + '</span>' : '') + (sprint ? '<span class="pill sprintPill' + (sprint.before ? ' before' : '') + '">' + esc(sprintName(sprint)) + '</span>' : '') + '</div>' + boardDependencyHtml(t, blocked) + taskEditHtml(t) + '</article>';
 }
 
 // Keeps the dependency summary on the card while hover shows direct connections.
@@ -1561,38 +1576,104 @@ function boardCardDepth(ticket) {
   return Math.min(depth, 3);
 }
 
-// Attaches board card drag-and-drop and card click handlers.
+// Find an insertion anchor among visible cards. Hidden tasks keep their order.
+function boardDropPlacement(drop, clientY, draggedId) {
+  const cards = [...drop.querySelectorAll('.card')].filter(node => +node.dataset.id !== +draggedId);
+  const nextIndex = cards.findIndex(node => {
+    const rect = node.getBoundingClientRect();
+    return clientY < rect.top + rect.height / 2;
+  });
+  const before = nextIndex < 0 ? null : cards[nextIndex];
+  const after = before ? cards[nextIndex - 1] : cards[cards.length - 1];
+  const dropRect = drop.getBoundingClientRect();
+  const beforeRect = before?.getBoundingClientRect();
+  const afterRect = after?.getBoundingClientRect();
+  const edge = beforeRect ? (afterRect ? (afterRect.bottom + beforeRect.top) / 2 : beforeRect.top - 8) : afterRect ? afterRect.bottom + 8 : dropRect.top + 14;
+  return { beforeId: +(before?.dataset.id || 0), afterId: before ? 0 : +(after?.dataset.id || 0), top: Math.max(4, edge - dropRect.top + (drop.scrollTop || 0)) };
+}
+
+// Persist a minimal move rather than resending an editor snapshot of the task.
+async function moveBoardTicket(ticket, columnId, placement) {
+  if (selectedBoardId && selectedBoardId !== currentBoardId()) return;
+  if ([...pendingTicketMutations.values()].some(binding => binding.session === sessionGeneration)) return;
+  if (!closeDrawer()) return;
+  const boardId = currentBoardId();
+  const binding = { id: ticket.id, session: sessionGeneration };
+  const sessionCurrent = currentSessionGuard();
+  const isCurrent = () => sessionCurrent() && currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId);
+  pendingTicketMutations.set(ticket.id, binding);
+  showFormError('');
+  try {
+    await api('/api/tickets/' + ticket.id + '/move', { method: 'POST', body: JSON.stringify({ ColumnID: columnId, BeforeID: placement.beforeId, AfterID: placement.afterId }) }, isCurrent);
+    if (isCurrent()) await load();
+  } catch (err) {
+    if (isCurrent()) showFormError((err.message || 'Ticket could not be moved.').trim());
+  } finally {
+    if (pendingTicketMutations.get(ticket.id) === binding) pendingTicketMutations.delete(ticket.id);
+  }
+}
+
+// Attaches board card drag-and-drop, insertion preview and card click handlers.
 function wireDnD() {
+  const boardId = currentBoardId();
+  const isCurrentBoard = () => view === 'board' && currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId);
+  let draggedId = 0;
+  let marker = null;
+  let suppressedClickId = 0;
+  let suppressUntil = 0;
+  const clearPreview = () => {
+    marker?.remove(); marker = null;
+    $$('.boardDropTarget').forEach(node => node.classList.remove('boardDropTarget'));
+  };
   const emptyAction = $('#boardEmptyAction');
   if (emptyAction) emptyAction.onclick = () => { if (workTickets().length) resetTaskFilters(); else $('#newTitle').focus(); };
   $$('.card').forEach(c => {
     c.tabIndex = 0;
     c.setAttribute('role', 'group');
     c.onkeydown = event => { if (event.target === c && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openTicket(+c.dataset.id); } };
-    c.ondragstart = e => e.dataTransfer.setData('text/plain', c.dataset.id);
-    c.onclick = () => openTicket(+c.dataset.id);
+    c.ondragstart = e => {
+      if (!isCurrentBoard() || (dependencyViewIds() && dependencySortMode !== 'normal') || [...pendingTicketMutations.values()].some(binding => binding.session === sessionGeneration) || e.target.closest?.('button,input,select,textarea,a')) { e.preventDefault(); return; }
+      draggedId = +c.dataset.id;
+      e.dataTransfer.setData('text/plain', c.dataset.id);
+      e.dataTransfer.effectAllowed = 'move';
+      c.classList.add('boardDragging');
+    };
+    c.ondragend = () => {
+      suppressedClickId = draggedId; suppressUntil = Date.now() + 400;
+      draggedId = 0; c.classList.remove('boardDragging'); clearPreview();
+    };
+    c.onclick = () => { if (+c.dataset.id !== suppressedClickId || Date.now() > suppressUntil) openTicket(+c.dataset.id); };
   });
   $$('.boardLaneEpic[data-id],.epicBoardHeader').forEach(header => header.onclick = () => openTicket(+header.dataset.id));
   $$('.drop').forEach(d => {
-    d.ondragover = e => e.preventDefault();
+    d.ondragover = e => {
+      const ticket = state.tickets.find(item => +item.id === draggedId);
+      if (!isCurrentBoard() || !ticket || +(topEpicFor(ticket)?.id || 0) !== +d.dataset.epic || (dependencyViewIds() && dependencySortMode !== 'normal')) {
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+        clearPreview(); return;
+      }
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+      const placement = boardDropPlacement(d, e.clientY, draggedId);
+      clearPreview();
+      d.classList.add('boardDropTarget');
+      d.closest('.boardLaneCell')?.classList.add('boardDropTarget');
+      $('.boardLaneColumnHead[data-col="' + d.dataset.col + '"]')?.classList.add('boardDropTarget');
+      marker = document.createElement('div');
+      marker.className = 'boardDropMarker';
+      marker.setAttribute('aria-hidden', 'true');
+      marker.style.setProperty('top', placement.top + 'px');
+      d.append(marker);
+    };
+    d.ondragleave = e => { if (!d.contains(e.relatedTarget)) clearPreview(); };
     d.ondrop = async e => {
       e.preventDefault();
-      const t = state.tickets.find(x => x.id == e.dataTransfer.getData('text/plain'));
-      if (t) {
-        const previous = { columnId: t.columnId, position: t.position };
-        t.columnId = +d.dataset.col;
-        // Dragging changes workflow status only; hierarchy changes belong in the Parent field.
-        t.position = d.querySelectorAll('.card').length + 1;
-        try {
-          await saveTicket(t);
-          await load();
-        } catch (err) {
-          t.columnId = previous.columnId;
-          t.position = previous.position;
-          showFormError((err.message || 'Ticket could not be moved.').trim());
-          await load();
-        }
-      }
+      const id = draggedId;
+      const t = state.tickets.find(x => +x.id === id);
+      const placement = t ? boardDropPlacement(d, e.clientY, id) : null;
+      clearPreview();
+      if (!isCurrentBoard() || !t || +(topEpicFor(t)?.id || 0) !== +d.dataset.epic || (dependencyViewIds() && dependencySortMode !== 'normal')) return;
+      suppressedClickId = id; suppressUntil = Date.now() + 400;
+      await moveBoardTicket(t, +d.dataset.col, placement);
     };
   });
 }
