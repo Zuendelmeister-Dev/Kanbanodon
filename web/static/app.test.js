@@ -96,7 +96,7 @@ function loadApp(options = {}) {
     applyRoute, openBacklogView, jumpToSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
-    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions,
+    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
@@ -717,7 +717,7 @@ function hoverApp() {
   return {app, calls};
 }
 
-test('Board rendering wires direct hover dependencies to the card surface without changing view or route', () => {
+test('Board rendering wires explicit dependencies to the card surface without changing view or route', () => {
   const {app, calls} = hoverApp(); const root = app.document.querySelector('#board'); const layer = fakeElement();
   layer.classList.add('boardSwimlanes');
   root.querySelector = selector => selector === '.boardSwimlanes,.tableScroll' ? layer : null;
@@ -733,7 +733,7 @@ test('Board rendering wires direct hover dependencies to the card surface withou
   assert.deepEqual(app.historyCalls, []);
 });
 
-test('Overview rendering wires hover dependencies in the table and supports keyboard task editing', () => {
+test('Overview rendering wires explicit dependencies in the table and supports keyboard task editing', () => {
   const {app, calls} = hoverApp(); const root = app.document.querySelector('#overview');
   const table = fakeElement(); const layer = fakeElement(); const row = fakeElement();
   row.classList.add('ticketRow'); row.dataset.openTicket = '12';
@@ -1284,7 +1284,7 @@ test('timeline shows live delay for overdue work and actual delay for late compl
   assert.match(app.ganttDelayText(aggregate), /days over target$/);
 });
 
-test('Timeline labels and main bars use the same hover controller and visible directed edges', () => {
+test('Timeline labels and main bars use the same dependency controller and visible directed edges', () => {
   const {app, calls} = hoverApp(); const state = stateWithHierarchy();
   state.tickets.find(ticket => ticket.id === 13).links = [11];
   state.tickets.push({...state.tickets[2], id:15, title:'Immediate dependent', links:[12], parentId:0});
@@ -1406,15 +1406,15 @@ test('changing boards clears an unavailable Epic filter before calculating Timel
   assert.match(root.innerHTML,/<option value="all">All epics<\/option>/);
 });
 
-test('Timeline keeps delay rails separate from clipped labels and draws dependency lines only through hover', () => {
+test('Timeline keeps delay rails separate from clipped labels and draws dependency lines only through explicit inspection', () => {
   const {app, calls} = hoverApp(); const state = stateWithHierarchy(); app.setState(state);
   const ticket = {...state.tickets[2], title:'A long task title that must stay inside its planned bar', links:[], startDate:'2000-01-01',dueDate:'2000-01-03'};
   const task = app.ganttTask(ticket); task.row=0;
   const start=app.parseDate('1999-12-31');
   const svg=app.ganttSvg([task],start,10,10,400,56,98,98,62);
   assert.doesNotMatch(svg,/ganttSvgArrow/);
-  assert.match(svg,/class="ganttSvgLate"[^>]*y="122"[^>]*height="7"/);
-  assert.match(svg,/class="ganttSvgEstimate"[^>]*y="122"[^>]*height="7"/);
+  assert.match(svg,/class="ganttSvgLate"[^>]*y="129"[^>]*height="7"/);
+  assert.match(svg,/class="ganttSvgEstimate"[^>]*y="129"[^>]*height="7"/);
   assert.doesNotMatch(svg,/class="ganttSvgBarText"/);
   const wide=app.ganttSvgTask(task,start,100,56,98);
   assert.match(wide,/clip-path="url\(#ganttTaskClip12\)"/);
@@ -1476,18 +1476,102 @@ test('HTML-producing helpers escape user-controlled text', () => {
   assert.equal(app.avatar('<x').includes('&lt;X'), true);
 });
 
-test('task focus keeps direct neighbors and Epic context, excludes transitive and inactive work, and restores on second click', () => {
+test('task focus keeps the complete chain and Epic context, excludes inactive work, and restores on second click', () => {
   const app=loadApp(); const state=stateWithHierarchy();
   state.tickets.push({...state.tickets[3],id:15,title:'Later',links:[12],completedAt:''},{...state.tickets[3],id:16,title:'Transitive',links:[15]},{...state.tickets[3],id:17,title:'Archived',links:[12],archivedAt:'2026-10-08'});
   app.setState(state); app.selectBoard(1); app.toggleDependencyFocus(12);
-  assert.deepEqual([...app.dependencyFocusIds()].sort((a,b)=>a-b),[12,13,15]);
-  assert.deepEqual(Array.from(app.planningWork(),t=>t.id).sort((a,b)=>a-b),[10,12,13,15]);
+  assert.deepEqual([...app.dependencyFocusIds()].sort((a,b)=>a-b),[12,13,15,16]);
+  assert.deepEqual(Array.from(app.planningWork(),t=>t.id).sort((a,b)=>a-b),[10,12,13,15,16]);
   for(const view of ['overview','timeline','board']) {
     app.navButtons.find(b=>b.dataset.view===view).onclick();
-    assert.deepEqual([...app.dependencyFocusIds()].sort((a,b)=>a-b),[12,13,15]);
+    assert.deepEqual([...app.dependencyFocusIds()].sort((a,b)=>a-b),[12,13,15,16]);
   }
   app.toggleDependencyFocus(12); assert.equal(app.dependencyFocusIds(),null);
   assert.ok(app.planningWork().some(t=>t.id===16));
+});
+
+test('connected focus includes predecessors, successors and joined branches without crossing inactive work', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  const task = (id, links, extra = {}) => ({...state.tickets[3], id, ref: String(id), title: 'Task ' + id, parentId: 0, links, ...extra});
+  state.tickets.push(task(15, [12]), task(16, [15, 19]), task(19, []), task(20, [16]),
+    task(21, []), task(22, [20], {archivedAt: '2026-10-08'}), task(23, [22]),
+    task(24, [20], {isBacklog: true}), task(25, [24]));
+  app.setState(state); app.selectBoard(1); app.openDependencies(15);
+  assert.deepEqual([...app.dependencyViewIds()].sort((a,b) => a-b), [12,13,15,16,19,20]);
+  app.toggleDependencyFocus(15);
+  assert.deepEqual(Array.from(app.planningWork(), t => t.id).sort((a,b) => a-b), [10,12,13,15,16,19,20]);
+  app.toggleDependencyFocus(20);
+  assert.deepEqual([...app.dependencyFocusIds()].sort((a,b) => a-b), [12,13,15,16,19,20]);
+  app.showOtherTasks();
+  assert.equal(app.dependencyFocusIds(), null);
+  assert.ok(app.planningWork().some(t => t.id === 21));
+  assert.deepEqual([...app.dependencyViewIds()].sort((a,b) => a-b), [12,13,15,16,19,20]);
+});
+
+test('Timeline preserves a connected chain through an undated empty Epic without saving assumed dates', () => {
+  const {app, calls} = hoverApp(); const state = stateWithHierarchy();
+  const ticket = {...state.tickets[3], columnId: 1, parentId: 0, completedAt: '', createdAt: '2026-10-01T10:00:00Z'};
+  state.tickets = [
+    {...ticket, id: 30, type: 'epic', title: 'Undated Epic', links: [31], startDate: '', dueDate: ''},
+    {...ticket, id: 31, title: 'Source', links: [], startDate: '2026-10-01', dueDate: '2026-10-02'},
+    {...ticket, id: 32, title: 'Target', links: [30], startDate: '2026-10-02', dueDate: '2026-10-03'},
+  ];
+  app.setState(state); app.selectBoard(1);
+  assert.deepEqual(Array.from(app.buildGanttRows(), t => t.ticket.id), [31,32]);
+  app.openDependencies(32);
+  let rows = app.buildGanttRows(); assert.deepEqual(Array.from(rows, t => t.ticket.id).sort(), [30,31,32]);
+  const root = fakeElement(); const layer = fakeElement(); root.querySelector = selector => selector === '.ganttSvgScroll' ? layer : null;
+  app.wireTimelineDependencies(root, rows);
+  assert.deepEqual(Array.from(calls.at(-1).options.edges, edge => edge.from + '>' + edge.to).sort(), ['30>32','31>30']);
+  app.toggleDependencyFocus(32); rows = app.buildGanttRows();
+  const range = app.dependencyTimelineRange(rows); const epic = rows.find(t => t.ticket.id === 30);
+  assert.ok(range.start <= epic.start && range.endExclusive > epic.due);
+  assert.equal(state.tickets[0].startDate, ''); assert.equal(state.tickets[0].dueDate, '');
+  app.closeDependencies(); assert.deepEqual(Array.from(app.buildGanttRows(), t => t.ticket.id), [31,32]);
+});
+
+test('connected traversal terminates defensively even if stale data contains a dependency cycle', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  state.tickets[3].links = [12];
+  state.tickets.push({...state.tickets[3], id: 15, links: [12]});
+  app.setState(state); app.selectBoard(1); app.toggleDependencyFocus(12);
+  assert.deepEqual([...app.dependencyFocusIds()].sort((a,b) => a-b), [12,13,15]);
+});
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' keeps the whole chain when focusing another task and exposes a highlighted return on every task', () => {
+    const calls = []; const app = loadApp({hover: {wire(root, options) { calls.push(options); }}});
+    const state = stateWithHierarchy();
+    state.tickets.forEach(t => {t.createdAt = '2026-10-01T10:00:00Z';t.startDate = '2026-10-01';t.dueDate = '2026-10-04';});
+    state.tickets.push({...state.tickets[3], id: 15, title: 'Task after Task', links: [12]},
+      {...state.tickets[3], id: 16, title: 'Final task', links: [15]},
+      {...state.tickets[3], id: 18, title: 'Unrelated task', links: []});
+    app.setState(state); app.selectBoard(1); app.navButtons.find(b => b.dataset.view === targetView).onclick();
+    const root = app.document.querySelector('#' + targetView); const layer = fakeElement();
+    root.querySelector = selector => selector === '.boardSwimlanes,.tableScroll' || selector === '.ganttSvgScroll' ? layer : null;
+    app.openDependencies(12); app.toggleDependencyFocus(12);
+    assert.deepEqual([...app.dependencyFocusIds()].sort((a,b) => a-b), [12,13,15,16]);
+    for (const id of [13,15,16]) assert.match(root.innerHTML, new RegExp('data-focus-related="' + id + '"'));
+    assert.equal((root.innerHTML.match(/class="dependencyAction showOtherTasks"/g) || []).length, 4);
+    assert.doesNotMatch(root.innerHTML, /Unrelated task/);
+    app.toggleDependencyFocus(16);
+    assert.deepEqual([...app.dependencyFocusIds()].sort((a,b) => a-b), [12,13,15,16]);
+    assert.equal(calls.at(-1).selectedId, 16);
+    assert.deepEqual(Array.from(calls.at(-1).edges, edge => edge.from + '>' + edge.to).sort(), ['12>15','13>12','15>16']);
+    const restore = fakeElement(); root.querySelectorAll = selector => selector === '[data-show-other-tasks]' ? [restore] : [];
+    app.wirePlanningActions(root); let stopped = false;
+    restore.onclick({stopPropagation() {stopped = true;}});
+    assert.equal(stopped, true); assert.equal(app.dependencyFocusIds(), null);
+    assert.match(root.innerHTML, /Unrelated task/); assert.equal(calls.at(-1).selectedId, 16);
+    app.closeDependencies(); assert.equal(calls.at(-1).selectedId, 0);
+  });
+}
+
+test('showing other tasks preserves an unsaved editor until discard is accepted', () => {
+  const app = loadApp(); app.setState(stateWithHierarchy()); app.selectBoard(1); app.toggleDependencyFocus(12);
+  const fields = openEditor(app, 12); fields.dTitle.value = 'Unsaved'; app.setConfirm(() => false);
+  app.showOtherTasks(); assert.ok(app.dependencyFocusIds()); assert.equal(app.getEditing().id, 12);
+  app.setConfirm(() => true); app.showOtherTasks(); assert.equal(app.dependencyFocusIds(), null); assert.equal(app.getEditing(), null);
 });
 
 test('independent task focus hides other tasks and never restores archived Epic parents', () => {
@@ -1511,7 +1595,7 @@ test('Epic collapse hides descendants across Board, Overview and Timeline and ke
   assert.ok(app.buildGanttRows().some(row=>row.ticket.id===12));
 });
 
-test('focused Timeline fits all directly related planned dates without months of overdue rail', () => {
+test('focused Timeline fits all connected planned dates without months of overdue rail', () => {
   const app=loadApp(); app.setState(stateWithHierarchy()); app.selectBoard(1); app.toggleDependencyFocus(12);
   const tasks=[{plannedStart:app.parseDate('2026-01-01'),due:app.parseDate('2026-01-05'),delayEnd:app.parseDate('2026-10-08')},{plannedStart:app.parseDate('2026-01-03'),due:app.parseDate('2026-01-09')}];
   const range=app.dependencyTimelineRange(tasks); assert.equal(app.fmtIsoDate(range.start),'2025-12-31'); assert.equal(app.fmtIsoDate(range.endExclusive),'2026-01-11');
@@ -1556,7 +1640,8 @@ for (const targetView of ['board','overview','timeline']) {
     assert.match(root.innerHTML,/data-focus-related="12"/);assert.match(root.innerHTML,/>Focus tasks<|>Focus tasks<\/button>/);assert.match(root.innerHTML,/data-dependencies-back/);
     assert.doesNotMatch(root.innerHTML,/dependencyFocusBar|Show all tasks|Hover to preview/);
     focus.onclick(event);assert.deepEqual([...app.dependencyFocusIds()].sort(),[12,13]);assert.ok(!app.planningWork().some(t=>t.id===18));
-    assert.match(root.innerHTML,/Show other tasks/);
+    assert.match(root.innerHTML,/class="dependencyAction showOtherTasks" data-show-other-tasks>Show other tasks/);
+    assert.match(root.innerHTML,/data-focus-related="13"/);
     if(targetView==='timeline') {assert.match(root.innerHTML,/data-range-start="2026-09-30"/);assert.match(root.innerHTML,/data-range-end="2026-10-06"/);assert.match(root.innerHTML,/height:120px/);}
     back.onclick(event);assert.equal(app.dependencyViewIds(),null);assert.equal(app.dependencyFocusIds(),null);assert.ok(app.planningWork().some(t=>t.id===18));
     assert.equal(calls.at(-1).options.selectedId,0);assert.equal(stopped,3);
@@ -1583,7 +1668,29 @@ test('Timeline labels and SVG rows use uniform additional action space on narrow
   const root=app.document.querySelector('#timeline');
   for(const [width,height] of [[500,188],[800,156],[1200,120]]) {
     root.clientWidth=width;app.renderGantt(root);
-    const tasks=app.buildGanttRows();assert.equal((root.innerHTML.match(new RegExp('style="height:'+height+'px"','g'))||[]).length,tasks.length);
+    const tasks=app.buildGanttRows();assert.equal((root.innerHTML.match(new RegExp('style="height:'+height+'px;min-height:'+height+'px;max-height:'+height+'px"','g'))||[]).length,tasks.length);
     const svgHeights=[...root.innerHTML.matchAll(/<rect class="ganttSvgRow [^"]*"[^>]*height="(\d+)"/g)].map(match=>+match[1]);assert.equal(svgHeights.length,tasks.length);assert.ok(svgHeights.every(value=>value===height));
+    const chartHeight=56+tasks.length*height+62;
+    assert.ok(root.innerHTML.includes('--gantt-row-height:'+height+'px;--gantt-row-count:'+tasks.length+';--gantt-head-height:56px;--gantt-axis-height:62px;--gantt-chart-height:'+chartHeight+'px'));
+    const bars=[...root.innerHTML.matchAll(/<rect class="ganttSvgBar [^"]*"[^>]*y="(\d+)"[^>]*height="(\d+)"/g)];assert.equal(bars.length,tasks.length);
+    bars.forEach((bar,index)=>assert.equal(+bar[1]+ +bar[2]/2,56+(index+.5)*height));
+    const dueBadges=[...root.innerHTML.matchAll(/<rect class="ganttSvgDueTagBg"[^>]*y="(\d+)"[^>]*height="(\d+)"/g)];assert.equal(dueBadges.length,tasks.length);
+    dueBadges.forEach((badge,index)=>{assert.ok(+badge[1]>56+index*height);assert.ok(+badge[1]+ +badge[2]<=+bars[index][1]);});
   }
+});
+
+test('Timeline text tracks keep the axis after the same task rows as the SVG', () => {
+  const css=fs.readFileSync(path.join(__dirname,'task-tools.css'),'utf8');
+  assert.match(css,/\.ganttTaskPane\{[^}]*display:grid;[^}]*grid-template-rows:var\(--gantt-head-height\) calc\(var\(--gantt-row-count\) \* var\(--gantt-row-height\)\) var\(--gantt-axis-height\)/);
+  assert.match(css,/\.ganttTaskPane\{[^}]*height:var\(--gantt-chart-height\)/);
+  assert.match(css,/\.ganttTaskRows\{[^}]*grid-auto-rows:var\(--gantt-row-height\)/);
+});
+
+test('an empty focused Sprint keeps matching timeline header and axis heights without a phantom task row', () => {
+  const app=loadApp();const state=stateWithHierarchy();state.tickets=[];app.setState(state);app.selectBoard(1);
+  app.applyRoute({view:'timeline',boardId:1,ticketId:0,sprintNumber:1});const root=app.document.querySelector('#timeline');root.clientWidth=1200;app.renderGantt(root);
+  assert.match(root.innerHTML,/--gantt-row-count:0;--gantt-head-height:56px;--gantt-axis-height:62px;--gantt-chart-height:118px/);
+  assert.match(root.innerHTML,/<div class="ganttTaskRows"><\/div><div class="ganttTaskFoot">Timeline<\/div>/);
+  assert.match(root.innerHTML,/<svg class="ganttSvg"[^>]*height="118"/);
+  assert.doesNotMatch(root.innerHTML,/<rect class="ganttSvgRow /);
 });

@@ -26,7 +26,7 @@
   .ticketTable:not(.showAllColumns) tr>:nth-child(9){width:19%}
 }
 
-/* Hover shows direct connections without changing the surrounding layout. */
+/* Explicit dependency views draw stable routes over the existing layout. */
 .dependencyHoverSurface{position:relative}
 .dependencyHoverOverlay{position:absolute;left:0;top:0;z-index:5;overflow:visible;pointer-events:none}
 .dependencyHoverPrerequisite{--dependency-color:#60a5fa}
@@ -91,7 +91,7 @@
 .card[data-dependency-step] h3{padding-left:26px}
 .ganttTaskItem[data-dependency-step]{padding-left:38px}
 .ticketRow.dependencyHoverPrerequisite td:first-child::before,.ticketRow.dependencyHoverActive td:first-child::before,.ticketRow.dependencyHoverDependent td:first-child::before{display:inline-grid;place-items:center;width:18px;height:18px;border:2px solid var(--dependency-color);border-radius:50%;color:var(--dependency-color);font-size:10px;font-weight:750;margin-right:5px}
-.ticketRow.dependencyHoverPrerequisite td:first-child::before{content:'1'}.ticketRow.dependencyHoverActive td:first-child::before{content:'2'}.ticketRow.dependencyHoverDependent td:first-child::before{content:'3'}
+.ticketRow[data-dependency-step] td:first-child::before{content:attr(data-dependency-step)}
 .cardDependencyHints{display:grid;gap:4px;margin-top:9px;padding-top:8px;border-top:1px solid #2b3947;color:var(--muted);font-size:11px;line-height:1.4}
 .cardDependencyHints p{margin:0;overflow-wrap:anywhere}
 .cardDependencyHints .waiting{color:#fde68a}
@@ -123,6 +123,9 @@
 .taskActions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
 .taskActions button{padding:4px 8px;font-size:11px;color:var(--muted);background:transparent}
 .taskActions .dependencyAction{color:#cbd5df}
+.taskActions .showOtherTasks{color:#f8fafc;background:#164b63;border-color:#7dd3fc;font-weight:700}
+.taskActions .showOtherTasks:hover{background:#1d627e;border-color:#bae6fd}
+.taskActions .showOtherTasks:focus-visible{outline:2px solid #bae6fd;outline-offset:2px}
 .card .taskActions .taskEdit{margin-top:0}
 .boardLaneDrop.drop{display:flex;flex-direction:column;align-items:center;gap:24px;padding:18px 40px}
 .boardSwimlanes .boardLaneDrop .card[class]{width:100%;max-width:320px;margin:0}
@@ -132,8 +135,14 @@
 .ganttTaskItem .taskActions button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .ganttTaskItem .taskActions .taskEdit{position:static}
 .ganttTaskItem .ganttTaskTitle{width:100%}
-.dependencyHoverWireDimmed{opacity:.14}
-.dependencyHoverHit{cursor:pointer}
+
+/* The text pane and SVG share fixed tracks, including their header and axis. */
+.ganttTaskPane{display:grid;grid-template-rows:var(--gantt-head-height) calc(var(--gantt-row-count) * var(--gantt-row-height)) var(--gantt-axis-height);align-content:start;height:var(--gantt-chart-height);min-width:0}
+.ganttTaskRows{display:grid;grid-auto-rows:var(--gantt-row-height);align-content:start;min-height:0}
+.ganttTaskHead{height:var(--gantt-head-height)}
+.ganttTaskFoot{height:var(--gantt-axis-height)}
+.ganttTaskItem{box-sizing:border-box;min-width:0;grid-auto-rows:max-content;row-gap:3px;align-content:center}
+.ganttTaskItem .taskActions{min-width:0}
 
 /* Six-card Sprint browsing keeps both paging controls beside the strip. */
 .sprintStrip{display:grid;grid-template-columns:30px minmax(0,1fr) 30px;gap:8px;align-items:stretch}
@@ -142,5 +151,3 @@
 .sprintPageButton:hover:not(:disabled){border-color:var(--teal);background:#102b2a}
 .sprintPageButton:disabled{opacity:.35;cursor:not-allowed}
 .sprintStrip .sprintWindow{min-width:0}
-.dependencyHoverWire:focus{outline:none}
-.dependencyHoverWire:focus-visible .dependencyHoverLine{stroke-width:5}

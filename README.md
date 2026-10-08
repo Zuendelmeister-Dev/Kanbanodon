@@ -48,9 +48,9 @@ Epics group larger pieces of work. Stories can belong to an Epic; tasks and bugs
 
 Dependencies identify work that must finish first and the tasks it enables. Unfinished dependencies prevent moving a task into "In Progress" or later columns. The server rejects dependency cycles. Dragging a card changes its status; use "Parent" in the editor to change its parent.
 
-Select "Dependencies" beside "Edit" to preview a task’s direct connections. Unrelated tasks fade; hovering over a wire emphasizes that connection and its two endpoint tasks. Keyboard focus on a wire does the same. Numbering starts at 1 for the first task in the displayed relationship: blue (1), gold (2), then teal (3). Frames and outgoing arrows use the source task’s color. Arrows point to the tasks that depend on their source.
+Select "Dependencies" beside "Edit" to preview the complete connected chain, including its predecessors, successors, and branches. Unrelated tasks fade. Numbering starts at 1 for tasks without predecessors; each dependent stage adds one. The colors repeat blue, gold, then teal for longer chains. Frames and outgoing arrows use the source task’s color. Arrows point to dependent tasks, and scrolling keeps their routes unchanged.
 
-Within the selected task, "Focus tasks" hides unrelated work and "Show other tasks" returns to the preview. "Back" closes the dependency view. These actions work in Board, Overview, and Timeline; focused Timeline fits the related dates. Click a task or use "Edit" to open its editor. Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
+"Focus tasks" hides unrelated work while keeping the whole connected chain. Each other task in the focused view has a focus button for selecting it without losing the rest of the chain. The highlighted "Show other tasks" button returns to the preview; "Back" closes the dependency view. These actions work in Board, Overview, and Timeline; focused Timeline fits the connected tasks’ dates. Click a task or use "Edit" to open its editor. Epic titles expand or collapse their child tasks in all three views; the Epic summary remains visible.
 
 ### Sprints
 
