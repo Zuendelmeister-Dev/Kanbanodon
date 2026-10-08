@@ -567,6 +567,41 @@
       target.addEventListener(name, handler);
       listeners.push(() => target.removeEventListener(name, handler));
     };
+    const pointerConnection = target => {
+      if (!target || !overlay.contains(target)) return null;
+      const wire = target.closest?.('[data-dependency-wire]');
+      if (wire && overlay.contains(wire)) return {
+        key: wire.getAttribute('data-dependency-wire'),
+        source: wire.getAttribute('data-dependency-from'),
+      };
+      const mark = target.closest?.('[data-dependency-source]');
+      return mark && overlay.contains(mark) ? { source: mark.getAttribute('data-dependency-source') } : null;
+    };
+    const isolateConnection = connection => {
+      // Only presentation classes change. Pointer movement never reroutes the
+      // circuit, reads card geometry or changes the pinned task's highlighting.
+      overlay.querySelectorAll('[data-dependency-wire]').forEach(wire => {
+        const related = connection && (connection.key ? wire.getAttribute('data-dependency-wire') === connection.key :
+          wire.getAttribute('data-dependency-from') === connection.source);
+        wire.classList.toggle('dependencyHoverWireDimmed', !!connection && !related);
+      });
+      overlay.querySelectorAll('[data-dependency-source]').forEach(mark => {
+        mark.classList.toggle('dependencyHoverWireDimmed', !!connection && mark.getAttribute('data-dependency-source') !== connection.source);
+      });
+    };
+    const onPointerConnection = event => {
+      if (event.pointerType === 'touch') return;
+      isolateConnection(pointerConnection(event.target));
+    };
+    const onPointerOut = event => {
+      if (event.pointerType === 'touch') return;
+      isolateConnection(pointerConnection(event.relatedTarget));
+    };
+    listen(overlay, 'pointerover', onPointerConnection);
+    listen(overlay, 'pointerout', onPointerOut);
+    listen(overlay, 'pointerleave', () => isolateConnection(null));
+    listen(overlay, 'pointercancel', () => isolateConnection(null));
+    listen(window, 'blur', () => isolateConnection(null));
     const setStep = (node, step) => {
       [node, node.querySelector('td:first-child')].filter(Boolean).forEach(target => {
         if (step) target.setAttribute('data-dependency-step', String(step));
@@ -661,6 +696,7 @@
         const description = escapedText((labelFor(edge.from) || '#' + edge.from) + ' → ' + (labelFor(edge.to) || '#' + edge.to));
         drawing += '<g class="dependencyHoverWire" data-dependency-wire="' + edge.from + '>' + edge.to + '" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" role="img" aria-label="Dependency: ' + description + '">' +
           '<title>' + description + '</title>' +
+          '<path class="dependencyHoverHit" d="' + path + '"></path>' +
           '<path class="dependencyHoverOutline" d="' + path + '"></path>' +
           '<path class="dependencyHoverLine ' + roleClass + '"' + colorData + ' data-dependency-paint="stroke" data-dependency-from="' + edge.from + '" data-dependency-to="' + edge.to + '" d="' + path + '"></path>' +
           '<path class="dependencyHoverArrowHead ' + roleClass + '"' + colorData + ' d="' + pathData(route.slice(-2)) + '" marker-end="url(#' + markerId + 'Stage' + sourceStep + ')"></path></g>';
@@ -694,7 +730,7 @@
       originalColors.forEach((previous, target) => restoreColor(target));
       resetOverlay();
     };
-    const clear = () => updateHighlight();
+    const clear = () => { isolateConnection(null); updateHighlight(); };
     // The overlay belongs to the scrollable content. Scrolling translates it
     // together with the cards, so recomputing viewport rectangles on scroll
     // would only introduce sticky-position changes and visible route jumps.

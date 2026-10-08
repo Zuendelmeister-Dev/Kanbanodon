@@ -60,17 +60,26 @@ function uiFixture() {
         contains(name) { return classes.has(name); },
         toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
       },
-      setAttribute(name, value) { attrs.set(name, value); },
+      setAttribute(name, value) {
+        attrs.set(name, value);
+        if (name === 'class') { classes.clear(); String(value).split(/\s+/).filter(Boolean).forEach(item => classes.add(item)); }
+      },
       removeAttribute(name) { attrs.delete(name); },
       getAttribute(name) { return attrs.get(name); },
       append(child) { child.parent = node; node.children.push(child); },
       remove() { if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node); node.isConnected = false; },
       contains(child) { return child === node || node.children.some(item => item.contains(child)); },
-      querySelector() { return null; },
-      querySelectorAll(selector) { return node.children.filter(child => selector === '[data-dependency-wire]' ?
-        child.getAttribute('data-dependency-wire') : selector === '[data-dependency-color]' ?
-          child.getAttribute('data-dependency-color') : +child.getAttribute('data-work-id') > 0); },
-      closest(selector) { return selector === '[data-dependency-wire]' && attrs.has('data-dependency-wire') ? node : node.parent?.closest(selector); },
+      querySelector(selector) { return node.querySelectorAll(selector)[0] || null; },
+      querySelectorAll(selector) {
+        const attribute = /^\[([\w-]+)\]$/.exec(selector)?.[1];
+        const matches = child => attribute ? child.getAttribute(attribute) !== undefined : selector.startsWith('.') && child.classList.contains(selector.slice(1));
+        const descendants = child => child.children.flatMap(item => [item, ...descendants(item)]);
+        return descendants(node).filter(matches);
+      },
+      closest(selector) {
+        const attribute = /^\[([\w-]+)\]$/.exec(selector)?.[1];
+        return attribute && attrs.has(attribute) ? node : node.parent?.closest(selector);
+      },
       getBoundingClientRect() { node.layoutReads = (node.layoutReads || 0) + 1; return { ...node.bounds, width: node.bounds.right - node.bounds.left, height: node.bounds.bottom - node.bounds.top }; },
       focus() { assert.fail('hover must not move keyboard focus'); },
       scrollIntoView() { assert.fail('hover must not scroll the page'); },
@@ -81,20 +90,16 @@ function uiFixture() {
       set(value) {
         markup = value;
         node.children = [];
-        for (const match of value.matchAll(/<g class="dependencyHoverWire" data-dependency-wire="([^"]+)" data-dependency-from="(\d+)" data-dependency-to="(\d+)"/g)) {
-          const group = element();
-          group.setAttribute('data-dependency-wire', match[1]);
-          group.setAttribute('data-dependency-from', match[2]);
-          group.setAttribute('data-dependency-to', match[3]);
-          node.append(group);
-        }
-        // Color assertions inspect the resulting DOM/CSSOM instead of assuming
-        // an inline HTML style survived the application's strict CSP.
-        for (const match of value.matchAll(/<([a-z]+)\b([^>]*\bdata-dependency-color="[^"]+"[^>]*)>/g)) {
-          const colored = element();
-          colored.tagName = match[1];
-          for (const attr of match[2].matchAll(/([\w-]+)="([^"]*)"/g)) colored.setAttribute(attr[1], attr[2]);
-          node.append(colored);
+        // Preserve SVG parent relationships for actual hit-path and numbered
+        // badge targets, and inspect CSSOM paint instead of inline HTML style.
+        const parents = [node];
+        for (const match of value.matchAll(/<(\/)?([a-z]+)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/g)) {
+          if (match[1]) { parents.pop(); continue; }
+          const child = element();
+          child.tagName = match[2];
+          for (const attr of match[3].matchAll(/([\w-]+)="([^"]*)"/g)) child.setAttribute(attr[1], attr[2]);
+          parents.at(-1).append(child);
+          if (!match[3].endsWith('/')) parents.push(child);
         }
       },
     });
@@ -407,20 +412,98 @@ test('source circles and numbers are always painted above all Overview wire path
   controller.destroy();
 });
 
-test('arrow hover and focus never isolate wires or change task opacity', () => {
+test('pointer hit targets isolate only their wire in Board, Overview and Timeline without rerouting', () => {
+  for (const layout of ['board', 'overview', 'timeline']) {
+    const ui = uiFixture();
+    if (layout === 'overview') ui.nodes.forEach((node, index) => { node.bounds = rect(88, 20 + index * 60, 620, 80 + index * 60); });
+    const unrelated = ui.element(10, rect(460, 230, 570, 290));
+    ui.root.append(unrelated);
+    const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 2, layout });
+    const overlay = ui.overlay();
+    const drawing = overlay.innerHTML;
+    const groups = overlay.querySelectorAll('[data-dependency-wire]');
+    const firstHit = groups[0].querySelector('.dependencyHoverHit');
+    assert.ok(firstHit, layout + ' exposes a pointer hit area along the actual rendered route');
+    assert.equal(firstHit.getAttribute('d'), groups[0].querySelector('.dependencyHoverLine').getAttribute('d'));
+    const reads = ui.nodes.reduce((sum, node) => sum + node.layoutReads, ui.root.layoutReads);
+    const opacity = [...ui.nodes, unrelated].map(node => node.classList.contains('dependencyHoverDimmed'));
+    ui.root.scrollLeft = 17;
+    ui.root.scrollTop = 40;
+    overlay.fire('pointerover', { target: firstHit, pointerType: 'mouse' });
+    assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [false, true, true], layout);
+    const marks = overlay.querySelectorAll('[data-dependency-source]');
+    marks.forEach(mark => assert.equal(mark.classList.contains('dependencyHoverWireDimmed'), mark.getAttribute('data-dependency-source') !== '1'));
+    // Move straight to the next wire; the old one fades without an intervening
+    // redraw, selection change, scroll adjustment or task-opacity change.
+    const secondHit = groups[1].querySelector('.dependencyHoverHit');
+    overlay.fire('pointerout', { target: firstHit, relatedTarget: secondHit, pointerType: 'mouse' });
+    assert.deepEqual(groups.map(group => group.classList.contains('dependencyHoverWireDimmed')), [true, false, true]);
+    overlay.fire('pointerout', { target: secondHit, relatedTarget: ui.nodes[0], pointerType: 'mouse' });
+    groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), false));
+    marks.forEach(mark => assert.equal(mark.classList.contains('dependencyHoverWireDimmed'), false));
+    ui.flush();
+    assert.deepEqual([...ui.nodes, unrelated].map(node => node.classList.contains('dependencyHoverDimmed')), opacity);
+    assert.equal(unrelated.classList.contains('dependencyHoverDimmed'), true);
+    assert.equal(ui.nodes[1].classList.contains('dependencyHoverSelected'), true);
+    assert.equal(overlay.innerHTML, drawing);
+    assert.equal(ui.nodes.reduce((sum, node) => sum + node.layoutReads, ui.root.layoutReads), reads);
+    assert.equal(ui.root.scrollLeft, 17);
+    assert.equal(ui.root.scrollTop, 40);
+    assert.doesNotMatch(drawing, /tabindex=|\bstyle=/);
+    controller.destroy();
+  }
+});
+
+test('source badge hover keeps its outgoing branches visible and leaving restores every arrow decoration', () => {
+  const ui = uiFixture();
+  ui.nodes.forEach((node, index) => { node.bounds = rect(88, 20 + index * 60, 620, 80 + index * 60); });
+  const controller = hover.wire(ui.root, { layerRoot: ui.root,
+    edges: [{ from: 1, to: 2 }, { from: 1, to: 3 }, { from: 2, to: 3 }, { from: 3, to: 4 }],
+    selectedId: 2, layout: 'overview', gutterWidth: 88 });
+  const overlay = ui.overlay();
+  const groups = overlay.querySelectorAll('[data-dependency-wire]');
+  const marks = overlay.querySelectorAll('[data-dependency-source]');
+  const badge = marks.find(mark => mark.classList.contains('dependencyHoverSequence') && mark.getAttribute('data-dependency-source') === '1');
+  const badgeCircle = badge.querySelectorAll('[data-dependency-color]').find(child => child.tagName === 'circle');
+  assert.ok(badgeCircle);
+  overlay.fire('pointerover', { target: badgeCircle, pointerType: 'mouse' });
+  groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), group.getAttribute('data-dependency-from') !== '1'));
+  marks.forEach(mark => assert.equal(mark.classList.contains('dependencyHoverWireDimmed'), mark.getAttribute('data-dependency-source') !== '1'));
+  const sourceDot = marks.find(mark => mark.classList.contains('dependencyHoverDot') && mark.getAttribute('data-dependency-source') === '2');
+  overlay.fire('pointerout', { target: badgeCircle, relatedTarget: sourceDot, pointerType: 'mouse' });
+  groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), group.getAttribute('data-dependency-from') !== '2'));
+  for (const event of ['pointerleave', 'pointercancel']) {
+    overlay.fire(event);
+    [...groups, ...marks].forEach(node => assert.equal(node.classList.contains('dependencyHoverWireDimmed'), false));
+    overlay.fire('pointerover', { target: badgeCircle, pointerType: 'mouse' });
+  }
+  ui.window.fire('blur');
+  [...groups, ...marks].forEach(node => assert.equal(node.classList.contains('dependencyHoverWireDimmed'), false));
+  controller.destroy();
+});
+
+test('touch, clearing, changing selection and disposal leave no lingering wire isolation or listeners', () => {
   const ui = uiFixture();
   const controller = hover.wire(ui.root, { layerRoot: ui.root, edges: ui.edges, selectedId: 2 });
-  const drawing = ui.overlay().innerHTML;
-  const groups = ui.overlay().querySelectorAll('[data-dependency-wire]');
-  for (const name of ['pointerover', 'pointerout', 'pointerleave', 'focusin', 'focusout', 'keydown']) {
-    assert.equal(ui.overlay().listenerCount(name), 0);
-    ui.overlay().fire(name, { target: groups[0], pointerType: 'mouse', key: 'Escape' });
-  }
-  assert.equal(ui.overlay().innerHTML, drawing);
-  assert.doesNotMatch(drawing, /tabindex=|dependencyHoverHit/);
+  const overlay = ui.overlay();
+  let groups = overlay.querySelectorAll('[data-dependency-wire]');
+  overlay.fire('pointerover', { target: groups[0].querySelector('.dependencyHoverHit'), pointerType: 'touch' });
   groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), false));
-  ui.nodes.forEach(node => assert.equal(node.classList.contains('dependencyHoverDimmed'), false));
+  overlay.fire('pointerover', { target: groups[0].querySelector('.dependencyHoverHit'), pointerType: 'mouse' });
+  assert.equal(groups[1].classList.contains('dependencyHoverWireDimmed'), true);
+  controller.clear();
+  groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), false));
+  overlay.fire('pointerover', { target: groups[0].querySelector('.dependencyHoverHit'), pointerType: 'mouse' });
+  controller.setSelected(3);
+  groups = overlay.querySelectorAll('[data-dependency-wire]');
+  groups.forEach(group => assert.equal(group.classList.contains('dependencyHoverWireDimmed'), false));
+  overlay.fire('pointerover', { target: groups[0].querySelector('.dependencyHoverHit'), pointerType: 'mouse' });
+  controller.setSelected(0);
+  assert.equal(overlay.innerHTML, '');
   controller.destroy();
+  for (const event of ['pointerover', 'pointerout', 'pointerleave', 'pointercancel']) assert.equal(overlay.listenerCount(event), 0);
+  assert.equal(ui.window.listenerCount('blur'), 0);
+  assert.equal(overlay.isConnected, false);
 });
 
 test('wire descriptions escape task names and remain accessible without keyboard tab stops', () => {

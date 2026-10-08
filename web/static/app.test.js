@@ -96,7 +96,7 @@ function loadApp(options = {}) {
     applyRoute, openBacklogView, jumpToSprint, selectedPlanningSprint, selectPlanningSprint, clearPlanningSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
-    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml, renderTaskTools,
+    GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml, renderTaskTools, setDependencySort, wireOverviewControls,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
@@ -2170,12 +2170,12 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     const selector = targetView === 'timeline' ? '.ganttTaskItem[data-timeline-id="70"]' : '[data-work-id="70"]';
     root.querySelector = query => query === selector ? selected : query === '.ganttChart' ? chart : originalQuery(query);
     const before = selected.getBoundingClientRect().top;
-    for (const transition of [() => app.openDependencies(70), () => app.toggleDependencyFocus(70), () => app.showOtherTasks(), () => app.closeDependencies()]) {
+    for (const transition of [() => app.openDependencies(70), () => app.setDependencySort('normal'), () => app.setDependencySort('dependencies'), () => app.toggleDependencyFocus(70), () => app.showOtherTasks(), () => app.closeDependencies()]) {
       transition();
       assert.equal(selected.getBoundingClientRect().top, before, 'replacing and reordering the rows retains the clicked task position');
       assert.equal(root.scrollLeft, 160, 'horizontal workspace position remains unchanged');
     }
-    assert.equal(focusing.length, 4);
+    assert.equal(focusing.length, 6);
     assert.ok(focusing.every(options => options.preventScroll === true), 'keyboard focus must not undo the retained scroll position');
     assert.ok(scrolling.every(options => options.behavior === 'instant' && options.left === 0));
     if (targetView === 'timeline') assert.ok(chart.scrollTop > 0, 'the recreated timeline chart retains its own vertical scroll');
@@ -2238,5 +2238,108 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     app.toggleDependencyFocus(70);
     assert.deepEqual(visibleDependencyOrder(app, targetView, new Set([60,70,75,80,85,90])), [70,60,85]);
     assert.deepEqual(Array.from(app.planningWork(), ticket => ticket.id).sort((a,b) => a-b), [60,70,85,200]);
+  });
+}
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' lets users switch dependency display order without changing stage colors or saved task data', () => {
+    let requests = 0;
+    const app = loadApp({fetch() { requests++; return new Promise(() => {}); }, hover: {wire() {}}});
+    const state = dependencyOrderState();
+    app.setState(state); app.selectBoard(1);
+    app.setOverviewSort({key: 'dueDate', dir: 'asc'});
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const ids = new Set([90,80,70,60,75]);
+    const normalOrder = visibleDependencyOrder(app, targetView, ids);
+    const storedTasks = JSON.stringify(state.tickets);
+    const hash = app.window.location.hash;
+    app.openDependencies(70);
+    const ordered = visibleDependencyOrder(app, targetView, ids);
+    assert.notDeepEqual(ordered, normalOrder, 'the fixture must exercise a genuine choice between sorts');
+    assert.match(app.planningFocusHtml(), /data-dependency-sort/);
+    assert.match(app.planningFocusHtml(), /<option value="dependencies" selected>Dependency order<\/option>/);
+    const stageKeys = html => [...html.matchAll(/<span class="dependencyStageKey"[^>]*>.*?<\/span>/g)].map(match => match[0]);
+    const palette = stageKeys(app.planningFocusHtml());
+
+    const root = app.document.querySelector('#' + targetView);
+    const sort = fakeElement(); sort.value = 'normal';
+    root.querySelectorAll = selector => selector === '[data-dependency-sort]' ? [sort] : [];
+    const originalQuery = root.querySelector;
+    root.querySelector = selector => selector === '[data-dependency-sort]' ? sort : originalQuery(selector);
+    app.wirePlanningActions(root);
+    assert.equal(typeof sort.onchange, 'function', 'the visible selector must be wired to the display choice');
+    sort.onchange({stopPropagation() {}});
+    assert.deepEqual(visibleDependencyOrder(app, targetView, ids), normalOrder);
+    assert.match(app.planningFocusHtml(), /<option value="normal" selected>/);
+    assert.deepEqual(stageKeys(app.planningFocusHtml()), palette, 'stage meaning and colors do not depend on visual row order');
+    assert.deepEqual([...app.dependencyViewIds()].sort((a,b) => a-b), [60,70,75,80,90]);
+
+    app.toggleDependencyFocus(75);
+    assert.deepEqual(visibleDependencyOrder(app, targetView, ids), normalOrder);
+    assert.match(app.planningFocusHtml(), /<option value="normal" selected>/);
+    app.showOtherTasks();
+    assert.deepEqual(visibleDependencyOrder(app, targetView, ids), normalOrder);
+    app.openDependencies(80);
+    assert.match(app.planningFocusHtml(), /<option value="normal" selected>/, 'choosing another task in the open display retains the chosen sort');
+
+    app.setDependencySort('dependencies');
+    assert.deepEqual(visibleDependencyOrder(app, targetView, ids), ordered);
+    assert.deepEqual(stageKeys(app.planningFocusHtml()), palette);
+    app.setDependencySort('normal');
+    app.closeDependencies();
+    assert.deepEqual(visibleDependencyOrder(app, targetView, ids), normalOrder);
+    app.openDependencies(70);
+    assert.match(app.planningFocusHtml(), /<option value="dependencies" selected>/, 'a new dependency display starts in dependency order');
+    assert.equal(JSON.stringify(state.tickets), storedTasks, 'sort choices must never persist positions, priorities, parent changes or links');
+    assert.equal(app.window.location.hash, hash);
+    assert.equal(requests, 0);
+  });
+}
+
+test('Overview column sorting takes effect immediately in an open dependency display', () => {
+  let requests = 0;
+  const app = loadApp({fetch() { requests++; return new Promise(() => {}); }, hover: {wire() {}}});
+  const state = dependencyOrderState(); app.setState(state); app.selectBoard(1);
+  app.setOverviewSort({key: 'dueDate', dir: 'asc'});
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  app.openDependencies(70);
+  const ids = new Set([90,80,70,60,75]);
+  const palette = [...app.planningFocusHtml().matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]);
+  const storedTasks = JSON.stringify(state.tickets);
+  const button = fakeElement(); button.dataset.sort = 'dueDate';
+  const originalAll = app.document.querySelectorAll.bind(app.document);
+  app.document.querySelectorAll = selector => selector === '.tableSort' ? [button] : originalAll(selector);
+  app.wireOverviewControls(app.planningWork());
+  button.onclick();
+  assert.match(app.planningFocusHtml(), /<option value="normal" selected>/, 'a column click must not remain silently overridden by dependency order');
+  assert.deepEqual(visibleDependencyOrder(app, 'overview', ids), [90,80,70,60,75], 'the selected Due column toggles to descending');
+  assert.deepEqual([...app.planningFocusHtml().matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]), palette);
+  app.wireOverviewControls(app.planningWork());
+  button.onclick();
+  assert.deepEqual(visibleDependencyOrder(app, 'overview', ids), [75,60,70,80,90], 'the next column click toggles to ascending');
+  app.closeDependencies();
+  assert.deepEqual(visibleDependencyOrder(app, 'overview', ids), [75,60,70,80,90], 'the chosen column sort remains available after the overlay closes');
+  assert.equal(JSON.stringify(state.tickets), storedTasks);
+  assert.equal(requests, 0);
+});
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' returns keyboard focus to the sort selector without falling back to the selected card Back button', () => {
+    const app = loadApp({hover: {wire() {}}}); app.setState(dependencyOrderState()); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    app.openDependencies(70);
+    const root = app.document.querySelector('#' + targetView); const originalQuery = root.querySelector;
+    const selector = targetView === 'timeline' ? '.ganttTaskItem[data-timeline-id="70"]' : '[data-work-id="70"]';
+    const back = fakeElement(), sort = fakeElement(), selected = fakeElement();
+    let sortFocused = 0, backFocused = 0;
+    sort.focus = options => { assert.equal(options.preventScroll, true); sortFocused++; };
+    back.focus = () => backFocused++;
+    selected.querySelector = query => query === '[data-dependencies-back]' ? back : null;
+    selected.getBoundingClientRect = () => ({top: 150, bottom: 250, height: 100, left: 0, right: 300, width: 300});
+    root.querySelector = query => query === selector ? selected : query === '[data-dependency-sort]' ? sort : originalQuery(query);
+    app.setDependencySort('normal');
+    assert.equal(sortFocused, 1, 'the requested selector owns focus after rerendering');
+    assert.equal(backFocused, 0);
+    assert.match(app.planningFocusHtml(), /<option value="normal" selected>/);
   });
 }

@@ -9,22 +9,42 @@ import (
 	"time"
 )
 
-// resetDemoDataIfEnabled is a startup-only opt-in. Normal installations never
-// create sample work or discard tasks. An invalid setting aborts before a reset.
+// resetDemoDataIfEnabled retains the original combined reset option.
 func (s *server) resetDemoDataIfEnabled(setting string, at time.Time) error {
-	enabled, err := strconv.ParseBool(setting)
-	if err != nil {
-		return fmt.Errorf("KANBANODON_RESET_DEMO_DATA must be true or false: %w", err)
+	return s.prepareDemoDataIfEnabled("false", "false", setting, at)
+}
+
+// prepareDemoDataIfEnabled validates every option before changing any data.
+// Clear and seed can run independently, or atomically together. All default off.
+func (s *server) prepareDemoDataIfEnabled(clearSetting, seedSetting, resetSetting string, at time.Time) error {
+	settings := []struct{ name, value string }{
+		{"KANBANODON_CLEAR_TASK_DATA", clearSetting},
+		{"KANBANODON_SEED_DEMO_DATA", seedSetting},
+		{"KANBANODON_RESET_DEMO_DATA", resetSetting},
 	}
-	if !enabled {
+	enabled := make([]bool, len(settings))
+	for i, setting := range settings {
+		value, err := strconv.ParseBool(setting.value)
+		if err != nil {
+			return fmt.Errorf("%s must be true or false: %w", setting.name, err)
+		}
+		enabled[i] = value
+	}
+	clear, seed := enabled[0] || enabled[2], enabled[1] || enabled[2]
+	if !clear && !seed {
 		return nil
 	}
-	log.Print("KANBANODON_RESET_DEMO_DATA is enabled: replacing ALL tasks with fresh demo work")
-	boards, err := s.resetDemoData(at)
-	if err != nil {
-		return fmt.Errorf("reset demo data: %w", err)
+	if clear {
+		log.Print("Task data cleanup is enabled: deleting ALL tickets and sprint plans")
 	}
-	log.Printf("Demo reset complete: 3 epics and 18 tasks per board across %d board(s); users and access retained", boards)
+	if seed {
+		log.Print("Demo seed is enabled: adding current sample work to boards not yet seeded")
+	}
+	boards, err := s.prepareDemoData(clear, seed, at)
+	if err != nil {
+		return fmt.Errorf("prepare demo data: %w", err)
+	}
+	log.Printf("Task data preparation complete: cleanup=%t; demo added to %d board(s), each with 3 epics, 18 planned tasks and 6 backlog tasks; users and access retained", clear, boards)
 	return nil
 }
 
@@ -36,17 +56,36 @@ func demoWeekStart(at time.Time) time.Time {
 }
 
 // resetDemoData atomically replaces all task data and each board's sprint plan.
-// A failure on any board rolls back the complete reset, including a fresh board.
 func (s *server) resetDemoData(at time.Time) (int, error) {
+	return s.prepareDemoData(true, true, at)
+}
+
+// prepareDemoData changes all boards in one transaction. A seed marker keeps
+// additive startup seeding from duplicating work or moving sprint plans again.
+func (s *server) prepareDemoData(clear, seed bool, at time.Time) (int, error) {
+	if !clear && !seed {
+		return 0, nil
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"ticket_repetitions", "notifications", "ticket_activity", "comments", "ticket_links", "ticket_labels", "tickets", "sprint_names"} {
-		if _, err := tx.Exec("delete from " + table); err != nil {
+	if _, err := tx.Exec("create table if not exists demo_data_seeds(board_id integer primary key,seeded_at text not null)"); err != nil {
+		return 0, err
+	}
+	if clear {
+		for _, table := range []string{"ticket_repetitions", "notifications", "ticket_activity", "comments", "ticket_links", "ticket_labels", "tickets", "sprint_names", "demo_data_seeds"} {
+			if _, err := tx.Exec("delete from " + table); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := tx.Exec("update boards set sprint_start_date='',sprint_weeks=2"); err != nil {
 			return 0, err
 		}
+	}
+	if !seed {
+		return 0, tx.Commit()
 	}
 	boardIDs, err := ints(tx, "select id from boards order by id")
 	if err != nil {
@@ -72,12 +111,23 @@ func (s *server) resetDemoData(at time.Time) (int, error) {
 	}
 	week := demoWeekStart(at)
 	stamp := at.UTC().Format(time.RFC3339)
+	seeded := 0
 	for _, boardID := range boardIDs {
+		var previous int
+		if err := tx.QueryRow("select count(*) from demo_data_seeds where board_id=?", boardID).Scan(&previous); err != nil {
+			return 0, err
+		}
+		if previous != 0 {
+			continue
+		}
 		columns, err := demoColumns(tx, boardID)
 		if err != nil {
 			return 0, err
 		}
 		if _, err := tx.Exec("update boards set sprint_start_date=?,sprint_weeks=2 where id=?", week.AddDate(0, 0, -28).Format("2006-01-02"), boardID); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec("delete from sprint_names where board_id=?", boardID); err != nil {
 			return 0, err
 		}
 		for i, name := range []string{"Fern Fridge Incident", "Evidence Cleanup", "Cretaceous Coffee", "First Pizza Flight", "Rooftop Landing Lessons", "The Cheese Comet", "No Dinosaurs Left Hungry"} {
@@ -88,11 +138,15 @@ func (s *server) resetDemoData(at time.Time) (int, error) {
 		if err := seedDemoBoard(tx, boardID, columns, week, stamp); err != nil {
 			return 0, err
 		}
+		if _, err := tx.Exec("insert into demo_data_seeds(board_id,seeded_at) values(?,?)", boardID, stamp); err != nil {
+			return 0, err
+		}
+		seeded++
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return len(boardIDs), nil
+	return seeded, nil
 }
 
 // demoColumns retains custom workflows. Missing standard names fall back to the
@@ -175,8 +229,56 @@ func demoStory() []demoEpic {
 	}
 }
 
+// demoBacklog adds unplanned follow-up work to each story. It belongs in Backlog
+// until promoted, so it has no schedule, duration, or blocking dependencies.
+func demoBacklog() [][]demoTask {
+	return [][]demoTask{
+		{
+			{title: "Design chew-proof fridge evidence bags", body: "The first prototype disappeared during quality assurance.", kind: "task"},
+			{title: "Plan the herbivore midnight snack club", body: "Membership requires bringing your own gigantic leaf.", kind: "story"},
+		},
+		{
+			{title: "Prototype an espresso cup for tiny T-Rex arms", body: "Two handles, one extremely enthusiastic customer.", kind: "task"},
+			{title: "Invent the Jurassic decaf menu", body: "The raptors have already volunteered for the double-blind tasting.", kind: "story"},
+		},
+		{
+			{title: "Research rainproof pizza flight goggles", body: "Seeing the runway should not depend on mozzarella visibility.", kind: "task"},
+			{title: "Plan a gluten-free asteroid delivery route", body: "Customer requests a contactless landing and absolutely no extinction event.", kind: "story"},
+		},
+	}
+}
+
+// demoSequence appends demo references and positions after existing work,
+// including hidden tickets whose references should not be reused.
+func demoSequence(tx *sql.Tx, boardID int64) (epicBase, taskBase, position int, err error) {
+	items, err := rows(tx, "select id,ref,position from tickets where board_id=?", boardID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for _, item := range items {
+		ref := strings.TrimSpace(item["ref"].(string))
+		if ref == "" {
+			ref = strconv.FormatInt(item["id"].(int64), 10)
+		}
+		if strings.HasPrefix(ref, "E") {
+			if n, parseErr := strconv.Atoi(strings.TrimPrefix(ref, "E")); parseErr == nil && n > epicBase {
+				epicBase = n
+			}
+		} else if n, parseErr := strconv.Atoi(strings.SplitN(ref, ".", 2)[0]); parseErr == nil && n > taskBase {
+			taskBase = n
+		}
+		if next := int(item["position"].(int64)) + 1; next > position {
+			position = next
+		}
+	}
+	return epicBase, taskBase, position, nil
+}
+
 func seedDemoBoard(tx *sql.Tx, boardID int64, columns map[string]int64, week time.Time, stamp string) error {
-	position := 0
+	epicBase, taskBase, position, err := demoSequence(tx, boardID)
+	if err != nil {
+		return err
+	}
 	date := func(offset int) string { return week.AddDate(0, 0, offset).Format("2006-01-02") }
 	completed := func(offset int) string {
 		value := date(offset) + "T12:00:00Z"
@@ -186,7 +288,7 @@ func seedDemoBoard(tx *sql.Tx, boardID int64, columns map[string]int64, week tim
 		return value
 	}
 	for epicIndex, epic := range demoStory() {
-		ep := ticket{BoardID: boardID, ColumnID: columns["To Do"], Ref: fmt.Sprintf("E%d", epicIndex+1), Title: epic.title, Body: epic.body, Type: "epic", StartDate: date(epic.tasks[0].start), DueDate: date(epic.tasks[len(epic.tasks)-1].due), Position: position}
+		ep := ticket{BoardID: boardID, ColumnID: columns["To Do"], Ref: fmt.Sprintf("E%d", epicBase+epicIndex+1), Title: epic.title, Body: epic.body, Type: "epic", StartDate: date(epic.tasks[0].start), DueDate: date(epic.tasks[len(epic.tasks)-1].due), Position: position}
 		if epicIndex == 0 {
 			ep.ColumnID = columns["Done"]
 			ep.CompletedAt = completed(-15)
@@ -198,7 +300,7 @@ func seedDemoBoard(tx *sql.Tx, boardID int64, columns map[string]int64, week tim
 		position++
 		var taskIDs []int64
 		for taskIndex, task := range epic.tasks {
-			work := ticket{BoardID: boardID, ColumnID: columns[task.status], ParentID: epicID, Ref: strconv.Itoa(epicIndex*6 + taskIndex + 1), Title: task.title, Body: task.body, Type: task.kind, Duration: task.due - task.start + 1, StartDate: date(task.start), DueDate: date(task.due), Position: position}
+			work := ticket{BoardID: boardID, ColumnID: columns[task.status], ParentID: epicID, Ref: strconv.Itoa(taskBase + epicIndex*6 + taskIndex + 1), Title: task.title, Body: task.body, Type: task.kind, Duration: task.due - task.start + 1, StartDate: date(task.start), DueDate: date(task.due), Position: position}
 			if task.status == "Done" {
 				work.CompletedAt = completed(task.due)
 			}
@@ -222,12 +324,23 @@ func seedDemoBoard(tx *sql.Tx, boardID int64, columns map[string]int64, week tim
 			taskIDs = append(taskIDs, id)
 			position++
 		}
+		for index, task := range demoBacklog()[epicIndex] {
+			work := ticket{BoardID: boardID, ColumnID: columns["To Do"], ParentID: epicID, Ref: strconv.Itoa(taskBase + 19 + epicIndex*2 + index), Title: task.title, Body: task.body, Type: task.kind, IsBacklog: true, Position: position}
+			id, err := insertDemoTicket(tx, work, stamp)
+			if err != nil {
+				return err
+			}
+			if err := replaceTicketMeta(tx, id, boardID, []string{"demo"}, nil); err != nil {
+				return err
+			}
+			position++
+		}
 	}
 	return nil
 }
 
 func insertDemoTicket(tx *sql.Tx, t ticket, stamp string) (int64, error) {
-	res, err := tx.Exec("insert into tickets(board_id,column_id,parent_id,ref,title,body,type,duration,start_date,due_date,completed_at,position,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", t.BoardID, t.ColumnID, t.ParentID, t.Ref, t.Title, t.Body, t.Type, t.Duration, t.StartDate, t.DueDate, t.CompletedAt, t.Position, stamp, stamp)
+	res, err := tx.Exec("insert into tickets(board_id,column_id,parent_id,ref,title,body,type,duration,start_date,due_date,completed_at,position,is_backlog,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", t.BoardID, t.ColumnID, t.ParentID, t.Ref, t.Title, t.Body, t.Type, t.Duration, t.StartDate, t.DueDate, t.CompletedAt, t.Position, t.IsBacklog, stamp, stamp)
 	if err != nil {
 		return 0, err
 	}

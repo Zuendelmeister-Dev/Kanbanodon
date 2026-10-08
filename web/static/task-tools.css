@@ -36,6 +36,10 @@
 .dependencyHoverLine{fill:none;stroke:var(--dependency-color,var(--teal));stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
 .dependencyHoverArrowHead{fill:none;stroke:none;pointer-events:none}
 .dependencyHoverDot{fill:#07111a;stroke:var(--dependency-color,var(--teal));stroke-width:2;pointer-events:none}
+.dependencyHoverHit{fill:none;stroke:transparent;stroke-width:14;pointer-events:stroke;cursor:crosshair}
+.dependencyHoverWire,.dependencyHoverSequence,.dependencyHoverDot{transition:opacity .12s ease}
+.dependencyHoverWireDimmed{opacity:.16}
+.dependencyHoverSequence,.dependencyHoverDot{pointer-events:all;cursor:crosshair}
 .dependencyHoverOverlay marker path{fill:var(--dependency-color,var(--teal));stroke:#07111a;stroke-width:1.75;stroke-linejoin:round;paint-order:stroke fill}
 .dependencyHoverDimmed{opacity:.22}
 .card.dependencyHoverActive,.card.dependencyHoverRelated,.ganttTaskItem.dependencyHoverActive,.ganttTaskItem.dependencyHoverRelated,.boardLaneEpic.dependencyHoverActive,.boardLaneEpic.dependencyHoverRelated{outline:2px solid var(--dependency-color);outline-offset:-2px;border-color:var(--dependency-color)}
@@ -71,11 +75,14 @@
 .dependencyStageKey b{color:var(--dependency-color)}
 .dependencyStageKey em{font-style:normal;color:var(--muted)}
 .dependencyGuide small{margin-left:auto}
-.dependencyFocusBar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin-bottom:12px;border:1px solid var(--gold);border-radius:8px;background:#231e11}
+.dependencyFocusBar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin-bottom:12px;border:1px solid var(--gold);border-radius:8px;background:#231e11}
 .dependencyFocusBar button{white-space:nowrap}
 .dependencyFocusBar>div{display:grid;gap:4px;min-width:0}
 .dependencyFocusBar strong{color:var(--text);overflow-wrap:anywhere;font-size:13px}
 .dependencyFocusBar span{color:var(--muted);font-size:11px}
+.dependencyFocusBar>.dependencyFocusActions{display:flex;align-items:end;flex-wrap:wrap;gap:8px}
+.dependencySortControl{display:grid;gap:4px;color:var(--muted);font-size:11px}
+.dependencySortControl select{background:#0b1219;border:1px solid #6c592c;color:var(--text);border-radius:7px;padding:8px 10px;font-size:12px;min-height:38px}
 .dependenciesBack,.taskActions .dependenciesBack{color:#fff6d5;background:#49390e;border-color:#f4b83f;font-weight:750}
 .dependenciesBack:hover,.taskActions .dependenciesBack:hover{background:#614c12;border-color:#ffe099}
 .dependenciesBack:focus-visible{outline:2px solid #ffe099;outline-offset:3px}

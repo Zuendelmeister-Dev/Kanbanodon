@@ -26,6 +26,7 @@ let timelineCenterDate = null;
 let dependencyFocusTicketId = 0;
 let dependencyFocusBoardId = 0;
 let dependencyFocused = false;
+let dependencySortMode = 'dependencies';
 let dependencyRenderSnapshot = null;
 const collapsedEpics = new Set();
 let loadGeneration = 0;
@@ -73,6 +74,7 @@ function invalidateSessionRequests() {
   sprintStripPage = null;
   dependencyFocusTicketId = dependencyFocusBoardId = 0;
   dependencyFocused = false;
+  dependencySortMode = 'dependencies';
   collapsedEpics.clear();
 }
 
@@ -797,6 +799,7 @@ function calculateDependencyOrder() {
 }
 
 function planningCompare(a, b, fallback) {
+  if (dependencySortMode === 'normal') return fallback(a, b);
   const steps = dependencyOrderSteps();
   if (steps) {
     const first = steps.get(+a.id);
@@ -846,6 +849,7 @@ function toggleDependencyFocus(id) {
 function openDependencies(id) {
   if (editing && !closeDrawer()) return;
   if (!workTickets().some(ticket => +ticket.id === +id)) return;
+  if (!dependencyViewIds()) dependencySortMode = 'dependencies';
   dependencyFocusTicketId = +id;
   dependencyFocusBoardId = currentBoardId();
   dependencyFocused = false;
@@ -863,7 +867,14 @@ function closeDependencies() {
   const id = dependencyFocusTicketId;
   dependencyFocusTicketId = 0;
   dependencyFocused = false;
+  dependencySortMode = 'dependencies';
   renderDependenciesKeepingPosition(id, '[data-dependencies="' + id + '"]');
+}
+
+function setDependencySort(mode) {
+  if (!['dependencies', 'normal'].includes(mode) || mode === dependencySortMode || !dependencyViewIds()) return;
+  dependencySortMode = mode;
+  renderDependenciesKeepingPosition(dependencyFocusTicketId, '[data-dependency-sort]');
 }
 
 function showOtherTasks() {
@@ -904,7 +915,7 @@ function renderDependenciesKeepingPosition(id, focusSelector) {
     const finalTop = after.getBoundingClientRect().top;
     if (Number.isFinite(finalTop)) window.scrollBy?.({top: finalTop - top, left: 0, behavior: 'instant'});
   }
-  const action = after?.querySelector(focusSelector) || after?.querySelector('[data-dependencies-back]') || root?.querySelector(focusSelector);
+  const action = after?.querySelector(focusSelector) || root?.querySelector(focusSelector) || after?.querySelector('[data-dependencies-back]');
   action?.focus({preventScroll:true});
 }
 
@@ -931,7 +942,10 @@ function planningFocusHtml() {
     return '<span class="dependencyStageKey" data-dependency-color="' + color + '" title="Stage ' + step + (label ? ' · ' + label.toLowerCase() : '') + '"><b>' + step + '</b>' + (label ? '<em>' + label + '</em>' : '') + '</span>';
   }).join('');
   const selected = parentTicket(dependencyFocusTicketId);
-  return '<div class="dependencyFocusBar" role="region" aria-label="Dependency view"><div><strong>Dependencies of ' + esc(ticketRef(selected)) + ' · ' + esc(ticketLabel(selected)) + '</strong><span>' + (dependencyFocused ? 'Connected tasks only' : 'Unrelated tasks are dimmed') + ' · Tasks follow dependency order</span></div><button type="button" class="dependenciesBack" data-dependencies-back>Back to normal view</button></div><div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
+  const normalOrder = view === 'overview' ? 'Table column order' : view === 'timeline' ? 'Epic hierarchy and schedule' : 'Ticket order within each status';
+  const orderDescription = dependencySortMode === 'dependencies' ? 'Tasks follow dependency order' : normalOrder;
+  const sorting = '<label class="dependencySortControl">Sort tasks<select data-dependency-sort aria-label="Sort tasks"><option value="dependencies"' + (dependencySortMode === 'dependencies' ? ' selected' : '') + '>Dependency order</option><option value="normal"' + (dependencySortMode === 'normal' ? ' selected' : '') + '>Normal order</option></select></label>';
+  return '<div class="dependencyFocusBar" role="region" aria-label="Dependency view"><div><strong>Dependencies of ' + esc(ticketRef(selected)) + ' · ' + esc(ticketLabel(selected)) + '</strong><span>' + (dependencyFocused ? 'Connected tasks only' : 'Unrelated tasks are dimmed') + ' · ' + orderDescription + '</span></div><div class="dependencyFocusActions">' + sorting + '<button type="button" class="dependenciesBack" data-dependencies-back>Back to normal view</button></div></div><div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
 }
 
 function taskEditHtml(ticket) {
@@ -956,6 +970,7 @@ function wirePlanningActions(root) {
   root.querySelectorAll('[data-focus-related]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleDependencyFocus(+button.dataset.focusRelated); });
   root.querySelectorAll('[data-show-other-tasks]').forEach(button => button.onclick = event => { event.stopPropagation(); showOtherTasks(); });
   root.querySelectorAll('[data-dependencies-back]').forEach(button => button.onclick = event => { event.stopPropagation(); closeDependencies(); });
+  root.querySelectorAll('[data-dependency-sort]').forEach(select => select.onchange = () => setDependencySort(select.value));
   root.querySelectorAll('[data-epic-toggle]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleEpic(+button.dataset.epicToggle); });
 }
 
@@ -1626,7 +1641,7 @@ function overviewTable(tickets) {
 
 // Builds a sortable overview table header cell.
 function overviewHeader(key, label) {
-  const active = overviewSort.key === key;
+  const active = overviewSort.key === key && (!dependencyViewIds() || dependencySortMode === 'normal');
   const mark = active ? (overviewSort.dir === 'asc' ? ' ^' : ' v') : '';
   return '<th><button class="tableSort" type="button" data-sort="' + key + '">' + esc(label + mark) + '</button></th>';
 }
@@ -1770,7 +1785,10 @@ function wireOverviewControls(tickets) {
   $$('.tableSort').forEach(btn => btn.onclick = () => {
     const key = btn.dataset.sort;
     overviewSort = overviewSort.key === key ? { key, dir: overviewSort.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'dueDate' || key === 'startDate' ? 'asc' : 'asc' };
-    renderOverview();
+    if (dependencyViewIds()) {
+      dependencySortMode = 'normal';
+      renderDependenciesKeepingPosition(dependencyFocusTicketId, '[data-sort="' + key + '"]');
+    } else renderOverview();
   });
 }
 
@@ -2052,7 +2070,7 @@ function buildGanttRows() {
     if (!ownTask && !childTasks.length) return;
     const groupRows = [ganttEpicAggregate(epic, childTasks, ownTask)];
     const children = timelineDescendants(epic.id, baseById);
-    if (required) children.sort((a, b) => planningCompare(a.ticket, b.ticket, () => 0));
+    if (required && dependencySortMode === 'dependencies') children.sort((a, b) => planningCompare(a.ticket, b.ticket, () => 0));
     (collapsedEpics.has(+epic.id) ? [] : children).forEach(task => {
       task.depth = timelineDepth(task.ticket, epic.id);
       task.groupId = epic.id;
