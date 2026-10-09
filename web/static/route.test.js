@@ -23,15 +23,33 @@ test('route parsing accepts known views and positive ids', () => {
   assert.deepEqual({ ...router.parseRoute('#/unknown/-2/ticket/nope') }, { view: 'board', boardId: 0, ticketId: 0, sprintNumber: 0 });
   assert.deepEqual({ ...router.parseRoute('#/backlog/3') }, { view: 'backlog', boardId: 3, ticketId: 0, sprintNumber: 0 });
   assert.deepEqual({ ...router.parseRoute('#/ideas/3') }, { view: 'backlog', boardId: 3, ticketId: 0, sprintNumber: 0 });
+  assert.deepEqual({ ...router.parseRoute('#/history/3/ticket/7/sprint/4') }, { view: 'history', boardId: 3, ticketId: 7, sprintNumber: 0 });
 });
 
 test('route building normalizes invalid route values', () => {
   const { router } = loadRouter();
   assert.equal(router.buildRoute('overview', 5, 9), '#/overview/5/ticket/9');
   assert.equal(router.buildRoute('timeline', 5, 0, 8), '#/timeline/5/sprint/8');
-  assert.equal(router.buildRoute('board', 5, 0, 8), '#/board/5');
+  assert.equal(router.buildRoute('board', 5, 0, 8), '#/board/5/sprint/8');
+  assert.equal(router.buildRoute('overview', 5, 0, 8), '#/overview/5/sprint/8');
+  assert.equal(router.buildRoute('history', 5, 9, 8), '#/history/5/ticket/9');
   assert.equal(router.buildRoute('invalid', -1, Number.NaN), '#/board');
   assert.equal(router.buildRoute('board', 1.5, Number.MAX_SAFE_INTEGER + 1), '#/board');
+});
+
+test('sprint selection round trips in each planning view and is ignored elsewhere', () => {
+  const { router } = loadRouter();
+  for (const view of ['board', 'overview', 'timeline']) {
+    const hash = router.buildRoute(view, 2, 9, 3);
+    assert.deepEqual({ ...router.parseRoute(hash) }, { view, boardId: 2, ticketId: 9, sprintNumber: 3 });
+    assert.equal(router.buildRoute(view, 2, 0, 0), '#/' + view + '/2');
+    assert.equal(router.buildRoute(view, 2, 0, 1.5), '#/' + view + '/2');
+    assert.equal(router.parseRoute('#/' + view + '/2/sprint/9007199254740992').sprintNumber, 0);
+  }
+  for (const view of ['history', 'backlog', 'archive', 'trash', 'admin', 'config']) {
+    assert.equal(router.buildRoute(view, 2, 0, 3), '#/' + view + '/2');
+    assert.equal(router.parseRoute('#/' + view + '/2/sprint/3').sprintNumber, 0);
+  }
 });
 
 test('route writing pushes, replaces, and skips the current hash', () => {

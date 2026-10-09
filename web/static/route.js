@@ -1,6 +1,7 @@
 // Wraps route helpers in a small module and exposes them on window.KanbanodonRoute.
 (function () {
-  const views = new Set(['board', 'overview', 'timeline', 'backlog', 'admin', 'config']);
+  const views = new Set(['board', 'overview', 'timeline', 'history', 'backlog', 'admin', 'config', 'archive', 'trash']);
+  const planningViews = new Set(['board', 'overview', 'timeline']);
 
   function positiveId(value) {
     const id = Number(value);
@@ -27,18 +28,19 @@
         boardId = positiveId(parts[i]);
       }
     }
-    return { view, boardId, ticketId, sprintNumber };
+    return { view, boardId, ticketId, sprintNumber: planningViews.has(view) ? sprintNumber : 0 };
   }
 
-  // Builds a hash route from view, board, ticket, and optional focused Sprint.
+  // Builds a hash route from view, board, ticket, and optional selected Sprint.
   function buildRoute(view, boardId, ticketId, sprintNumber) {
-    const parts = [views.has(view) ? view : 'board'];
+    view = views.has(view) ? view : 'board';
+    const parts = [view];
     boardId = positiveId(boardId);
     ticketId = positiveId(ticketId);
     sprintNumber = positiveId(sprintNumber);
     if (boardId) parts.push(String(boardId));
     if (ticketId) parts.push('ticket', String(ticketId));
-    if (view === 'timeline' && sprintNumber) parts.push('sprint', String(sprintNumber));
+    if (planningViews.has(view) && sprintNumber) parts.push('sprint', String(sprintNumber));
     return '#/' + parts.join('/');
   }
 

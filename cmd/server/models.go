@@ -27,11 +27,23 @@ const (
 type ticket struct {
 	ID, BoardID, ColumnID, MilestoneID, AssigneeID, ParentID int64
 	// Ref is the human-facing number (for example #3.1); IDs remain integer keys for links.
-	Ref, Title, Body, Type, StartDate, DueDate, CompletedAt, CreatedAt, UpdatedAt string
-	Points, Duration, Position                                                    int
-	Labels                                                                        []string
-	Links                                                                         []int64
-	IsBacklog                                                                     bool
+	Ref, Title, Body, Type, StartDate, DueDate, StartedAt, CompletedAt, CreatedAt, UpdatedAt string
+	Points, Duration, Position                                                               int
+	Labels                                                                                   []string
+	Links                                                                                    []int64
+	IsBacklog                                                                                bool
+	Extras                                                                                   *ticketExtras
+	ArchivedAt, DeletedAt                                                                    string
+}
+
+type checklistItem struct {
+	Text string
+	Done bool
+}
+
+type ticketExtras struct {
+	Checklist  []checklistItem
+	RepeatDays int
 }
 
 type accountInput struct {
@@ -39,4 +51,5 @@ type accountInput struct {
 	Name     string
 	Email    string
 	Password string
+	Avatar   string
 }

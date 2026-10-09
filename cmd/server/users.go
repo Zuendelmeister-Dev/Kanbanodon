@@ -30,6 +30,7 @@ func (s *server) userCreate(w http.ResponseWriter, r *http.Request, u user) {
 		Name       string
 		Email      string
 		Password   string
+		Avatar     string
 		BoardID    int64
 		FullAccess bool
 		IsAdmin    bool
@@ -55,23 +56,20 @@ func (s *server) userCreate(w http.ResponseWriter, r *http.Request, u user) {
 		Name:     in.Name,
 		Email:    in.Email,
 		Password: in.Password,
+		Avatar:   in.Avatar,
 	}, in.IsAdmin, true)
 	if err != nil {
-		if errors.Is(err, errInvalidAccount) {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		http.Error(w, err.Error(), 400)
+		accountCreationError(w, err)
 		return
 	}
 	if in.IsAdmin {
 		if err := s.grantUserAllBoards(created.ID); err != nil {
-			http.Error(w, err.Error(), 500)
+			accountCreationError(w, err)
 			return
 		}
 	} else if in.FullAccess {
 		if err := s.setBoardAccess(in.BoardID, created.ID, true); err != nil {
-			http.Error(w, err.Error(), 500)
+			accountCreationError(w, err)
 			return
 		}
 	}
@@ -145,6 +143,8 @@ func (s *server) userDelete(w http.ResponseWriter, r *http.Request, u user) {
 		"delete from sessions where user_id=?",
 		"delete from board_users where user_id=?",
 		"delete from comments where user_id=?",
+		"delete from notifications where user_id=?",
+		"delete from ticket_activity where user_id=?",
 		"delete from users where id=?",
 	} {
 		if _, err := tx.Exec(stmt, in.UserID); err != nil {
@@ -234,13 +234,36 @@ func (s *server) userPassword(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	res, err := s.db.Exec("update users set password_hash=?,must_change_password=1 where id=?", h, in.UserID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := s.passwordSession(tx, r, u.ID); err != nil {
+		http.Error(w, "login required", http.StatusUnauthorized)
+		return
+	}
+	var admin, mustChange int
+	if err := tx.QueryRow("select is_admin,must_change_password from users where id=?", u.ID).Scan(&admin, &mustChange); err != nil || admin == 0 || (s.authMode != "test" && mustChange != 0) {
+		http.Error(w, "admin required", http.StatusForbidden)
+		return
+	}
+	res, err := tx.Exec("update users set password_hash=?,must_change_password=1 where id=?", h, in.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
 		http.Error(w, "user not found", 404)
+		return
+	}
+	if _, err := tx.Exec("delete from sessions where user_id=?", in.UserID); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), 500)
 		return
 	}
 	jsonOut(w, map[string]any{"ok": true})
@@ -263,20 +286,49 @@ func (s *server) password(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "new password required", 400)
 		return
 	}
-	if !u.MustChangePassword {
-		var currentHash string
-		if s.db.QueryRow("select password_hash from users where id=?", u.ID).Scan(&currentHash) != nil || !checkPassword(currentHash, in.CurrentPassword) {
-			http.Error(w, "current password is invalid", 401)
-			return
-		}
-	}
 	h, err := hashPassword(in.NewPassword)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	_, err = s.db.Exec("update users set password_hash=?,must_change_password=0 where id=?", h, u.ID)
+	tx, err := s.db.Begin()
 	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer tx.Rollback()
+	currentSession, err := s.passwordSession(tx, r, u.ID)
+	if err != nil {
+		http.Error(w, "login required", http.StatusUnauthorized)
+		return
+	}
+	var currentHash string
+	var mustChange int
+	err = tx.QueryRow("select password_hash,must_change_password from users where id=?", u.ID).Scan(&currentHash, &mustChange)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "login required", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if mustChange == 0 && !checkPassword(currentHash, in.CurrentPassword) {
+		http.Error(w, "current password is invalid", http.StatusUnauthorized)
+		return
+	}
+	_, err = tx.Exec("update users set password_hash=?,must_change_password=0 where id=?", h, u.ID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	// Keep the requesting session for the frontend's immediate state reload;
+	// invalidate every other device/session atomically with the password change.
+	if _, err := tx.Exec("delete from sessions where user_id=? and token_hash<>?", u.ID, currentSession); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

@@ -10,6 +10,11 @@ services:
       KANBANODON_AUTH_MODE: "local"
       KANBANODON_ALLOW_SIGNUP: "true"
       KANBANODON_SESSION_SECRET: "change-this-long-random-secret"
+      # Independent startup actions. Disable after use, then recreate the container.
+      KANBANODON_CLEAR_TASK_DATA: "${KANBANODON_CLEAR_TASK_DATA:-false}"
+      KANBANODON_SEED_DEMO_DATA: "${KANBANODON_SEED_DEMO_DATA:-false}"
+      # Compatibility: true performs both cleanup and a fresh demo seed.
+      KANBANODON_RESET_DEMO_DATA: "${KANBANODON_RESET_DEMO_DATA:-false}"
     volumes:
       - kanbanodon-data:/data
     restart: unless-stopped

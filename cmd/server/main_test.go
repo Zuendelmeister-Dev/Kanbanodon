@@ -83,7 +83,7 @@ func TestCreateTicketRejectsEmptyTitle(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d with body %q", rec.Code, rec.Body.String())
 	}
-	if got := len(s.loadTickets(1)); got != 0 {
+	if got := len(mustLoadTickets(t, s, 1)); got != 0 {
 		t.Fatalf("expected no tickets to be created, got %d", got)
 	}
 }
@@ -152,7 +152,7 @@ func TestDeleteTicketRemovesTicket(t *testing.T) {
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete ticket failed with status %d and body %q", deleteRec.Code, deleteRec.Body.String())
 	}
-	if got := len(s.loadTickets(1)); got != 0 {
+	if got := len(mustLoadTickets(t, s, 1)); got != 0 {
 		t.Fatalf("expected deleted ticket to be gone, got %d tickets", got)
 	}
 }
@@ -230,7 +230,7 @@ func TestNormalizeIdeaClearsPlanningFields(t *testing.T) {
 func TestBacklogStateRoundTrips(t *testing.T) {
 	s := newTestServer(t)
 	id := createTestTicket(t, s, `{"Title":"Future story","Type":"story","IsBacklog":true}`)
-	items := s.loadTickets(1)
+	items := mustLoadTickets(t, s, 1)
 	if len(items) != 1 || items[0].ID != id || !items[0].IsBacklog || items[0].Type != "story" {
 		t.Fatalf("expected typed backlog ticket to round-trip, got %#v", items)
 	}
@@ -242,7 +242,7 @@ func TestBacklogStateRoundTrips(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("promoting backlog ticket failed with %d: %q", rec.Code, rec.Body.String())
 	}
-	if promoted := s.loadTickets(1)[0]; promoted.IsBacklog {
+	if promoted := mustLoadTickets(t, s, 1)[0]; promoted.IsBacklog {
 		t.Fatalf("expected promoted ticket on board, got %#v", promoted)
 	}
 }
@@ -341,7 +341,7 @@ func TestParentGroupingRoundTrips(t *testing.T) {
 	storyID := createTestTicket(t, s, `{"Title":"Story","Type":"story","ParentID":`+strconv.FormatInt(epicID, 10)+`}`)
 	taskID := createTestTicket(t, s, `{"Title":"Task","Type":"task","ParentID":`+strconv.FormatInt(storyID, 10)+`}`)
 
-	tickets := s.loadTickets(1)
+	tickets := mustLoadTickets(t, s, 1)
 	byID := map[int64]ticket{}
 	for _, item := range tickets {
 		byID[item.ID] = item
@@ -424,21 +424,31 @@ func TestCreateTicketRejectsTaskParentForTask(t *testing.T) {
 	}
 }
 
-// TestDependencyBlocksStartUntilDependencyDone verifies workflow moves respect dependencies.
-func TestDependencyBlocksStartUntilDependencyDone(t *testing.T) {
+// Work can start immediately, but Review requires completed prerequisites.
+func TestDependencyAllowsStartAndBlocksReviewUntilDependencyDone(t *testing.T) {
 	s := newTestServer(t)
 	parentID := createTestTicket(t, s, `{"Title":"Foundation"}`)
 	childID := createTestTicket(t, s, `{"Title":"Build on it","Links":[`+strconv.FormatInt(parentID, 10)+`]}`)
 
 	inProgressID := testColumnID(t, s, "In Progress")
+	reviewID := testColumnID(t, s, "Review")
 	doneID := testColumnID(t, s, "Done")
 	childUpdate := `{"ColumnID":` + strconv.FormatInt(inProgressID, 10) + `,"Title":"Build on it","Type":"task","Links":[` + strconv.FormatInt(parentID, 10) + `]}`
+	startedRec := httptest.NewRecorder()
+	s.withUser(s.ticketAction).ServeHTTP(startedRec, httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(childID, 10), bytes.NewBufferString(childUpdate)))
+	if startedRec.Code != http.StatusOK {
+		t.Fatalf("In Progress must allow open prerequisites: %d %q", startedRec.Code, startedRec.Body.String())
+	}
+	childUpdate = `{"ColumnID":` + strconv.FormatInt(reviewID, 10) + `,"Title":"Build on it","Type":"task","Links":[` + strconv.FormatInt(parentID, 10) + `]}`
 	blockedReq := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(childID, 10), bytes.NewBufferString(childUpdate))
 	blockedRec := httptest.NewRecorder()
 	s.withUser(s.ticketAction).ServeHTTP(blockedRec, blockedReq)
 
 	if blockedRec.Code != http.StatusConflict {
 		t.Fatalf("expected dependency conflict, got %d with body %q", blockedRec.Code, blockedRec.Body.String())
+	}
+	if !strings.Contains(blockedRec.Body.String(), "Foundation") {
+		t.Fatalf("Review conflict must name the prerequisite: %q", blockedRec.Body.String())
 	}
 
 	parentUpdate := `{"ColumnID":` + strconv.FormatInt(doneID, 10) + `,"Title":"Foundation","Type":"task"}`
@@ -460,7 +470,7 @@ func TestDependencyBlocksStartUntilDependencyDone(t *testing.T) {
 	allowedRec := httptest.NewRecorder()
 	s.withUser(s.ticketAction).ServeHTTP(allowedRec, allowedReq)
 	if allowedRec.Code != http.StatusOK {
-		t.Fatalf("expected start after dependency is done, got %d with body %q", allowedRec.Code, allowedRec.Body.String())
+		t.Fatalf("expected Review after dependency is done, got %d with body %q", allowedRec.Code, allowedRec.Body.String())
 	}
 }
 
@@ -573,19 +583,12 @@ func serveWithCookie(t *testing.T, s *server, method, path, payload string, cook
 	return rec
 }
 
-// TestAvatarUsesDinoTemplateIDs verifies avatar choices are stable template ids.
-func TestAvatarUsesDinoTemplateIDs(t *testing.T) {
-	valid := map[string]bool{
-		"trex-stride": true, "trex-roar": true, "raptor": true, "allosaurus": true, "triceratops": true,
-		"triceratops-heavy": true, "styracosaurus": true, "stegosaurus": true, "kentrosaurus": true, "ankylosaurus": true,
-		"brontosaurus": true, "brachiosaurus": true, "spinosaurus": true, "parasaurolophus": true, "iguanodon": true,
-		"pachycephalosaurus": true, "gallimimus": true, "pterosaur-wide": true, "pterosaur-dive": true, "dimetrodon": true,
-	}
-
+// TestAvatarUsesCreatorIDs verifies stable, valid creator parameters.
+func TestAvatarUsesCreatorIDs(t *testing.T) {
 	for _, seed := range []string{"local", "ada@example.test", "grace@example.test", "kanbanodon"} {
 		got := avatar(seed)
-		if !valid[got] {
-			t.Fatalf("avatar(%q) returned non-template id %q", seed, got)
+		if !avatarPattern.MatchString(got) {
+			t.Fatalf("avatar(%q) returned invalid creator id %q", seed, got)
 		}
 	}
 	if avatar("local") != avatar("local") {
@@ -1031,7 +1034,7 @@ func TestAdminCreatedRegularUserLoginAndBoardRightsScenario(t *testing.T) {
 	if createRec.Code != http.StatusOK {
 		t.Fatalf("regular user could not create ticket on granted board: status %d body %q", createRec.Code, createRec.Body.String())
 	}
-	if got := len(s.loadTickets(1)); got != 1 {
+	if got := len(mustLoadTickets(t, s, 1)); got != 1 {
 		t.Fatalf("expected regular user's ticket on granted board, got %d tickets", got)
 	}
 }
@@ -1187,10 +1190,10 @@ func TestBoardsEndpointCreatesSeparateBoard(t *testing.T) {
 	if createRec.Code != http.StatusOK {
 		t.Fatalf("create ticket failed with status %d and body %q", createRec.Code, createRec.Body.String())
 	}
-	if got := len(s.loadTickets(1)); got != 0 {
+	if got := len(mustLoadTickets(t, s, 1)); got != 0 {
 		t.Fatalf("expected default board to stay empty, got %d tickets", got)
 	}
-	if got := len(s.loadTickets(created.ID)); got != 1 {
+	if got := len(mustLoadTickets(t, s, created.ID)); got != 1 {
 		t.Fatalf("expected new board to contain one ticket, got %d", got)
 	}
 }

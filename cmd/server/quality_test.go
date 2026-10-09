@@ -149,7 +149,7 @@ func TestEnsureUsernamesNormalizesAndDeduplicatesLegacyValues(t *testing.T) {
 	if err := s.ensureUsernames(); err != nil {
 		t.Fatal(err)
 	}
-	got := strs(s.db, "select username from users where id>1 order by id")
+	got := mustStrings(t, s.db, "select username from users where id>1 order by id")
 	want := []string{"ada", "other", "user"}
 	if len(got) != len(want) {
 		t.Fatalf("got usernames %#v, want %#v", got, want)
@@ -269,11 +269,11 @@ func TestBoardDefaultsSelectionAndAccessValidation(t *testing.T) {
 	if !s.canAccessBoard(user{ID: ownerID}, boardID) {
 		t.Fatal("board creator should receive access atomically")
 	}
-	board := one(s.db, "select name from boards where id=?", boardID)
+	board := mustOne(t, s.db, "select name from boards where id=?", boardID)
 	if board["name"] != "New Board" {
 		t.Fatalf("expected default board name, got %#v", board)
 	}
-	if len(rows(s.db, "select id from columns where board_id=?", boardID)) != 5 || len(rows(s.db, "select id from labels where board_id=?", boardID)) != 4 {
+	if len(mustRows(t, s.db, "select id from columns where board_id=?", boardID)) != 5 || len(mustRows(t, s.db, "select id from labels where board_id=?", boardID)) != 4 {
 		t.Fatal("expected default workflow columns and labels")
 	}
 
@@ -376,14 +376,14 @@ func TestExplicitInvalidBoardDoesNotFallBackForDataOperations(t *testing.T) {
 
 	createRec := httptest.NewRecorder()
 	s.createTicket(createRec, httptest.NewRequest(http.MethodPost, "/api/tickets?boardId=999999", strings.NewReader(`{"Title":"Wrong board"}`)), admin)
-	if createRec.Code != http.StatusForbidden || len(s.loadTickets(1)) != 0 {
-		t.Fatalf("invalid board create must not fall back, status=%d tickets=%#v", createRec.Code, s.loadTickets(1))
+	if createRec.Code != http.StatusForbidden || len(mustLoadTickets(t, s, 1)) != 0 {
+		t.Fatalf("invalid board create must not fall back, status=%d tickets=%#v", createRec.Code, mustLoadTickets(t, s, 1))
 	}
 
 	importRec := httptest.NewRecorder()
 	s.importData(importRec, httptest.NewRequest(http.MethodPost, "/api/import?boardId=999999", strings.NewReader(`{"state":{"tickets":[{"Title":"Wrong board"}]}}`)), admin)
-	if importRec.Code != http.StatusForbidden || len(s.loadTickets(1)) != 0 {
-		t.Fatalf("invalid board import must not fall back, status=%d tickets=%#v", importRec.Code, s.loadTickets(1))
+	if importRec.Code != http.StatusForbidden || len(mustLoadTickets(t, s, 1)) != 0 {
+		t.Fatalf("invalid board import must not fall back, status=%d tickets=%#v", importRec.Code, mustLoadTickets(t, s, 1))
 	}
 
 	exportRec := httptest.NewRecorder()
@@ -515,10 +515,10 @@ func TestTicketCommentsCompletionAndErrorPaths(t *testing.T) {
 func TestIncomingDependenciesBlockCreateAndCombinedMove(t *testing.T) {
 	s := newTestServer(t)
 	dependencyID := createTestTicket(t, s, `{"Title":"Unfinished dependency"}`)
-	inProgressID := testColumnID(t, s, "In Progress")
+	reviewID := testColumnID(t, s, "Review")
 
 	createRec := httptest.NewRecorder()
-	createReq := httptest.NewRequest(http.MethodPost, "/api/tickets", strings.NewReader(`{"Title":"Cannot start","ColumnID":`+strconv.FormatInt(inProgressID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/tickets", strings.NewReader(`{"Title":"Cannot review","ColumnID":`+strconv.FormatInt(reviewID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
 	s.withUser(s.createTicket).ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusConflict {
 		t.Fatalf("expected blocked create status 409, got %d: %q", createRec.Code, createRec.Body.String())
@@ -526,14 +526,14 @@ func TestIncomingDependenciesBlockCreateAndCombinedMove(t *testing.T) {
 
 	ticketID := createTestTicket(t, s, `{"Title":"Initially unlinked"}`)
 	moveRec := httptest.NewRecorder()
-	moveReq := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(ticketID, 10), strings.NewReader(`{"Title":"Initially unlinked","Type":"task","ColumnID":`+strconv.FormatInt(inProgressID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
+	moveReq := httptest.NewRequest(http.MethodPut, "/api/tickets/"+strconv.FormatInt(ticketID, 10), strings.NewReader(`{"Title":"Initially unlinked","Type":"task","ColumnID":`+strconv.FormatInt(reviewID, 10)+`,"Links":[`+strconv.FormatInt(dependencyID, 10)+`]}`))
 	s.withUser(s.ticketAction).ServeHTTP(moveRec, moveReq)
 	if moveRec.Code != http.StatusConflict {
 		t.Fatalf("expected combined link and move status 409, got %d: %q", moveRec.Code, moveRec.Body.String())
 	}
-	stored := s.loadTickets(1)
+	stored := mustLoadTickets(t, s, 1)
 	for _, item := range stored {
-		if item.ID == ticketID && (item.ColumnID == inProgressID || len(item.Links) != 0) {
+		if item.ID == ticketID && (item.ColumnID == reviewID || len(item.Links) != 0) {
 			t.Fatalf("blocked update must not partially persist, got %#v", item)
 		}
 	}
@@ -643,7 +643,7 @@ func TestUserManagementValidationAndPasswordChecks(t *testing.T) {
 
 func TestImportMapsColumnsHierarchyDependenciesAndCountsAcceptedTickets(t *testing.T) {
 	s := newTestServer(t)
-	destinationMilestoneID := one(s.db, "select id from milestones where board_id=1 and name='First flight'")["id"].(int64)
+	destinationMilestoneID := mustOne(t, s.db, "select id from milestones where board_id=1 and name='First flight'")["id"].(int64)
 	payload := map[string]any{"state": map[string]any{
 		"columns":    []map[string]any{{"id": 900, "name": "Done"}},
 		"milestones": []map[string]any{{"id": 901, "name": "First flight"}},
@@ -672,7 +672,7 @@ func TestImportMapsColumnsHierarchyDependenciesAndCountsAcceptedTickets(t *testi
 	if result.Imported != 2 {
 		t.Fatalf("expected two accepted tickets, got %d", result.Imported)
 	}
-	tickets := s.loadTickets(1)
+	tickets := mustLoadTickets(t, s, 1)
 	if len(tickets) != 2 {
 		t.Fatalf("expected two stored tickets, got %#v", tickets)
 	}
@@ -703,8 +703,8 @@ func TestImportRejectsDuplicateSourceIDsWithoutPartialWrites(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/import?boardId=1", strings.NewReader(payload))
 	s.withUser(s.importData).ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest || len(s.loadTickets(1)) != 0 {
-		t.Fatalf("duplicate source IDs must fail atomically, status=%d body=%q tickets=%#v", rec.Code, rec.Body.String(), s.loadTickets(1))
+	if rec.Code != http.StatusBadRequest || len(mustLoadTickets(t, s, 1)) != 0 {
+		t.Fatalf("duplicate source IDs must fail atomically, status=%d body=%q tickets=%#v", rec.Code, rec.Body.String(), mustLoadTickets(t, s, 1))
 	}
 }
 

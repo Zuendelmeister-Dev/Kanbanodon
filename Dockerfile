@@ -6,6 +6,10 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/kanbanodon ./cmd/server
 
 FROM alpine:3.20
+ARG VERSION=0.1.7
+LABEL org.opencontainers.image.title="Kanbanodon" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://github.com/Zuendelmeister-Dev/Kanbanodon"
 RUN adduser -D -H -u 10001 kanbanodon
 WORKDIR /app
 COPY --from=build /out/kanbanodon /app/kanbanodon

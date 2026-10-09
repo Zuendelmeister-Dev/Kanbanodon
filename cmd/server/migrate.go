@@ -33,6 +33,9 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 
 // migrate creates and upgrades all application tables.
 func (s *server) migrate() error {
+	if err := s.migrateTaskFeatures(); err != nil {
+		return err
+	}
 	qs := []string{
 		`create table if not exists users(id integer primary key,username text unique not null,name text not null,email text unique not null,password_hash text not null,avatar text not null,is_admin integer not null default 0,must_change_password integer not null default 0,created_at text not null);`,
 		`create table if not exists sessions(token_hash text primary key,user_id integer not null,expires_at text not null);`,
@@ -50,6 +53,9 @@ func (s *server) migrate() error {
 		if _, err := s.db.Exec(q); err != nil {
 			return err
 		}
+	}
+	if err := ensureColumn(s.db, "comments", "author_name", "text not null default ''"); err != nil {
+		return err
 	}
 	if err := ensureColumn(s.db, "users", "username", "text not null default ''"); err != nil {
 		return err
@@ -78,6 +84,15 @@ func (s *server) migrate() error {
 	if err := ensureColumn(s.db, "tickets", "start_date", "text not null default ''"); err != nil {
 		return err
 	}
+	for _, column := range []struct{ name, definition string }{
+		{"extras", "text not null default '{}'"},
+		{"archived_at", "text not null default ''"},
+		{"deleted_at", "text not null default ''"},
+	} {
+		if err := ensureColumn(s.db, "tickets", column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	if err := ensureColumn(s.db, "tickets", "duration", "integer not null default 0"); err != nil {
 		return err
 	}
@@ -103,6 +118,9 @@ func (s *server) migrate() error {
 		return err
 	}
 	if err := ensureColumn(s.db, "tickets", "completed_at", "text not null default ''"); err != nil {
+		return err
+	}
+	if err := s.migrateWorkHistory(); err != nil {
 		return err
 	}
 	_, err := s.cfg.Exec(`create table if not exists config(key text primary key,value text not null,updated_at text not null);`)
@@ -193,6 +211,9 @@ func (s *server) ensureUsernames() error {
 
 // seed performs startup data fixes without creating sample work items.
 func (s *server) seed() error {
+	if err := s.ensureCreatorAvatars(); err != nil {
+		return err
+	}
 	admin, err := s.bootstrapAdmin()
 	if err != nil {
 		return err
@@ -209,19 +230,48 @@ func (s *server) ensureBoardOwners(defaultOwnerID int64) error {
 	return err
 }
 
-// bootstrapAdmin creates or repairs the built-in admin account.
+// bootstrapAdmin initializes only a fresh installation. Existing role changes
+// and deleted bootstrap accounts remain in effect across restarts. The marker
+// lives in config.db so an empty established app database cannot silently regain
+// the publicly known initial password.
 func (s *server) bootstrapAdmin() (user, error) {
+	var initialized string
+	err := s.cfg.QueryRow("select value from config where key='bootstrap_initialized'").Scan(&initialized)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return user{}, err
+	}
+	markInitialized := func() error {
+		if initialized == "1" {
+			return nil
+		}
+		_, err := s.cfg.Exec("insert into config(key,value,updated_at) values('bootstrap_initialized','1',?) on conflict(key) do update set value=excluded.value,updated_at=excluded.updated_at", now())
+		return err
+	}
 	var u user
-	err := scanUser(s.db.QueryRow("select id,username,name,email,avatar,is_admin,must_change_password from users where username=?", defaultAdminUsername), &u)
+	err = scanUser(s.db.QueryRow("select id,username,name,email,avatar,is_admin,must_change_password from users where is_admin=1 order by case when username=? then 0 else 1 end,id limit 1", defaultAdminUsername), &u)
 	if err == nil {
-		_, _ = s.db.Exec("update users set is_admin=1 where id=?", u.ID)
-		u.IsAdmin = true
-		return u, s.grantUserAllBoards(u.ID)
+		if err := markInitialized(); err != nil {
+			return user{}, err
+		}
+		if u.Username == defaultAdminUsername {
+			return u, s.grantUserAllBoards(u.ID)
+		}
+		return u, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return user{}, err
 	}
-	h, _ := hashPassword(defaultAdminPassword)
+	var existingUsers int
+	if err := s.db.QueryRow("select count(*) from users").Scan(&existingUsers); err != nil {
+		return user{}, err
+	}
+	if initialized == "1" || existingUsers > 0 {
+		return user{}, errors.New("initialized installation has no administrator; restore an administrator account from backup")
+	}
+	h, err := hashPassword(defaultAdminPassword)
+	if err != nil {
+		return user{}, err
+	}
 	res, err := s.db.Exec("insert into users(username,name,email,password_hash,avatar,is_admin,must_change_password,created_at) values(?,?,?,?,?,?,?,?)", defaultAdminUsername, "Kanbano Admin", defaultAdminEmail, h, avatar(defaultAdminUsername), 1, 1, now())
 	if err != nil {
 		return user{}, err
@@ -233,5 +283,8 @@ func (s *server) bootstrapAdmin() (user, error) {
 	u.Avatar = avatar(defaultAdminUsername)
 	u.IsAdmin = true
 	u.MustChangePassword = true
+	if err := markInitialized(); err != nil {
+		return user{}, err
+	}
 	return u, s.grantUserAllBoards(u.ID)
 }

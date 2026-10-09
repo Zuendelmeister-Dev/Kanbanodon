@@ -1,0 +1,14 @@
+.boardCompactEpics{margin-top:16px}
+.boardCompactEpics>summary{display:flex;align-items:center;gap:10px;cursor:pointer;color:#ddd6fe;font-weight:700;list-style:disclosure-closed}
+.boardCompactEpics>summary::before{content:'▸';font-size:12px}
+.boardCompactEpics[open]>summary::before{content:'▾'}
+.boardCompactEpics>summary>span{border:1px solid #6d4fa4;border-radius:20px;padding:2px 8px;font-size:12px}
+.boardCompactEpicList{display:grid;gap:8px}
+.boardCompactEpic{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-left:4px solid #a78bfa;border-radius:7px;background:#111723}
+.boardCompactEpic>div:first-child{display:grid;gap:5px;min-width:0}
+.boardCompactEpic strong{font-size:13px;overflow-wrap:anywhere}
+.boardCompactEpic span{font-size:11px;color:var(--muted)}
+.boardCompactEpic .taskActions{flex-wrap:wrap}
+.timelineSprintTasks.selected{border-color:var(--gold);background:#2e2611;color:#fef3c7}
+.timelineSprintRowsStatus{color:var(--muted);font-size:11px}
+.timelineEmptySprint{padding:12px;border:1px solid var(--line);border-radius:7px;background:#111923;color:var(--muted)}

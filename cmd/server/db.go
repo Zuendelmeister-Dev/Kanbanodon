@@ -13,6 +13,10 @@ type rowQuerier interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
+type rowsQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // scanUser maps a database row into the API user model.
 func scanUser(row rowScanner, u *user) error {
 	var admin, mustChange int
@@ -25,13 +29,16 @@ func scanUser(row rowScanner, u *user) error {
 }
 
 // rows runs a query and returns camel-cased column maps for JSON payloads.
-func rows(db *sql.DB, q string, args ...any) []map[string]any {
+func rows(db rowsQuerier, q string, args ...any) ([]map[string]any, error) {
 	rs, err := db.Query(q, args...)
 	if err != nil {
-		return []map[string]any{}
+		return nil, err
 	}
 	defer rs.Close()
-	cols, _ := rs.Columns()
+	cols, err := rs.Columns()
+	if err != nil {
+		return nil, err
+	}
 	out := []map[string]any{}
 	for rs.Next() {
 		vals := make([]any, len(cols))
@@ -39,7 +46,9 @@ func rows(db *sql.DB, q string, args ...any) []map[string]any {
 		for i := range vals {
 			ptr[i] = &vals[i]
 		}
-		_ = rs.Scan(ptr...)
+		if err := rs.Scan(ptr...); err != nil {
+			return nil, err
+		}
 		m := map[string]any{}
 		for i, c := range cols {
 			if b, ok := vals[i].([]byte); ok {
@@ -50,55 +59,71 @@ func rows(db *sql.DB, q string, args ...any) []map[string]any {
 		}
 		out = append(out, m)
 	}
-	return out
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	return out, rs.Close()
 }
 
 // one returns the first row from a query or an empty map.
-func one(db *sql.DB, q string, args ...any) map[string]any {
-	r := rows(db, q, args...)
-	if len(r) == 0 {
-		return map[string]any{}
+func one(db rowsQuerier, q string, args ...any) (map[string]any, error) {
+	r, err := rows(db, q, args...)
+	if err != nil {
+		return nil, err
 	}
-	return r[0]
+	if len(r) == 0 {
+		return map[string]any{}, nil
+	}
+	return r[0], nil
 }
 
 // strs returns the first column of a query as strings.
-func strs(db *sql.DB, q string, args ...any) []string {
+func strs(db rowsQuerier, q string, args ...any) ([]string, error) {
 	rs, err := db.Query(q, args...)
 	if err != nil {
-		return []string{}
+		return nil, err
 	}
 	defer rs.Close()
-	var out []string
+	out := []string{}
 	for rs.Next() {
 		var s string
-		_ = rs.Scan(&s)
+		if err := rs.Scan(&s); err != nil {
+			return nil, err
+		}
 		out = append(out, s)
 	}
-	return out
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	return out, rs.Close()
 }
 
 // ints returns the first column of a query as int64 values.
-func ints(db *sql.DB, q string, args ...any) []int64 {
+func ints(db rowsQuerier, q string, args ...any) ([]int64, error) {
 	rs, err := db.Query(q, args...)
 	if err != nil {
-		return []int64{}
+		return nil, err
 	}
 	defer rs.Close()
-	var out []int64
+	out := []int64{}
 	for rs.Next() {
 		var n int64
-		_ = rs.Scan(&n)
+		if err := rs.Scan(&n); err != nil {
+			return nil, err
+		}
 		out = append(out, n)
 	}
-	return out
+	if err := rs.Err(); err != nil {
+		return nil, err
+	}
+	return out, rs.Close()
 }
 
 // firstCol returns the first workflow column for a board.
-func firstCol(db *sql.DB, boardID int64) int64 {
+func firstCol(db rowQuerier, boardID int64) (int64, error) {
 	var id int64
-	_ = db.QueryRow("select id from columns where board_id=? order by position limit 1", boardID).Scan(&id)
-	return id
+	err := db.QueryRow("select id from columns where board_id=? order by position,id limit 1", boardID).Scan(&id)
+	return id, err
 }
 
 // columnBelongsToBoard checks that a column is scoped to the requested board.
