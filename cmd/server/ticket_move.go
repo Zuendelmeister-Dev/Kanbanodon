@@ -159,6 +159,16 @@ func (s *server) moveTicket(w http.ResponseWriter, r *http.Request, u user, id, 
 		stateReadError(w, err)
 		return
 	}
+	if err := validateEpicCompletion(tx, bid, id); err != nil {
+		writeWorkflowError(w, err)
+		return
+	}
+	if columnChanged {
+		if err := workflowHistory(tx, id, moved.ColumnID, moved.CompletedAt, completedAt, "recorded"); err != nil {
+			stateReadError(w, err)
+			return
+		}
+	}
 	for _, group := range [][]ticket{source, target} {
 		for index, item := range group {
 			if _, err = tx.Exec("update tickets set position=? where id=?", index+1, item.ID); err != nil {

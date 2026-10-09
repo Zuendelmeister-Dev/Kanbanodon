@@ -75,7 +75,7 @@ func (s *server) prepareDemoData(clear, seed bool, at time.Time) (int, error) {
 		return 0, err
 	}
 	if clear {
-		for _, table := range []string{"ticket_repetitions", "notifications", "ticket_activity", "comments", "ticket_links", "ticket_labels", "tickets", "sprint_names", "demo_data_seeds"} {
+		for _, table := range []string{"work_history", "ticket_repetitions", "notifications", "ticket_activity", "comments", "ticket_links", "ticket_labels", "tickets", "sprint_names", "demo_data_seeds"} {
 			if _, err := tx.Exec("delete from " + table); err != nil {
 				return 0, err
 			}
@@ -344,5 +344,14 @@ func insertDemoTicket(tx *sql.Tx, t ticket, stamp string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if t.CompletedAt != "" {
+		if err := recordCompletionHistory(tx, id, "demo"); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }

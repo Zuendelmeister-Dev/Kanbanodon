@@ -10,6 +10,8 @@ Open a card by clicking it or using Tab and Enter. The editor lets you change it
 
 Change the status in the editor or by dragging the card. Tasks can enter “In Progress” while their dependencies are unfinished, so partial work can begin. “Review”, “Done”, and later workflow stages require completed prerequisites. Move the task to “Done” to complete it.
 
+Epics offer “Complete Epic” beside “Edit” in Board, Overview, and Timeline. Every active planned descendant must be in “Done”; unfinished Backlog, archived, and trashed work does not block the Epic. Hover over a disabled completion button to see the unfinished tasks. An empty Epic can be completed deliberately. Use “Reopen Epic” to return it to the first open workflow column before adding or reopening planned work. Completing an Epic does not change its tasks. A workflow needs a column named “Done” for completion.
+
 ## Checklists and filters
 
 Use “Add step” to add checklist items and check off individual steps. Save changes with “Save”. The card shows the number of completed and total steps.
@@ -36,11 +38,15 @@ Moving the original task out of “Done” and completing it again creates anoth
 
 ## Planning and data exchange
 
+The separate “History” sidebar view shows actual completions and is described below.
+
 The "Sprints" panel is available in Board, Overview, and Timeline. In Board, set the first Sprint start date and its length in weeks, then save. Sprint cards appear after a successful save. Changes to the cadence fields are marked as unsaved; the saved cards and their dates remain unchanged until a successful save. Sprint names can be edited directly in Board.
 
 Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint and the next five are shown by default, or the first six before the saved cadence begins. Browsing does not select a Sprint. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
 
-Select a Sprint to filter Board or Overview to its tasks; their Epic headings remain visible. In Timeline, selection fits the Sprint's dates to the available width while keeping all task rows. The selected card is highlighted and marked "Selected". The selection remains active when moving between Board, Overview, and Timeline. Select "All sprints", or the same card again, to clear it. Without a selection, Board and Overview show all tasks and Timeline shows the full date range; the current Sprint is not selected automatically.
+Select a Sprint to filter Board or Overview to its tasks; their matching Epic headings remain visible. Sprint membership is calculated from task dates. An Epic may span several Sprints through its children. In Timeline, selection fits the Sprint's dates to the available width and initially shows only tasks whose planned intervals touch that Sprint, including tasks crossing its boundaries. “Show all tasks” keeps the Sprint's date window while restoring every row; “Only tasks in this sprint” hides unrelated rows again. “Show full timeline” clears the Sprint selection. The selected card is highlighted and marked "Selected". The selection remains active when moving between Board, Overview, and Timeline. Select "All sprints", or the same card again, to clear it. Without a selection, Board and Overview show all tasks and Timeline shows the full date range; the current Sprint is not selected automatically.
+
+Board keeps empty, completed, and filtered-out Epics in the compact “Epics without visible tasks” list below the working grid. They remain editable and can be completed or reopened there. This avoids large empty swimlanes while preserving Epics that still need planning. Overview retains its table for managing work across Epics.
 
 Overview and Timeline are directly available in the sidebar. The simplified Overview shows five main columns; "Show planning columns" displays additional fields. Timeline identifies assumed dates as estimates. Saved time, delays, and completion estimates appear on thin rails below the task bars, keeping task names readable.
 
@@ -61,5 +67,13 @@ For current examples with past, current, and future Sprints, see the separate [c
 “Export” and “Import” in the board menu transfer a board as JSON. Import adds tasks to the selected destination board; importing again creates additional copies. Accounts and access permissions are not transferred, and assignees are reset.
 
 The file includes tasks, checklists, repeat settings, archive and trash status, and comments with timestamps and author names. Imported authors are identified as such and are not associated with accounts that happen to have the same numeric ID in the destination installation. Activity logs and notifications are not part of the board export.
+
+## Actual completion history
+
+“History” in the sidebar shows what actually completed on the current board, newest first, independently of the planning Sprint selection and global planning filters. Filter by Epic, work type, completion date, or title. Each entry shows its actual completion time and the planned due date saved at that completion. Click its title to open the current ticket. “Show older completions” adds more entries to the chart.
+
+Turquoise bars show the elapsed interval from a recorded entry into “In Progress” until completion; Epic bars are purple. A completion marker is used when the actual start is unknown, rather than substituting a planned start date. Red bars show the time after the saved due day until actual completion. Work completed during its due day is on time. Calendar deadlines and date filters use the browser's local day; completion timestamps identify the actual instant.
+
+Completion snapshots preserve titles, Epic relationships, deadlines, and completion times from that moment. Editing a ticket or reopening it does not rewrite previous entries. Completing it again creates another entry. Archived completed work remains visible; trashed work is hidden and permanent deletion removes its history. Old completed tickets retain their saved completion timestamps and are marked “Saved completion”; imported and demo work is identified separately. Old work has no invented start time. Exporting a planning board does not export its historical completion episodes.
 
 Installation, configuration, and architecture are described in the [README](../README.md).

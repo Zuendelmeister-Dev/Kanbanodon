@@ -19,6 +19,7 @@ let sprintCadenceDraft = null;
 let sprintStripPage = null;
 let timelineZoom = 1;
 let timelineEpicFilter = 'all';
+let timelineSprintOnly = true;
 // The same saved Sprint filters Board/Overview and frames the Timeline calendar.
 let timelineFocusSprint = ['board', 'overview', 'timeline'].includes(view) ? initialRoute.sprintNumber || 0 : 0;
 let planningSprintBoardId = initialRoute.boardId || selectedBoardId;
@@ -29,6 +30,8 @@ let dependencyFocused = false;
 let dependencySortMode = 'dependencies';
 let dependencyRenderSnapshot = null;
 let boardDragCleanup = null;
+let historyRenderGeneration = 0;
+let historyCleanup = null;
 const collapsedEpics = new Set();
 let loadGeneration = 0;
 let sessionGeneration = 0;
@@ -66,6 +69,7 @@ function currentSessionGuard() {
 
 function invalidateSessionRequests() {
   clearBoardDragFeedback();
+  clearHistoryView();
   sessionGeneration++;
   loadGeneration++;
   sprintCadenceDraft = null;
@@ -74,6 +78,7 @@ function invalidateSessionRequests() {
   planningSprintBoardId = 0;
   timelineCenterDate = null;
   sprintStripPage = null;
+  timelineSprintOnly = true;
   dependencyFocusTicketId = dependencyFocusBoardId = 0;
   dependencyFocused = false;
   dependencySortMode = 'dependencies';
@@ -114,6 +119,7 @@ function normTicket(t) {
     duration: t.Duration ?? t.duration ?? t.Points ?? t.points ?? 0,
     startDate: t.StartDate ?? t.startDate ?? '',
     dueDate: t.DueDate ?? t.dueDate ?? '',
+    startedAt: t.StartedAt ?? t.startedAt ?? '',
     completedAt: t.CompletedAt ?? t.completedAt ?? '',
     milestoneId: t.MilestoneID ?? t.milestoneId ?? 0,
     assigneeId: t.AssigneeID ?? t.assigneeId ?? 0,
@@ -233,6 +239,7 @@ function applyRoute(route) {
   }
   if (view === 'timeline' && timelineFocusSprint) timelineEpicFilter = 'all';
   timelineCenterDate = null;
+  timelineSprintOnly = true;
   if (route.boardId && route.boardId !== currentBoardId()) {
     return load();
   }
@@ -959,7 +966,64 @@ function taskEditHtml(ticket) {
   const restore = '<button type="button" class="dependencyAction showOtherTasks" data-show-other-tasks>Show other tasks</button>';
   const back = '<button type="button" class="dependencyAction dependenciesBack" data-dependencies-back>Back</button>';
   const dependencies = ticket.type === 'epic' ? '' : dependencyFocused && ids?.has(+ticket.id) ? (selected ? restore + back : focus + restore) : selected ? focus + back : '<button type="button" class="dependencyAction" data-dependencies="' + ticket.id + '" aria-label="Dependencies of ' + escAttr(ticket.title) + '">Dependencies</button>';
-  return '<div class="taskActions">' + selectedLabel + '<button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>' + dependencies + '</div>';
+  return '<div class="taskActions">' + selectedLabel + '<button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>' + dependencies + epicCompletionActionHtml(ticket) + '</div>';
+}
+
+function epicCompletionState(epic) {
+  const done = doneColumn();
+  const completed = !!done && +epic.columnId === +done.id;
+  const target = completed ? state.columns.find(column => +column.id !== +done.id) : done;
+  const unfinished = descendantTickets(epic.id).filter(ticket => !done || +ticket.columnId !== +done.id);
+  let reason = !target ? completed ? 'Add an open workflow column to reopen this Epic.' : 'Add a Done workflow column to complete this Epic.' : '';
+  if (!completed && !reason && unfinished.length) reason = 'Finish these tasks before completing the Epic:\n' + unfinished.map(ticket => ticketRef(ticket) + ' ' + ticket.title).join('\n');
+  if (!completed && !reason) {
+    const blocked = boardMoveBlockedTasks(epic, target.id);
+    if (blocked.length) reason = boardMoveBlockedReason(target.id, blocked);
+  }
+  return {completed, target, unfinished, reason};
+}
+
+function epicCompletionActionHtml(ticket) {
+  if (ticket.type !== 'epic' || isBacklogTicket(ticket) || ticket.deletedAt || ticket.archivedAt) return '';
+  const status = epicCompletionState(ticket);
+  const pending = pendingTicketMutations.get(ticket.id)?.session === sessionGeneration;
+  const title = status.reason || (status.completed ? 'Reopen this Epic before adding or reopening planned tasks.' : 'All planned tasks are done. Backlog tasks do not block completion.');
+  return '<span class="epicCompletionAction" title="' + escAttr(title) + '"><button type="button" class="epicStatusAction" data-epic-status="' + ticket.id + '"' + (status.reason || pending ? ' disabled' : '') + ' aria-label="' + (status.completed ? 'Reopen ' : 'Complete ') + escAttr(ticket.title) + '">' + (pending ? 'Saving…' : status.completed ? 'Reopen Epic' : 'Complete Epic') + '</button></span>';
+}
+
+// Use the same transactional ticket update as the editor, preserving all metadata.
+async function changeEpicCompletion(id) {
+  const ticket = workTickets().find(item => +item.id === +id && item.type === 'epic');
+  if (!ticket || (selectedBoardId && selectedBoardId !== currentBoardId()) || pendingTicketMutations.get(ticket.id)?.session === sessionGeneration) return;
+  const status = epicCompletionState(ticket);
+  if (status.reason) { showEpicStatusError(status.reason); return; }
+  if (!closeDrawer()) return;
+  const boardId = currentBoardId(), sessionCurrent = currentSessionGuard();
+  const isCurrent = () => sessionCurrent() && currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId);
+  const binding = {id: ticket.id, session: sessionGeneration};
+  const controls = $$('[data-epic-status="' + ticket.id + '"]');
+  pendingTicketMutations.set(ticket.id, binding);
+  controls.forEach(button => button.disabled = true);
+  showEpicStatusError('');
+  try {
+    const updated = cloneTicketForEditing(ticket);
+    updated.columnId = status.target.id;
+    await putTicket(updated, isCurrent);
+    if (pendingTicketMutations.get(ticket.id) === binding) pendingTicketMutations.delete(ticket.id);
+    if (isCurrent()) await load();
+  } catch (error) {
+    if (isCurrent()) showEpicStatusError((error.message || 'Epic status could not be changed.').trim());
+  } finally {
+    if (pendingTicketMutations.get(ticket.id) === binding) pendingTicketMutations.delete(ticket.id);
+    if (isCurrent()) controls.forEach(button => button.disabled = false);
+  }
+}
+
+function showEpicStatusError(message) {
+  const feedback = $('#epicStatusFeedback');
+  if (!feedback) return;
+  feedback.textContent = message || '';
+  feedback.classList.toggle('hidden', !message);
 }
 
 function epicToggleHtml(epic, cssClass = 'epicToggle') {
@@ -970,6 +1034,7 @@ function epicToggleHtml(epic, cssClass = 'epicToggle') {
 function wirePlanningActions(root) {
   root.querySelectorAll('[data-dependency-color]').forEach(node => node.style?.setProperty('--dependency-color', node.dataset.dependencyColor));
   root.querySelectorAll('[data-edit-ticket]').forEach(button => button.onclick = event => { event.stopPropagation(); openTicket(+button.dataset.editTicket); });
+  root.querySelectorAll('[data-epic-status]').forEach(button => button.onclick = event => { event.stopPropagation(); changeEpicCompletion(+button.dataset.epicStatus); });
   root.querySelectorAll('[data-dependencies]').forEach(button => button.onclick = event => { event.stopPropagation(); openDependencies(+button.dataset.dependencies); });
   root.querySelectorAll('[data-focus-related]').forEach(button => button.onclick = event => { event.stopPropagation(); toggleDependencyFocus(+button.dataset.focusRelated); });
   root.querySelectorAll('[data-show-other-tasks]').forEach(button => button.onclick = event => { event.stopPropagation(); showOtherTasks(); });
@@ -1012,11 +1077,13 @@ function withDependencySnapshot(renderContent) {
 
 function renderView() {
   clearBoardDragFeedback();
+  clearHistoryView();
+  showEpicStatusError('');
   return withDependencySnapshot(renderActiveView);
 }
 
 function renderActiveView() {
-  $$('#board,#overview,#list,#timeline,#admin,#config,#stash').forEach(x => x.classList.add('hidden'));
+  $$('#board,#overview,#list,#timeline,#history,#admin,#config,#stash').forEach(x => x.classList.add('hidden'));
   $('.composer').classList.toggle('hidden', view !== 'board');
   renderNav();
   if (selectedBoardId && currentBoardId() && selectedBoardId !== currentBoardId()) {
@@ -1029,10 +1096,38 @@ function renderActiveView() {
   if (view === 'overview') renderOverview();
   if (view === 'backlog') renderBacklog();
   if (view === 'timeline') renderTimeline();
+  if (view === 'history') renderHistory();
   if (view === 'admin') renderAdmin();
   if (view === 'config') renderConfig();
   if (view === 'archive' || view === 'trash') renderStash();
   if (typeof renderTaskTools === 'function') renderTaskTools();
+}
+
+function clearHistoryView() {
+  historyRenderGeneration++;
+  historyCleanup?.();
+  historyCleanup = null;
+}
+
+// History is fetched independently so dated completion snapshots never become plans.
+async function renderHistory() {
+  setHeader('History', 'Actual completions, elapsed time, and delays.');
+  const root = $('#history');
+  root.classList.remove('hidden');
+  const renderer = window.KanbanodonHistory;
+  const boardId = currentBoardId(), generation = ++historyRenderGeneration;
+  const sessionCurrent = currentSessionGuard();
+  const isCurrent = () => sessionCurrent() && generation === historyRenderGeneration && view === 'history' && currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId) && root.isConnected !== false;
+  if (!boardId) { root.innerHTML = '<section class="panel"><p>No board is available yet.</p></section>'; return; }
+  if (!renderer) { root.innerHTML = '<section class="panel"><p>Reload the page to load History.</p></section>'; return; }
+  renderer.renderLoading(root);
+  try {
+    const result = await api('/api/history?boardId=' + encodeURIComponent(boardId), {}, isCurrent);
+    if (!isCurrent()) return;
+    historyCleanup = renderer.render(root, {items: result.items || [], onOpenTicket: id => { if (isCurrent()) openTicket(+id); }});
+  } catch (error) {
+    if (isCurrent()) renderer.renderError(root, (error.message || 'History could not be loaded.').trim(), () => { if (isCurrent()) renderView(); });
+  }
 }
 
 // Renders the kanban board with Epic swimlanes.
@@ -1067,7 +1162,7 @@ function sprintPlannerHtml(tickets) {
 function sprintNavigationHtml(tickets, targetView = view) {
   const start = boardSprintStartValue();
   const weeks = boardSprintWeeks();
-  const help = targetView === 'timeline' ? 'Choose a Sprint to focus its dates. All tasks stay in the timeline.' : 'Choose a Sprint to show its tasks.';
+  const help = targetView === 'timeline' ? 'Choose a Sprint to see work planned during its dates. Its row toggle keeps the wider context available.' : 'Choose a Sprint to show its tasks.';
   return '<section class="panel sprintNavigation" data-sprint-view="' + escAttr(targetView) + '"><div class="planningPanelHeader"><div><h2>Sprints</h2><p>' + help + '</p></div></div>' + sprintSelectionHtml(targetView) + '<div class="sprintPreview" data-sprint-mode="readonly">' + sprintPreviewHtml(tickets, start, weeks, startOfDay(new Date()), false, targetView) + '</div></section>';
 }
 
@@ -1372,6 +1467,7 @@ function applyPlanningSprintSelection(number) {
   dependencyFocusTicketId = 0;
   dependencyFocusBoardId = 0;
   timelineFocusSprint = number;
+  timelineSprintOnly = true;
   planningSprintBoardId = currentBoardId();
   dependencyFocused = false;
   timelineZoom = 1;
@@ -1423,13 +1519,42 @@ function wireBoardBacklogPicker() {
 
 // Builds the full swimlane board for the filtered tickets.
 function boardSwimlanes(tickets) {
-  const lanes = boardSwimlaneData(tickets);
+  const allLanes = boardSwimlaneData(tickets);
   const columns = dependencyFocusIds() ? state.columns.filter(column => tickets.some(ticket => ticket.type !== 'epic' && +ticket.columnId === +column.id)) : state.columns;
   const visibleColumns = columns.length ? columns : state.columns;
-  if (!lanes.length) return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + (workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.') + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section><section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
+  const required = dependencyViewIds();
+  const lanes = allLanes.filter(lane => !lane.epic || required?.has(+lane.epic.id) || (lane.items.some(ticket => visibleColumns.some(column => +column.id === +ticket.columnId)) && !boardEpicCompleted(lane.epic)));
+  const compact = boardCompactEpicsHtml(allLanes, lanes);
+  if (!lanes.length) return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + (compact ? 'Epics without visible tasks are listed below. Open an Epic to edit its plan or add work.' : workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.') + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section>' + compact + '<section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
   const colClass = 'cols' + Math.max(1, Math.min(8, visibleColumns.length || 1)) + (lanes.every(lane => !lane.epic) ? ' simpleBoard' : '');
   const counts = visibleColumns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
-  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + visibleColumns.map((c, index) => '<div class="boardLaneColumnHead" data-col="' + c.id + '">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(lane => boardSwimlane(lane, visibleColumns)).join('') + '</section>';
+  return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + visibleColumns.map((c, index) => '<div class="boardLaneColumnHead" data-col="' + c.id + '">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(lane => boardSwimlane(lane, visibleColumns)).join('') + '</section>' + compact;
+}
+
+// Completed Epics move out of the working grid; inconsistent open child work stays visible.
+function boardEpicCompleted(epic) {
+  const done = doneColumn();
+  return !!done && +epic.columnId === +done.id && descendantTickets(epic.id).every(ticket => +ticket.columnId === +done.id);
+}
+
+// Keep empty and filtered-out Epics reachable without allocating an empty swimlane.
+function boardCompactEpicsHtml(allLanes, visibleLanes) {
+  if (dependencyFocusIds()) return '';
+  const visible = new Set(visibleLanes.filter(lane => lane.epic).map(lane => +lane.epic.id));
+  const epics = new Map(allLanes.filter(lane => lane.epic).map(lane => [+lane.epic.id, lane.epic]));
+  filteredWork().filter(ticket => ticket.type === 'epic').forEach(epic => epics.set(+epic.id, epic));
+  const hidden = [...epics.values()].filter(epic => !visible.has(+epic.id)).sort(ticketOrder);
+  if (!hidden.length) return '';
+  const sprint = selectedPlanningSprint();
+  const rows = hidden.map(epic => {
+    const children = descendantTickets(epic.id);
+    const backlog = backlogDescendants(epic.id).filter(ticket => ticket.type !== 'epic').length;
+    const completed = boardEpicCompleted(epic);
+    const reason = completed ? 'Completed Epic' : !children.length ? (backlog ? backlog + ' task' + (backlog === 1 ? '' : 's') + ' in Backlog' : 'No tasks planned yet') : sprint ? 'No visible tasks in ' + sprintName(sprint) : 'No tasks match this view';
+    const count = children.length ? ' · ' + children.length + ' child item' + (children.length === 1 ? '' : 's') : '';
+    return '<div class="boardCompactEpic" data-work-id="' + epic.id + '"><div><strong>' + esc(ticketRef(epic)) + ' · ' + esc(ticketLabel(epic)) + '</strong><span>' + esc(reason + count) + '</span></div>' + taskEditHtml(epic) + '</div>';
+  }).join('');
+  return '<details class="panel boardCompactEpics"><summary>Epics without visible tasks <span>' + hidden.length + '</span></summary><p class="muted">These Epics remain available for planning and review.</p><div class="boardCompactEpicList">' + rows + '</div></details>';
 }
 
 // Groups filtered tickets into visual Epic swimlanes.
@@ -1509,7 +1634,7 @@ function boardRefCompare(first, second) {
 
 // Finds the Done column by name.
 function doneColumn() {
-  return state.columns.find(c => /done/i.test(c.name));
+  return state.columns.find(c => String(c.name || '').trim().toLowerCase() === 'done');
 }
 
 // Resolves dependency ids into ticket objects.
@@ -2153,7 +2278,7 @@ function renderGanttContent(root) {
   timelineFitObservers.get(root)?.disconnect();
   timelineFitObservers.delete(root);
   // Only promoted, scheduled delivery work reaches the timeline.
-  const controls = sprintNavigationHtml(workTickets(), 'timeline') + timelineControlsHtml();
+  let controls = sprintNavigationHtml(workTickets(), 'timeline') + timelineControlsHtml();
   const tasks = buildGanttRows();
   const focusRange = dependencyTimelineRange(tasks) || sprintByNumber(timelineFocusSprint);
   if (!tasks.length && !focusRange) {
@@ -2162,6 +2287,8 @@ function renderGanttContent(root) {
     return;
   }
   tasks.forEach((task, index) => task.row = index);
+  const emptySprintMessage = !tasks.length && timelineSprintRowsFiltered() ? '<p class="timelineEmptySprint" role="status">No work planned in ' + esc(sprintName(selectedPlanningSprint())) + '. Choose another Sprint or Show all tasks for the wider context.</p>' : '';
+  controls += emptySprintMessage;
 
   const taskColumnWidth = root.clientWidth < 900 ? 230 : 320;
   const availableTimelineWidth = Math.max(520, root.clientWidth - taskColumnWidth - 32);
@@ -2273,7 +2400,7 @@ function buildGanttRows() {
   [...visibleEpicMap.values()].sort(ticketOrder).forEach(epic => {
     const descendants = descendantTickets(epic.id);
     const childTasks = descendants.map(t => baseById.get(t.id)).filter(Boolean);
-    const ownTask = (epicHasOwnTimelineConfig(epic) || (!childTasks.length && required?.has(+epic.id))) ? baseById.get(epic.id) : null;
+    const ownTask = (epicHasOwnTimelineConfig(epic) && (!timelineSprintRowsFiltered() || !descendants.length) || (!childTasks.length && required?.has(+epic.id))) ? baseById.get(epic.id) : null;
     if (!ownTask && !childTasks.length) return;
     const groupRows = [ganttEpicAggregate(epic, childTasks, ownTask)];
     const children = timelineDescendants(epic.id, baseById);
@@ -2306,12 +2433,41 @@ function epicHasOwnTimelineConfig(epic) {
 
 // Filters timeline work by the selected Epic.
 function timelineFilteredWork() {
-  const items = planningWork();
+  const items = timelineVisibleWork(planningWork());
   if (dependencyFocusIds()) return items;
   if (timelineEpicFilter === 'all') return items;
   const required = dependencyViewIds();
   const epicId = +timelineEpicFilter;
   return items.filter(t => required?.has(+t.id) || +t.id === epicId || +(topEpicFor(t)?.id || 0) === epicId);
+}
+
+function timelineSprintRowsFiltered() {
+  return view === 'timeline' && timelineSprintOnly && !!selectedPlanningSprint() && !dependencyViewIds();
+}
+
+// Keep only planned intervals touching the Sprint, then restore their Epic context.
+// Delay projections never pull unrelated old work into the selected Sprint.
+function timelineVisibleWork(items) {
+  if (!timelineSprintRowsFiltered()) return items;
+  const sprint = selectedPlanningSprint();
+  const overlaps = ticket => {
+    const base = ganttBase(ticket);
+    return validDate(base.plannedStart) && validDate(base.due) && base.plannedStart < sprint.endExclusive && base.due >= sprint.start;
+  };
+  const active = workTickets();
+  const visible = new Set(items.filter(ticket => ticket.type !== 'epic' && overlaps(ticket)).map(ticket => +ticket.id));
+  items.filter(ticket => ticket.type === 'epic' && epicHasOwnTimelineConfig(ticket) && !descendantTickets(ticket.id).length && overlaps(ticket)).forEach(epic => visible.add(+epic.id));
+  for (const id of [...visible]) {
+    const epic = topEpicFor(parentTicket(id));
+    if (epic) visible.add(+epic.id);
+  }
+  return active.filter(ticket => visible.has(+ticket.id));
+}
+
+function toggleTimelineSprintTasks() {
+  if (!selectedPlanningSprint() || !canLeaveDrawer()) return;
+  timelineSprintOnly = !timelineSprintOnly;
+  renderGantt($('#timeline'));
 }
 
 // Builds timeline filter, zoom, and clear-path controls.
@@ -2320,7 +2476,7 @@ function timelineControlsHtml() {
   if (timelineEpicFilter !== 'all' && !epics.some(t => String(t.id) === String(timelineEpicFilter))) timelineEpicFilter = 'all';
   const options = '<option value="all">All epics</option>' + epics.map(t => '<option value="' + t.id + '"' + (String(timelineEpicFilter) === String(t.id) ? ' selected' : '') + '>' + esc(ticketLabel(t)) + '</option>').join('');
   const focused = sprintByNumber(timelineFocusSprint);
-  const focusHtml = focused ? '<span class="timelineFocusBadge"><b aria-hidden="true">⌖</b>' + esc(sprintName(focused)) + '</span><button id="timelineClearFocus" class="ghost" type="button">Show full timeline</button>' : '';
+  const focusHtml = focused ? '<span class="timelineFocusBadge"><b aria-hidden="true">⌖</b>' + esc(sprintName(focused)) + '</span><button id="timelineSprintTasks" class="timelineSprintTasks' + (timelineSprintOnly ? ' selected' : '') + '" type="button" aria-pressed="' + timelineSprintOnly + '" title="' + (timelineSprintOnly ? 'Show every task while keeping this Sprint\'s dates' : 'Hide rows whose planned dates do not overlap this Sprint') + '">' + (timelineSprintOnly ? 'Show all tasks' : 'Only tasks in this sprint') + '</button><span class="timelineSprintRowsStatus">' + (timelineSprintOnly ? 'Tasks planned in this Sprint' : 'All task rows · Sprint dates') + '</span><button id="timelineClearFocus" class="ghost" type="button">Show full timeline</button>' : '';
   return '<div class="ganttControls"><label>Epic<select id="timelineEpicFilter">' + options + '</select></label><label class="zoomControl">Zoom<input id="timelineZoom" type="range" min="0.65" max="3" step="0.05" value="' + escAttr(String(timelineZoom)) + '"><span>' + Math.round(timelineZoom * 100) + '%</span></label><span class="timelinePanHint">Hold and drag to move</span>' + focusHtml + '</div>';
 }
 
@@ -2341,6 +2497,8 @@ function wireTimelineControls(root) {
   };
   const clearFocus = $('#timelineClearFocus');
   if (clearFocus) clearFocus.onclick = clearPlanningSprint;
+  const sprintTasks = $('#timelineSprintTasks');
+  if (sprintTasks) sprintTasks.onclick = toggleTimelineSprintTasks;
   root.querySelectorAll('.ganttTaskTitle,.ganttSvgTask').forEach(el => {
     const select = () => { const id = +(el.dataset.epicToggle || el.dataset.openTicket); const ticket = parentTicket(id); if (ticket?.type === 'epic') toggleEpic(id); else openTicket(id); };
     el.onclick = select;
@@ -3593,8 +3751,8 @@ async function saveTicket(t) {
 }
 
 // Builds and sends the complete ticket payload without forcing an intermediate refresh.
-async function putTicket(t) {
-  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId || state.columns[0]?.id, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body || '', Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate || '', DueDate: t.dueDate || '', MilestoneID: t.milestoneId || 0, AssigneeID: t.assigneeId || 0, Position: t.position || 0, Labels: t.labels || [], Links: t.links || [], IsBacklog: !!t.isBacklog, Extras: t.extras || {Checklist: [], RepeatDays: 0} }) });
+async function putTicket(t, isCurrent = () => true) {
+  await api('/api/tickets/' + t.id, { method: 'PUT', body: JSON.stringify({ BoardID: t.boardId || currentBoardId(), ColumnID: t.columnId || state.columns[0]?.id, ParentID: t.parentId || 0, Ref: t.ref || '', Title: t.title, Body: t.body || '', Type: t.type, Points: t.points || 0, Duration: t.duration || 0, StartDate: t.startDate || '', DueDate: t.dueDate || '', MilestoneID: t.milestoneId || 0, AssigneeID: t.assigneeId || 0, Position: t.position || 0, Labels: t.labels || [], Links: t.links || [], IsBacklog: !!t.isBacklog, Extras: t.extras || {Checklist: [], RepeatDays: 0} }) }, isCurrent);
 }
 
 // Converts legacy idea notes into a supported delivery type when promoted.

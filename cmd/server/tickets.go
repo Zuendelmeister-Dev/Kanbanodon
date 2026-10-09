@@ -97,6 +97,14 @@ func (s *server) createTicket(w http.ResponseWriter, r *http.Request, u user) {
 		return
 	}
 	id, _ := res.LastInsertId()
+	if err := validateEpicCompletion(tx, bid, id); err != nil {
+		writeWorkflowError(w, err)
+		return
+	}
+	if err := workflowHistory(tx, id, 0, "", t.CompletedAt, "recorded"); err != nil {
+		stateReadError(w, err)
+		return
+	}
 	if err := replaceTicketMeta(tx, id, bid, t.Labels, t.Links); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -213,6 +221,7 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 		}
 		defer tx.Rollback()
 		for _, statement := range []string{
+			"delete from work_history where ticket_id=?",
 			"delete from ticket_labels where ticket_id=?",
 			"delete from ticket_links where from_ticket_id=? or to_ticket_id=?",
 			"delete from comments where ticket_id=?",
@@ -338,7 +347,7 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	// Read completion again inside the writer transaction so concurrent moves
 	// cannot create two next occurrences for the same completion.
-	if err = tx.QueryRow("select completed_at from tickets where id=?", id).Scan(&previous.CompletedAt); err != nil {
+	if err = tx.QueryRow("select column_id,completed_at from tickets where id=?", id).Scan(&previous.ColumnID, &previous.CompletedAt); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -358,6 +367,14 @@ func (s *server) ticketAction(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	if err := saveTaskExtras(tx, id, t.Extras); err != nil {
 		http.Error(w, err.Error(), 500)
+		return
+	}
+	if err := validateEpicCompletion(tx, bid, id); err != nil {
+		writeWorkflowError(w, err)
+		return
+	}
+	if err := workflowHistory(tx, id, previous.ColumnID, previous.CompletedAt, completedAt, "recorded"); err != nil {
+		stateReadError(w, err)
 		return
 	}
 	changes := []string{}
@@ -473,7 +490,7 @@ func blockedDependenciesForLinks(store rowQuerier, boardID int64, links []int64,
 			}
 			return nil, err
 		}
-		if !strings.EqualFold(columnName, "Done") {
+		if !strings.EqualFold(strings.TrimSpace(columnName), "Done") {
 			blocked = append(blocked, "#"+strconv.FormatInt(id, 10)+" "+title)
 		}
 	}
@@ -498,7 +515,7 @@ func completionTimestamp(store rowQuerier, targetColumnID int64, current string)
 	if err := store.QueryRow("select name from columns where id=?", targetColumnID).Scan(&targetName); err != nil {
 		return "", err
 	}
-	if !strings.EqualFold(targetName, "Done") {
+	if !strings.EqualFold(strings.TrimSpace(targetName), "Done") {
 		return "", nil
 	}
 	if current != "" {
@@ -670,6 +687,9 @@ func (s *server) importData(w http.ResponseWriter, r *http.Request, u user) {
 			// Exports deliberately contain no account data, so numeric assignee IDs
 			// cannot be mapped safely between installations.
 			t.AssigneeID = 0
+			if _, parseErr := time.Parse(time.RFC3339Nano, t.CompletedAt); parseErr != nil {
+				t.CompletedAt = ""
+			}
 			t.CompletedAt, err = completionTimestamp(tx, t.ColumnID, t.CompletedAt)
 			if err != nil {
 				http.Error(w, err.Error(), 500)
@@ -732,6 +752,16 @@ func (s *server) importData(w http.ResponseWriter, r *http.Request, u user) {
 		}
 		return
 	}
+	for _, item := range imported {
+		if err := validateEpicCompletion(tx, bid, item.id); err != nil {
+			writeWorkflowError(w, err)
+			return
+		}
+		if err := recordCompletionHistory(tx, item.id, "import"); err != nil {
+			stateReadError(w, err)
+			return
+		}
+	}
 	for _, comment := range p.State.Comments {
 		id := idMap[comment.TicketID]
 		if id == 0 {
@@ -761,7 +791,7 @@ func (s *server) importData(w http.ResponseWriter, r *http.Request, u user) {
 // loadTickets reads tickets and attaches their labels and dependency links.
 func (s *server) loadTickets(boardID int64) ([]ticket, error) {
 	out := []ticket{}
-	rs, err := s.db.Query("select id,board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,completed_at,milestone_id,assignee_id,position,is_backlog,created_at,updated_at,extras,archived_at,deleted_at from tickets where board_id=? order by position,id", boardID)
+	rs, err := s.db.Query("select id,board_id,column_id,parent_id,ref,title,body,type,points,duration,start_date,due_date,started_at,completed_at,milestone_id,assignee_id,position,is_backlog,created_at,updated_at,extras,archived_at,deleted_at from tickets where board_id=? order by position,id", boardID)
 	if err != nil {
 		return nil, err
 	}
@@ -769,7 +799,7 @@ func (s *server) loadTickets(boardID int64) ([]ticket, error) {
 	for rs.Next() {
 		var t ticket
 		var extras string
-		if err := rs.Scan(&t.ID, &t.BoardID, &t.ColumnID, &t.ParentID, &t.Ref, &t.Title, &t.Body, &t.Type, &t.Points, &t.Duration, &t.StartDate, &t.DueDate, &t.CompletedAt, &t.MilestoneID, &t.AssigneeID, &t.Position, &t.IsBacklog, &t.CreatedAt, &t.UpdatedAt, &extras, &t.ArchivedAt, &t.DeletedAt); err != nil {
+		if err := rs.Scan(&t.ID, &t.BoardID, &t.ColumnID, &t.ParentID, &t.Ref, &t.Title, &t.Body, &t.Type, &t.Points, &t.Duration, &t.StartDate, &t.DueDate, &t.StartedAt, &t.CompletedAt, &t.MilestoneID, &t.AssigneeID, &t.Position, &t.IsBacklog, &t.CreatedAt, &t.UpdatedAt, &extras, &t.ArchivedAt, &t.DeletedAt); err != nil {
 			return nil, err
 		}
 		t.Extras = &ticketExtras{Checklist: []checklistItem{}}

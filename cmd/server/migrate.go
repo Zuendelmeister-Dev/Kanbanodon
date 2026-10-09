@@ -120,6 +120,9 @@ func (s *server) migrate() error {
 	if err := ensureColumn(s.db, "tickets", "completed_at", "text not null default ''"); err != nil {
 		return err
 	}
+	if err := s.migrateWorkHistory(); err != nil {
+		return err
+	}
 	_, err := s.cfg.Exec(`create table if not exists config(key text primary key,value text not null,updated_at text not null);`)
 	if err != nil {
 		return err

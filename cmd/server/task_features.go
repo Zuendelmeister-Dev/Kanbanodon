@@ -203,6 +203,9 @@ func (s *server) taskFeatureAction(w http.ResponseWriter, r *http.Request, u use
 	defer tx.Rollback()
 	if action == "restore" {
 		_, err = tx.Exec(query, now(), id)
+		if err == nil {
+			err = validateEpicCompletion(tx, bid, id)
+		}
 	} else {
 		_, err = tx.Exec(query, now(), now(), id)
 	}
@@ -213,7 +216,7 @@ func (s *server) taskFeatureAction(w http.ResponseWriter, r *http.Request, u use
 		err = tx.Commit()
 	}
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		writeWorkflowError(w, err)
 		return
 	}
 	jsonOut(w, map[string]any{"ok": true})

@@ -105,6 +105,11 @@
 .boardDropMarker{position:absolute;left:8px;right:8px;height:4px;border-radius:3px;background:#7de9d4;box-shadow:0 0 0 1px #07111a,0 0 8px #37c7ad88;pointer-events:none;z-index:8}
 .card.boardDragging{opacity:.4}
 .boardDragHint{color:#f4b83f;font-size:11px;font-weight:650}
+.epicCompletionAction{display:inline-flex;max-width:100%}
+.taskActions .epicStatusAction{color:#dcfff6;background:#123b33;border-color:#37c7ad;font-weight:700}
+.taskActions .epicStatusAction:disabled{color:#a6b5b2;background:#182622;border-color:#42534d;opacity:.7}
+.epicStatusAction:focus-visible{outline:2px solid #7de9d4;outline-offset:2px}
+#epicStatusFeedback{padding:12px 14px;border:1px solid #fb7185;border-radius:8px;background:#26131b;color:#ffe4e6;white-space:pre-line}
 .taskEdit{padding:3px 8px;font-size:10px;color:var(--muted);background:transparent}
 .card .taskEdit{margin-top:8px;cursor:pointer}
 .ticketRow .taskEdit{margin-left:8px}

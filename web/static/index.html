@@ -8,7 +8,9 @@
   <link rel="stylesheet" href="/static/admin.css?v=all-board-sharing-20260628">
   <link rel="stylesheet" href="/static/auth.css?v=password-confirm-20260628">
   <link rel="stylesheet" href="/static/dino-creator.css?v=blue-gold-teal-20261008">
-  <link rel="stylesheet" href="/static/task-tools.css?v=tooltip-selection-20261008">
+  <link rel="stylesheet" href="/static/task-tools.css?v=history-epics-20261009">
+  <link rel="stylesheet" href="/static/sprint-visibility.css?v=history-epics-20261009">
+  <link rel="stylesheet" href="/static/history.css?v=history-epics-20261009">
 </head>
 <body>
   <header class="topbar">
@@ -84,6 +86,7 @@
           <button data-view="backlog" class="navButton" type="button">Backlog</button>
           <button data-view="overview" class="navButton" type="button">Overview</button>
           <button data-view="timeline" class="navButton" type="button">Timeline</button>
+          <button data-view="history" class="navButton" type="button">History</button>
         </nav>
         <section class="sideSection sideSectionBottom">
           <div id="accessSectionLabel" class="sideLabel">Access</div>
@@ -100,6 +103,7 @@
             <p id="viewSubtitle" class="muted">Plan and move tickets.</p>
           </div>
         </section>
+        <p id="epicStatusFeedback" class="formError hidden" role="alert"></p>
         <section class="composer">
           <input id="newTitle" placeholder="New ticket">
           <button id="addBtn" type="button">Create task</button>
@@ -122,6 +126,7 @@
         <section id="overview" class="overview hidden"></section>
         <section id="list" class="list hidden"></section>
         <section id="timeline" class="timeline hidden"></section>
+        <section id="history" class="history hidden"></section>
         <section id="admin" class="admin hidden"></section>
         <section id="config" class="config hidden"></section>
         <section id="stash" class="list hidden"></section>
@@ -131,9 +136,10 @@
 
   <aside id="drawer" class="drawer hidden"></aside>
   <script src="/static/dino-creator.js?v=avatars-auto-20261005"></script>
-  <script src="/static/route.js?v=sprint-navigation-20261008"></script>
+  <script src="/static/route.js?v=history-epics-20261009"></script>
   <script src="/static/task-tools.js?v=dependency-usability-csp-20261008"></script>
   <script src="/static/dependency-hover.js?v=board-drag-short-routes-20261008"></script>
-  <script src="/static/app.js?v=tooltip-selection-20261008"></script>
+  <script src="/static/history.js?v=history-epics-20261009"></script>
+  <script src="/static/app.js?v=history-epics-20261009"></script>
 </body>
 </html>

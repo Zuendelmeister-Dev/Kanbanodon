@@ -34,6 +34,7 @@ See [Organizing tasks](docs/task-tools.md) for more detailed instructions. [Dino
 | Backlog | Collect upcoming work and promote individual tasks or a complete Epic to the board |
 | Overview | Review status, assignments, and upcoming dates; filter and sort tasks |
 | Timeline | View scheduled work, dependencies, Epic totals, and delays on a shared timeline |
+| History | Review actual task and Epic completions, recorded work intervals, and late finishes |
 | Board menu | Open Archive, Trash, Sharing, and JSON import/export |
 
 A task can contain a description, checklist, assignee, due date, labels, duration, start date, milestone, parent, and dependencies. Comments support collaboration. Mentions and assignments by other users create notifications inside the application.
@@ -62,17 +63,21 @@ The "Sprints" panel is available in Board, Overview, and Timeline. Configure the
 
 Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default, followed by the next five; before the cadence starts, the panel shows the first six. Browsing cards does not select a Sprint. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
 
-Select a Sprint to show only its tasks in Board or Overview, while keeping their Epic headings. In Timeline, selection fits the Sprint's date range to the available width and keeps all task rows. The selected card is highlighted and marked "Selected"; the selection stays active when switching between these three views. "All sprints", or selecting the same card again, clears the selection. With no Sprint selected, Board and Overview show all tasks and Timeline shows its complete date range. The current Sprint is not selected automatically.
+Select a Sprint to show only its tasks in Board or Overview, while keeping their matching Epic headings. Timeline fits the Sprint's date range and initially shows only planned intervals touching that Sprint, including work crossing its boundaries. “Show all tasks” restores every row while retaining those dates; “Only tasks in this sprint” narrows the rows again. The selected card is highlighted and marked "Selected"; the selection stays active when switching between these three views. "All sprints", or selecting the same card again, clears the selection. With no Sprint selected, Board and Overview show all tasks and Timeline shows its complete date range. The current Sprint is not selected automatically.
+
+Epics may span several Sprints through their tasks. Board moves empty, filtered-out, and completed Epics into the compact “Epics without visible tasks” list, keeping them editable without large empty lanes. “Complete Epic” is available when every active planned descendant is Done; Backlog, archived, and trashed work does not block it. “Reopen Epic” returns it to the first open workflow column before adding or reopening planned work.
 
 A task belongs to the Sprint in which it is planned to finish: its due date, when available, otherwise its start date plus duration. Tasks without a usable date remain unscheduled. Sprint assignment does not calculate team capacity.
 
 Dependency inspection in Board and Overview stays within the selected Sprint. Choose "All sprints" to inspect connections across Sprint boundaries.
 
-### Overview and Timeline
+### Overview, Timeline, and History
 
 Overview and Timeline are directly available in the sidebar. Overview initially shows five main table columns; "Show planning columns" displays the additional fields.
 
 Timeline uses stored durations and dates. When duration is missing, it assumes three days for ordinary tasks and one day for Epics. When the start date is missing, it derives the start from the due date and duration, or from the creation date. The interface explains these assumptions; they are not saved as task dates.
+
+History is a separate sidebar view of actual completions, newest first, with Epic, type, date, and text filters. Each completion preserves its title, Epic, due date, and actual timestamp even after edits or reopening. Recorded In Progress starts produce elapsed work bars; unknown starts produce completion markers. Red bars show late completion past the saved due day. Archived work remains visible; trash is hidden and permanent deletion removes its history. Earlier, imported, and demo completions are identified separately. History episodes are retained in database backups but are not included in planning board exports.
 
 Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Use "Dependencies" beside the task name to inspect its connections. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
 

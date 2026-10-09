@@ -37,7 +37,7 @@ function fakeElement() {
 
 function loadApp(options = {}) {
   const elements = new Map();
-  const navButtons = ['board', 'overview', 'timeline', 'backlog'].map(view => {
+  const navButtons = ['board', 'overview', 'timeline', 'history', 'backlog'].map(view => {
     const button = fakeElement();
     button.dataset.view = view;
     return button;
@@ -54,7 +54,7 @@ function loadApp(options = {}) {
     },
     querySelectorAll(selector) {
       if (selector === '.navButton') return navButtons;
-      if (selector === '#board,#overview,#list,#timeline,#admin,#config,#stash') {
+      if (selector === '#board,#overview,#list,#timeline,#history,#admin,#config,#stash') {
         return selector.split(',').map(id => this.querySelector(id));
       }
       return [];
@@ -72,6 +72,7 @@ function loadApp(options = {}) {
   };
   if (options.creator) window.KanbanodonDinoCreator = require('./dino-creator.js');
   if (options.hover) window.KanbanodonDependencyHover = {...require('./dependency-hover.js'), ...options.hover};
+  if (options.history) window.KanbanodonHistory = options.history;
   if (options.resizeObserver) window.ResizeObserver = options.resizeObserver;
   const context = {
     window,
@@ -96,7 +97,7 @@ function loadApp(options = {}) {
   let source = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
   source = source.replace(/\nload\(\);\s*$/, '\n');
   source += `\nwindow.__appTest = {
-    load, resetClientState, renderView, renderBoard, renderOverview, boardBacklogPickerHtml, wireBoardBacklogPicker, backlogRowHtml, overviewTable,
+    load, resetClientState, renderView, renderBoard, renderOverview, renderHistory, clearHistoryView, changeEpicCompletion, epicCompletionState, epicCompletionActionHtml, boardBacklogPickerHtml, wireBoardBacklogPicker, backlogRowHtml, overviewTable,
     applyRoute, openBacklogView, jumpToSprint, selectedPlanningSprint, selectPlanningSprint, clearPlanningSprint, openTicket, closeDrawer, logout, saveDrawer, deleteTicket,
     addComment, taskDrawerAction, renderComments, renderDependencyOptions, importBoardFile, refreshNotifications,
     renderAdmin,
@@ -116,7 +117,7 @@ function loadApp(options = {}) {
     boardSwimlaneData, boardLaneColumnItems, boardNormalGroupSort, boardCardDepth, wireDnD, boardDropPlacement, moveBoardTicket, overviewRows, overviewGroupedRows, overviewHierarchyDepth, overviewSortValue,
     boardDependencyHtml, dependencyHoverEdges, wireWorkDependencies, wireTimelineDependencies,
     timelineRefParts, timelineDepth, topEpicFor, ganttBase, ganttTask, ganttEpicAggregate,
-    renderGantt, ganttTaskLabel, timelineGeometry,
+    renderGantt, ganttTaskLabel, timelineGeometry, timelineVisibleWork, timelineSprintRowsFiltered, toggleTimelineSprintTasks, timelineControlsHtml, boardSwimlanes,
     ganttDelayText, ganttEstimateText, ganttSvg, ganttSvgTask, ganttSvgBarLabel, ganttSvgLate, ganttSvgEstimate, truncateSvgText, monthLabel, ganttPx,
     ganttCursorAtX, ganttCursorDateLabel, ganttSvgCursor, ganttSvgSprintBands, ganttSvgToday, ganttSvgAxis,
     validDate, fmtIsoDate, addDays, addMonths, dayDiff, startOfDay, parseDate, dateFromCreated,
@@ -2105,6 +2106,7 @@ test('an empty focused Sprint keeps matching timeline header and axis heights wi
   const app=loadApp();const state=stateWithHierarchy();state.tickets=[];app.setState(state);app.selectBoard(1);
   app.applyRoute({view:'timeline',boardId:1,ticketId:0,sprintNumber:1});const root=app.document.querySelector('#timeline');root.clientWidth=1200;app.renderGantt(root);
   assert.match(root.innerHTML,/data-row-height="120" data-row-count="0" data-chart-height="118"/);
+  assert.match(root.innerHTML, /No work planned in Sprint 1/);
   assert.match(root.innerHTML,/<div class="ganttTaskRows"><\/div><div class="ganttTaskFoot">Timeline<\/div>/);
   assert.match(root.innerHTML,/<svg class="ganttSvg"[^>]*height="118"/);
   assert.doesNotMatch(root.innerHTML,/<rect class="ganttSvgRow /);
@@ -2227,7 +2229,7 @@ test('Sprint deep links remain bound to the requested board through loads and st
   assert.ok(planningIds(app).includes(15));
 });
 
-test('Timeline Sprint navigation fits saved date ranges without filtering task rows', () => {
+test('Timeline Sprint navigation fits saved dates and can switch from relevant work to all task rows', () => {
   const app = loadApp(); const state = stateWithSprintAssignments(); app.setState(state); app.selectBoard(1);
   const surface = timelineSurface(app, 720);
   app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
@@ -2236,7 +2238,10 @@ test('Timeline Sprint navigation fits saved date ranges without filtering task r
   app.selectPlanningSprint(1);
   assert.equal(app.getView(), 'timeline');
   assert.equal(app.dependencyViewIds(), null);
-  assert.deepEqual(Array.from(app.buildGanttRows(), row => row.ticket.id), allRows);
+  const firstRows = Array.from(app.buildGanttRows(), row => row.ticket.id);
+  assert.ok(firstRows.length < allRows.length);
+  assert.ok(firstRows.includes(11) && !firstRows.includes(12));
+  assert.match(surface.root.innerHTML, /id="timelineSprintTasks"[^>]*aria-pressed="true"[^>]*>Show all tasks/);
   assert.equal(surface.scroll.dataset.rangeStart, '2026-01-01');
   assert.equal(surface.scroll.dataset.rangeEnd, '2026-01-15');
   // A real innerHTML rerender creates new scroll and SVG nodes for the next Sprint.
@@ -2245,8 +2250,14 @@ test('Timeline Sprint navigation fits saved date ranges without filtering task r
   assert.equal(secondSurface.scroll.dataset.rangeStart, '2026-01-15');
   assert.equal(secondSurface.scroll.dataset.rangeEnd, '2026-01-29');
   assert.match(secondSurface.root.innerHTML, /data-range-start="2026-01-15" data-range-end="2026-01-29"/);
+  const secondRows = Array.from(app.buildGanttRows(), row => row.ticket.id);
+  assert.ok(secondRows.includes(12) && !secondRows.includes(11));
+  assert.equal((surface.root.innerHTML.match(/class="ganttTaskItem/g) || []).length, secondRows.length);
+  app.document.querySelector('#timelineSprintTasks').onclick();
   assert.deepEqual(Array.from(app.buildGanttRows(), row => row.ticket.id), allRows);
-  assert.equal((surface.root.innerHTML.match(/class="ganttTaskItem/g) || []).length, allRows.length);
+  assert.equal(secondSurface.scroll.dataset.rangeStart, '2026-01-15');
+  assert.equal(secondSurface.scroll.dataset.rangeEnd, '2026-01-29');
+  assert.match(secondSurface.root.innerHTML, /id="timelineSprintTasks"[^>]*aria-pressed="false"[^>]*>Only tasks in this sprint/);
   app.clearPlanningSprint();
   assert.equal(app.window.location.hash, '#/timeline/1');
   assert.deepEqual(Array.from(app.buildGanttRows(), row => row.ticket.id), allRows);
@@ -2734,6 +2745,109 @@ test('Overview column sorting takes effect immediately in an open dependency dis
   assert.equal(requests, 0);
 });
 
+test('Board keeps empty, hidden-status and completed Epics in compact editable management instead of empty grids', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  const ticket = {...state.tickets[0], parentId: 0, links: [], labels: []};
+  state.tickets = [
+    {...ticket, id: 40, title: 'Empty <Epic>'},
+    {...ticket, id: 41, title: 'Completed Epic', columnId: 5, completedAt: '2026-01-06'},
+    {...ticket, id: 42, type: 'task', title: 'Finished child', parentId: 41, columnId: 5},
+    {...ticket, id: 43, title: 'Unknown status Epic'},
+    {...ticket, id: 44, type: 'task', title: 'Hidden status child', parentId: 43, columnId: 99},
+    {...ticket, id: 45, title: 'Active Epic'},
+    {...ticket, id: 46, type: 'task', title: 'Active child', parentId: 45},
+  ];
+  app.setState(state); app.selectBoard(1); app.renderBoard();
+  const html = app.document.querySelector('#board').innerHTML;
+  const grid = html.slice(html.indexOf('<section class="boardSwimlanes'), html.indexOf('<details class="panel boardCompactEpics'));
+  assert.match(grid, /data-work-id="45"/);
+  assert.match(grid, /data-work-id="46"/);
+  for (const id of [40, 41, 42, 43, 44]) assert.doesNotMatch(grid, new RegExp('data-work-id="' + id + '"'));
+  assert.match(html, /Epics without visible tasks <span>3<\/span>/);
+  assert.match(html, /Empty &lt;Epic&gt;/);
+  assert.match(html, /No tasks planned yet/);
+  assert.match(html, /Completed Epic · 1 child item/);
+  assert.match(html, /No tasks match this view · 1 child item/);
+  for (const id of [40, 41, 43]) assert.match(html, new RegExp('data-edit-ticket="' + id + '"'));
+  assert.equal(state.tickets[0].parentId, 0, 'compact presentation must not move or archive an Epic');
+});
+
+test('Board retains unfinished work under a Done Epic and excludes unrelated compact management during dependency focus', () => {
+  const app = loadApp({hover: {wire() {}}}); const state = stateWithHierarchy();
+  state.tickets[0].columnId = 5;
+  state.tickets.push({...state.tickets[0], id: 55, title: 'No planned children', columnId: 1});
+  app.setState(state); app.selectBoard(1); app.renderBoard();
+  let html = app.document.querySelector('#board').innerHTML;
+  assert.match(html, /data-work-id="11"/);
+  assert.match(html, /data-work-id="12"/);
+  assert.match(html, /No planned children/);
+  app.openDependencies(12); app.toggleDependencyFocus(12);
+  html = app.document.querySelector('#board').innerHTML;
+  assert.doesNotMatch(html, /boardCompactEpics|data-work-id="55"/);
+  assert.match(html, /data-work-id="12"/);
+});
+
+test('Board explains Sprint-hidden Epics compactly and keeps an empty selected Sprint free of phantom lanes', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1); app.selectPlanningSprint(8);
+  const html = app.document.querySelector('#board').innerHTML;
+  assert.doesNotMatch(html, /<section class="boardSwimlanes /);
+  assert.match(html, /boardCompactEpics/);
+  assert.match(html, /No visible tasks in Sprint 8/);
+  assert.match(html, /data-edit-ticket="10"/);
+  app.document.querySelector('#search').value = 'Empty dated epic'; app.renderBoard();
+  const searched = app.document.querySelector('#board').innerHTML;
+  assert.match(searched, /data-edit-ticket="21"/);
+  assert.doesNotMatch(searched, /data-edit-ticket="10"|data-edit-ticket="22"/);
+});
+
+test('Timeline Sprint rows use overlapping planned dates, retain hierarchy and omit Epics with no matching children', () => {
+  const app = loadApp(); const state = stateWithHierarchy();
+  const seed = {...state.tickets[0], parentId: 0, links: [], labels: [], createdAt: '2025-12-01T00:00:00Z'};
+  state.tickets = [
+    {...seed, id: 50, title: 'Epic in other Sprint', startDate: '2026-01-15', dueDate: '2026-01-28'},
+    {...seed, id: 51, type: 'task', parentId: 50, title: 'Old unfinished work', startDate: '2026-01-01', dueDate: '2026-01-05'},
+    {...seed, id: 60, title: 'Epic spanning Sprints'},
+    {...seed, id: 61, type: 'story', parentId: 60, title: 'Earlier Story', startDate: '2026-01-01', dueDate: '2026-01-03'},
+    {...seed, id: 62, type: 'task', parentId: 61, title: 'Spanning task', startDate: '2026-01-12', dueDate: '2026-01-17'},
+    {...seed, id: 63, type: 'task', parentId: 60, title: 'Task finishing before Sprint', startDate: '2026-01-10', dueDate: '2026-01-14'},
+    {...seed, id: 64, type: 'task', parentId: 60, title: 'Task starting after Sprint', startDate: '2026-01-29', dueDate: '2026-01-30'},
+    {...seed, id: 70, title: 'Standalone dated Epic', startDate: '2026-01-15', dueDate: '2026-01-16'},
+  ];
+  app.setState(state); app.selectBoard(1); app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
+  const saved = JSON.stringify(state.tickets);
+  const all = Array.from(app.buildGanttRows(), task => task.ticket.id).sort((a, b) => a - b);
+  app.selectPlanningSprint(2);
+  let rows = app.buildGanttRows();
+  assert.deepEqual(Array.from(rows, task => task.ticket.id).sort((a, b) => a - b), [60, 62, 70]);
+  assert.equal(rows.find(row => row.ticket.id === 62).depth, 2, 'omitted Story row does not lose the child hierarchy');
+  assert.equal(rows.find(row => row.ticket.id === 60).childCount, 1, 'Epic totals summarize the displayed Sprint work');
+  app.toggleTimelineSprintTasks();
+  assert.deepEqual(Array.from(app.buildGanttRows(), task => task.ticket.id).sort((a, b) => a - b), all);
+  assert.equal(app.selectedPlanningSprint().number, 2, 'showing context does not lose the Sprint focus');
+  app.selectPlanningSprint(3);
+  assert.ok(app.timelineSprintRowsFiltered(), 'choosing a different Sprint starts with the useful rows again');
+  assert.deepEqual(Array.from(app.buildGanttRows(), task => task.ticket.id).sort((a, b) => a - b), [60, 64]);
+  app.clearPlanningSprint();
+  assert.deepEqual(Array.from(app.buildGanttRows(), task => task.ticket.id).sort((a, b) => a - b), all);
+  assert.equal(JSON.stringify(state.tickets), saved, 'Sprint display must never edit saved schedules or Sprint assignments');
+});
+
+test('Timeline Sprint row toggle honors unsaved editor Cancel and dependency focus keeps the full chain', () => {
+  const app = loadApp({hover: {wire() {}}}); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+  app.navButtons.find(button => button.dataset.view === 'timeline').onclick(); app.selectPlanningSprint(2);
+  const before = Array.from(app.buildGanttRows(), task => task.ticket.id);
+  const fields = openEditor(app, 12); fields.dTitle.value = 'Do not discard this plan';
+  app.setConfirm(() => false); app.toggleTimelineSprintTasks();
+  assert.ok(app.timelineSprintRowsFiltered());
+  assert.deepEqual(Array.from(app.buildGanttRows(), task => task.ticket.id), before);
+  assert.equal(app.getEditing().id, 12);
+  assert.equal(fields.dTitle.value, 'Do not discard this plan');
+  app.setConfirm(() => true); app.closeDrawer(); app.openDependencies(12); app.toggleDependencyFocus(12);
+  assert.equal(app.selectedPlanningSprint(), null);
+  assert.deepEqual([...app.dependencyViewIds()].sort((a, b) => a - b), [12, 13]);
+  assert.ok(app.buildGanttRows().some(task => task.ticket.id === 13));
+});
+
 for (const targetView of ['board', 'overview', 'timeline']) {
   test(targetView + ' returns keyboard focus to the sort selector without falling back to the selected card Back button', () => {
     const app = loadApp({hover: {wire() {}}}); app.setState(dependencyOrderState()); app.selectBoard(1);
@@ -2754,3 +2868,112 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     assert.match(app.planningFocusHtml(), /<option value="normal" selected>/);
   });
 }
+
+test('Epic completion checks every active planned descendant and keeps Backlog optional', () => {
+  const app=loadApp(), state=stateWithHierarchy();
+  const epic=state.tickets.find(ticket=>ticket.id===10);
+  state.columns[1].name=' Done ';
+  state.tickets.push(
+    {...state.tickets[2],id:21,parentId:10,title:'Future active task',startDate:'2027-01-01',dueDate:'2027-01-05'},
+    {...state.tickets[2],id:22,parentId:10,title:'Optional Backlog',isBacklog:true},
+    {...state.tickets[2],id:23,parentId:10,title:'Archived task',archivedAt:'2026-01-03'},
+    {...state.tickets[2],id:24,parentId:10,title:'Deleted task',deletedAt:'2026-01-03'}
+  );
+  app.setState(state); app.selectBoard(1);
+  assert.deepEqual(Array.from(app.epicCompletionState(epic).unfinished,ticket=>ticket.id),[11,12,21]);
+  assert.match(app.epicCompletionState(epic).reason,/Future active task/);
+  assert.doesNotMatch(app.epicCompletionState(epic).reason,/Optional Backlog|Archived task|Deleted task/);
+  assert.match(app.epicCompletionActionHtml(epic),/data-epic-status="10" disabled/);
+  for (const id of [11,12,21]) state.tickets.find(ticket=>ticket.id===id).columnId=5;
+  assert.equal(app.epicCompletionState(epic).reason,'');
+  assert.doesNotMatch(app.epicCompletionActionHtml(epic),/ disabled/);
+  epic.columnId=5;
+  assert.match(app.epicCompletionActionHtml(epic),/Reopen Epic/);
+  assert.equal(app.epicCompletionState(epic).target.id,1);
+  state.columns[1].name='Not done yet'; epic.columnId=1;
+  assert.match(app.epicCompletionState(epic).reason,/Add a Done workflow column/);
+});
+
+test('Epic Complete and Reopen use full ticket payloads once and preserve metadata', async () => {
+  const queue=deferredResponseQueue(), app=loadApp({fetch:queue.fetch}), state=stateWithHierarchy();
+  const epic=state.tickets.find(ticket=>ticket.id===10);
+  Object.assign(epic,{body:'Keep description',dueDate:'2026-01-12',startDate:'2026-01-02',duration:10,assigneeId:3,labels:['launch'],extras:{Checklist:[{Text:'Check gates',Done:true}],RepeatDays:0}});
+  state.tickets.filter(ticket=>[11,12].includes(ticket.id)).forEach(ticket=>ticket.columnId=5);
+  app.setState(state); app.selectBoard(1);
+  const before=JSON.stringify(state.tickets);
+  const completing=app.changeEpicCompletion(10);
+  await app.changeEpicCompletion(10);
+  assert.equal(queue.pending.length,1,'double activation must send only one status mutation');
+  assert.equal(queue.pending[0].url,'/api/tickets/10');
+  assert.equal(queue.pending[0].options.method,'PUT');
+  const payload=JSON.parse(queue.pending[0].options.body);
+  assert.equal(payload.ColumnID,5);
+  for (const [field,value] of Object.entries({Ref:'10',Body:epic.body,StartDate:epic.startDate,DueDate:epic.dueDate,Duration:10,AssigneeID:3,Position:1,Labels:['launch'],Extras:epic.extras})) assert.deepEqual(payload[field],value);
+  assert.equal(JSON.stringify(state.tickets),before,'loaded state must not change before the server confirms');
+  queue.respond(0,{});
+  await new Promise(resolve=>setImmediate(resolve));
+  const completed=JSON.parse(JSON.stringify(state));
+  Object.assign(completed.tickets.find(ticket=>ticket.id===10),{columnId:5,completedAt:'2026-01-12T11:15:00Z'});
+  queue.respond(1,completed); await completing;
+  const action=app.epicCompletionActionHtml(app.getState().tickets.find(ticket=>ticket.id===10));
+  assert.match(action,/Reopen Epic/); assert.doesNotMatch(action,/Saving| disabled/);
+  const reopening=app.changeEpicCompletion(10);
+  assert.equal(JSON.parse(queue.pending[2].options.body).ColumnID,1);
+  queue.respond(2,{}); await new Promise(resolve=>setImmediate(resolve));
+  const reopened=JSON.parse(JSON.stringify(completed));
+  Object.assign(reopened.tickets.find(ticket=>ticket.id===10),{columnId:1,completedAt:''});
+  queue.respond(3,reopened); await reopening;
+  assert.match(app.epicCompletionActionHtml(app.getState().tickets.find(ticket=>ticket.id===10)),/Complete Epic/);
+});
+
+test('blocked Epic completion and discard cancellation send no status update', async () => {
+  const queue=deferredResponseQueue(), app=loadApp({fetch:queue.fetch}), state=stateWithHierarchy();
+  app.setState(state); app.selectBoard(1);
+  await app.changeEpicCompletion(10);
+  assert.equal(queue.pending.length,0);
+  assert.match(app.elements.get('#epicStatusFeedback').textContent,/Finish these tasks/);
+  state.tickets.filter(ticket=>[11,12].includes(ticket.id)).forEach(ticket=>ticket.columnId=5);
+  app.setDraft(state.tickets.find(ticket=>ticket.id===12),'unsaved draft'); app.setConfirm(()=>false);
+  await app.changeEpicCompletion(10);
+  assert.equal(queue.pending.length,0);
+  assert.equal(app.getEditing().id,12);
+});
+
+test('late Epic status responses cannot reload or report errors over another board', async () => {
+  const queue=deferredResponseQueue(), app=loadApp({fetch:queue.fetch}), state=stateWithHierarchy();
+  state.tickets.filter(ticket=>[11,12].includes(ticket.id)).forEach(ticket=>ticket.columnId=5);
+  app.setState(state); app.selectBoard(1);
+  const completing=app.changeEpicCompletion(10);
+  app.selectBoard(2);
+  queue.respond(0,'Epic now has unfinished work',409); await completing;
+  assert.equal(queue.pending.length,1);
+  assert.equal(app.elements.get('#epicStatusFeedback').textContent,'');
+});
+
+test('History navigation loads its own board endpoint and ignores obsolete responses', async () => {
+  const queue=deferredResponseQueue(), renders=[], failures=[], history={
+    renderLoading:root=>{root.innerHTML='Loading history';},
+    render:(root,options)=>{renders.push({root,options});return ()=>{renders.at(-1).cleaned=true;};},
+    renderError:(root,message,retry)=>{failures.push({root,message,retry});},
+  };
+  const app=loadApp({fetch:queue.fetch,history}); app.setState(stateWithHierarchy()); app.selectBoard(1);
+  app.navButtons.find(button=>button.dataset.view==='history').onclick();
+  assert.equal(queue.pending[0].url,'/api/history?boardId=1');
+  assert.equal(app.window.location.hash,'#/history/1');
+  assert.equal(app.elements.get('#board').classList.contains('hidden'),true);
+  assert.equal(app.elements.get('#history').classList.contains('hidden'),false);
+  const firstItem={ticketId:13,title:'Completed earlier',completedAt:'2026-01-03T08:00:00Z'};
+  queue.respond(0,{items:[firstItem]}); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(renders.length,1); assert.deepEqual(JSON.parse(JSON.stringify(renders[0].options.items)),[firstItem]);
+  renders[0].options.onOpenTicket(13); assert.equal(app.getEditing().id,13);
+  app.closeDrawer();
+  const obsolete=app.renderHistory();
+  app.navButtons.find(button=>button.dataset.view==='board').onclick();
+  assert.equal(renders[0].cleaned,true);
+  queue.respond(1,{items:[{ticketId:12,title:'Obsolete'}]}); await obsolete;
+  assert.equal(renders.length,1); assert.equal(failures.length,0);
+  const next=app.navButtons.find(button=>button.dataset.view==='history'); next.onclick();
+  app.selectBoard(2);
+  queue.respond(2,'Not allowed',403); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(failures.length,0,'late errors from an old board must not cover the current view');
+});
