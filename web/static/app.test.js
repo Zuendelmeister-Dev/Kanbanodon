@@ -55,7 +55,7 @@ function loadApp(options = {}) {
     querySelectorAll(selector) {
       if (selector === '.navButton') return navButtons;
       if (selector === '#board,#overview,#list,#timeline,#history,#admin,#config,#stash') {
-        return selector.split(',').map(id => this.querySelector(id));
+        return selector.split(',').map(id => document.querySelector(id));
       }
       return [];
     },
@@ -125,7 +125,7 @@ function loadApp(options = {}) {
     boardSprintStartValue, boardSprintWeeks, validSprintWeeks, defaultSprintName, customSprintName, sprintRange, sprintByNumber, sprintWindow, sprintForDate, ticketPlannedFinish, ticketSprint,
     calculatedSprints, sprintName, sprintPlannerHtml, sprintNavigationHtml, wireSprintNavigation, sprintPreviewHtml, sprintPreviewCardHtml, sprintStripFirstNumber, pageSprintStrip, shortRange,
     wireSprintPlanner, wireSprintCards, saveSprintName, sprintCadenceDirty, currentSessionGuard,
-    wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
+    wireBoardPan, wireTimelinePan, timelineScrollForDate, timelineDateAtScrollCenter,
     fmtDate, shortDate, card, avatar, esc, escAttr,
     setState(value) { state = value; },
     setOverviewSort(value) { overviewSort = value; },
@@ -2549,6 +2549,36 @@ function dependencyOrderState() {
   return state;
 }
 
+function dependencyStageBoardState() {
+  const state = dependencyOrderState();
+  state.columns = [{id:1,name:'To Do'}, {id:2,name:'Ready'}, {id:3,name:'In Progress'}, {id:4,name:'Review'}, {id:5,name:'Done'}];
+  const statuses = new Map([[90,5],[80,3],[75,2],[70,1],[60,1]]);
+  state.tickets.forEach(ticket => { ticket.columnId = statuses.get(ticket.id) || 1; });
+  state.tickets.find(ticket => ticket.id === 90).completedAt = '2026-01-03T12:00:00Z';
+  return state;
+}
+
+function boardCardIds(html) {
+  return [...html.matchAll(/class="card[^>]+data-work-id="(\d+)"/g)].map(match => +match[1]);
+}
+
+test('Board dependencies retain workflow columns and every ticket in its current status', () => {
+  const app = loadApp({hover: {wire() {}}}); const state = dependencyStageBoardState();
+  app.setState(state); app.selectBoard(1); app.renderBoard();
+  const root = app.document.querySelector('#board'); const stored = JSON.stringify(state);
+  for (const action of [() => app.openDependencies(70), () => app.toggleDependencyFocus(70), () => app.showOtherTasks(), () => app.closeDependencies()]) {
+    action();
+    assert.doesNotMatch(root.innerHTML, /boardDependencyStages|data-dependency-stage|boardDependencyContext/);
+    for (const column of state.columns) assert.ok(root.innerHTML.includes('data-col="' + column.id + '">' + column.name));
+    for (const ticket of state.tickets.filter(ticket => [90,80,75,70,60].includes(ticket.id))) {
+      const start = root.innerHTML.indexOf('data-work-id="' + ticket.id + '"'); assert.ok(start > 0);
+      const prefix = root.innerHTML.slice(0, start);
+      assert.equal(+[...prefix.matchAll(/class="drop boardLaneDrop"[^>]*data-col="(\d+)"/g)].at(-1)[1], ticket.columnId);
+    }
+    assert.equal(JSON.stringify(state), stored);
+  }
+});
+
 function visibleDependencyOrder(app, targetView, relatedIds) {
   if (targetView === 'board') {
     return [...app.document.querySelector('#board').innerHTML.matchAll(/class="card[^>]+data-work-id="(\d+)"/g)]
@@ -2706,12 +2736,12 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     });
     root.scrollLeft = 160;
     const selector = targetView === 'timeline' ? '.ganttTaskItem[data-timeline-id="70"]' : '[data-work-id="70"]';
-    root.querySelector = query => query === selector ? selected : query === '.ganttChart' ? chart : originalQuery(query);
+    root.querySelector = query => query === selector ? selected : query === '.ganttChart' ? chart : query === '[data-dependency-stages]' && markup.includes('data-dependency-stages') ? fakeElement() : originalQuery(query);
     const before = selected.getBoundingClientRect().top;
     for (const transition of [() => app.openDependencies(70), () => app.setDependencySort('normal'), () => app.setDependencySort('dependencies'), () => app.toggleDependencyFocus(70), () => app.showOtherTasks(), () => app.closeDependencies()]) {
       transition();
       assert.equal(selected.getBoundingClientRect().top, before, 'replacing and reordering the rows retains the clicked task position');
-      assert.equal(root.scrollLeft, 160, 'horizontal workspace position remains unchanged');
+      assert.equal(root.scrollLeft, 160, 'all workspaces keep their horizontal position');
     }
     assert.equal(focusing.length, 6);
     assert.ok(focusing.every(options => options.preventScroll === true), 'keyboard focus must not undo the retained scroll position');
@@ -3092,4 +3122,27 @@ test('History navigation loads its own board endpoint and ignores obsolete respo
   app.selectBoard(2);
   queue.respond(2,'Not allowed',403); await new Promise(resolve=>setImmediate(resolve));
   assert.equal(failures.length,0,'late errors from an old board must not cover the current view');
+});
+
+test('Board pans its background while preserving card drags, controls and cancellation', () => {
+  const app=loadApp(), root=fakeElement(); root.scrollLeft=100;
+  let listeners=0, click; root.addEventListener=(name,fn)=>{listeners++;click=fn;};
+  const target={closest:selector=>selector==='.boardSwimlanes'?{}:null};
+  app.wireBoardPan(root);app.wireBoardPan(root);assert.equal(listeners,1);
+  root.onpointerdown({button:0,pointerId:1,clientX:400,target});
+  root.onpointermove({pointerId:2,clientX:200,preventDefault(){throw Error('other pointer');}});
+  assert.equal(root.scrollLeft,100);
+  root.onpointermove({pointerId:1,clientX:200,preventDefault(){}});
+  assert.equal(root.scrollLeft,300);assert.equal(root.classList.contains('isBoardPanning'),true);
+  root.onpointerup({pointerId:1,type:'pointerup'});assert.equal(root.classList.contains('isBoardPanning'),false);
+  let suppressed=false;click({preventDefault(){suppressed=true;},stopPropagation(){}});assert.equal(suppressed,true);
+  for(const event of [{button:2,target},{button:0,pointerType:'touch',target},{button:0,target:{closest:()=>({})}}]) {
+    root.onpointerdown({...event,pointerId:1,clientX:400});
+    root.onpointermove({pointerId:1,clientX:100,preventDefault(){throw Error('native interaction');}});
+    assert.equal(root.scrollLeft,300);
+  }
+  root.onpointerdown({button:0,pointerId:1,clientX:400,target});
+  root.onpointercancel({pointerId:1,type:'pointercancel'});
+  root.onpointermove({pointerId:1,clientX:100,preventDefault(){throw Error('cancelled');}});
+  assert.equal(root.scrollLeft,300);
 });

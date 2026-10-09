@@ -47,6 +47,8 @@ The Board keeps an Epic and its tasks together while each task moves through its
 
 Drag Board cards to reorder them within a column or insert them at a chosen position in another column. A line marks the insertion point, and the target column is highlighted. For example, drag the second To Do card before the third Done card to change both its status and position. The manual order is saved within its Epic lane. Use "Normal order" to drag when dependencies are open; "Dependency order" follows the chain instead.
 
+Hold the left mouse button on a free area of the Board and drag left or right to reach offscreen status columns, including Done, without reaching the bottom scrollbar. In Dependency order you can also pan from a card; buttons remain clickable. In Normal order, dragging a card moves the ticket, while dragging the background moves the Board. Workflow columns stay in place when dependencies or Focus tasks are opened; numbers and colors indicate dependency order, not workflow status.
+
 "Duplicate" creates a copy with a fresh work state. Archive and Trash remove tasks from active views and allow restoration. Recurring tasks create their successor when completed.
 
 <details>
@@ -153,6 +155,8 @@ An administrator password reset signs the affected account out on all devices. C
 ![Administrator user management with account creation, board access, roles, and password reset controls](docs/screenshots/user-management.png)
 
 ## Installation and operation
+
+Current Docker Hub release preparation: **0.1.7**. See [the release guide](docs/releases/0.1.7.md) for image installation and publishing commands.
 
 ### Docker Compose
 

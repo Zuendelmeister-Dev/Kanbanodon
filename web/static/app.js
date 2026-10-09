@@ -953,7 +953,7 @@ function planningFocusHtml() {
   }).join('');
   const selected = parentTicket(dependencyFocusTicketId);
   const normalOrder = view === 'overview' ? 'Table column order' : view === 'timeline' ? 'Epic hierarchy and schedule' : 'Manual order within each status';
-  const orderDescription = dependencySortMode === 'dependencies' ? 'Tasks follow dependency order' : normalOrder;
+  const orderDescription = dependencySortMode === 'dependencies' ? (view === 'board' ? 'Status columns stay in place · Tasks within each column follow dependency order' : 'Tasks follow dependency order') : normalOrder;
   const sorting = '<label class="dependencySortControl">Sort tasks<select data-dependency-sort aria-label="Sort tasks"><option value="dependencies"' + (dependencySortMode === 'dependencies' ? ' selected' : '') + '>Dependency order</option><option value="normal"' + (dependencySortMode === 'normal' ? ' selected' : '') + '>Normal order</option></select></label>';
   const dragHint = view === 'board' && dependencySortMode === 'dependencies' ? '<small class="boardDragHint">Choose Normal order to drag cards.</small>' : '';
   return '<div class="dependencyFocusBar" role="region" aria-label="Dependency view"><div><strong>Dependencies of ' + esc(ticketRef(selected)) + ' · ' + esc(ticketLabel(selected)) + '</strong><span>' + (dependencyFocused ? 'Connected tasks only' : 'Unrelated tasks are dimmed') + ' · ' + orderDescription + '</span>' + dragHint + '</div><div class="dependencyFocusActions">' + sorting + '<button type="button" class="dependenciesBack" data-dependencies-back>Back to normal view</button></div></div><div class="dependencyGuide"><div class="dependencyStageKeys" aria-label="Dependency stages from start to end">' + keys + '</div><small>Numbers show dependency order · Arrows point to dependent tasks</small></div>';
@@ -1147,6 +1147,7 @@ function renderBoard() {
   wireSprintPlanner();
   wireBoardBacklogPicker();
   wireDnD();
+  wireBoardPan(root);
   wirePlanningActions(root);
   wireWorkDependencies(root, tickets);
 }
@@ -1522,8 +1523,13 @@ function wireBoardBacklogPicker() {
 
 // Builds the full swimlane board for the filtered tickets.
 function boardSwimlanes(tickets) {
+  return boardWorkflowSwimlanes(tickets);
+}
+
+// Normal order always retains the original workflow columns and drag targets.
+function boardWorkflowSwimlanes(tickets) {
   const allLanes = boardSwimlaneData(tickets);
-  const columns = dependencyFocusIds() ? state.columns.filter(column => tickets.some(ticket => ticket.type !== 'epic' && +ticket.columnId === +column.id)) : state.columns;
+  const columns = state.columns;
   const visibleColumns = columns.length ? columns : state.columns;
   const required = dependencyViewIds();
   const lanes = allLanes.filter(lane => !lane.epic || required?.has(+lane.epic.id) || (lane.items.some(ticket => visibleColumns.some(column => +column.id === +ticket.columnId)) && !boardEpicCompleted(lane.epic)));
@@ -2541,6 +2547,49 @@ function wireTimelineDependencies(root, tasks) {
     labelsById: Object.fromEntries(tasks.map(task => [task.ticket.id, task.ticket.title])),
     edges: dependencyHoverEdges(tasks.map(task => task.ticket)),
   });
+}
+
+// Pan the background while preserving card drags and interactive controls.
+const boardPanRoots = new WeakSet();
+function wireBoardPan(root) {
+  if (boardPanRoots.has(root)) return;
+  boardPanRoots.add(root);
+  let gesture = null, suppressClick = false;
+  root.onpointerdown = event => {
+    suppressClick = false;
+    if (event.button !== 0 || event.pointerType === 'touch' || !event.target.closest?.('.boardSwimlanes') || event.target.closest?.('button,input,select,textarea,a,[draggable="true"]')) return;
+    gesture = {id: event.pointerId, x: event.clientX, left: root.scrollLeft, moved: false};
+  };
+  root.onpointermove = event => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    const delta = event.clientX - gesture.x;
+    if (!gesture.moved && Math.abs(delta) <= 4) return;
+    if (!gesture.moved) {
+      gesture.moved = true;
+      root.classList.add('isBoardPanning');
+      try { root.setPointerCapture?.(gesture.id); } catch (_) {}
+    }
+    event.preventDefault();
+    root.scrollLeft = gesture.left - delta;
+  };
+  const finish = event => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    const id = gesture.id;
+    suppressClick = gesture.moved && event.type !== 'pointercancel';
+    gesture = null;
+    root.classList.remove('isBoardPanning');
+    if (root.hasPointerCapture?.(id)) root.releasePointerCapture(id);
+  };
+  root.onpointerup = finish;
+  root.onpointercancel = finish;
+  root.onlostpointercapture = finish;
+  root.onpointerleave = event => { if (!gesture?.moved) finish(event); };
+  root.addEventListener('click', event => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 }
 
 // Enables mouse and pen panning while preserving regular task clicks.
