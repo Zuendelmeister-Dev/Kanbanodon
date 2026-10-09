@@ -86,8 +86,10 @@
 .dependenciesBack,.taskActions .dependenciesBack{color:#fff6d5;background:#49390e;border-color:#f4b83f;font-weight:750}
 .dependenciesBack:hover,.taskActions .dependenciesBack:hover{background:#614c12;border-color:#ffe099}
 .dependenciesBack:focus-visible{outline:2px solid #ffe099;outline-offset:3px}
-.card.dependencyHoverSelected,.ganttTaskItem.dependencyHoverSelected,.boardLaneEpic.dependencyHoverSelected,.ticketRow.dependencyHoverSelected{outline:4px solid var(--dependency-color);outline-offset:-4px;box-shadow:0 0 0 2px #e5f1ff55}
-.ganttSvgTask.dependencyHoverSelected .ganttSvgBar{stroke:var(--dependency-color);stroke-width:5}
+.card.dependencyHoverSelected,.ganttTaskItem.dependencyHoverSelected,.boardLaneEpic.dependencyHoverSelected,.ticketRow.dependencyHoverSelected{outline:3px solid #f8fafc;outline-offset:2px;box-shadow:inset 0 0 0 2px var(--dependency-color),0 0 0 2px #07111a}
+.ticketRow.dependencyHoverSelected{position:relative;z-index:1}
+.ganttSvgTask.dependencyHoverSelected .ganttSvgBar{stroke:var(--dependency-color);stroke-width:5;filter:drop-shadow(0 0 2px #f8fafc) drop-shadow(0 0 1px #f8fafc)}
+.taskActions .dependencySelectedBadge{display:inline-flex;align-items:center;flex-shrink:0;padding:3px 6px;border:1px solid #f8fafc;border-radius:5px;color:#07111a;background:#f8fafc;font-size:10px;font-weight:850;line-height:1.2;white-space:nowrap}
 @media(max-width:620px){.dependencyFocusBar{align-items:flex-start;flex-direction:column}.dependencyFocusBar button{align-self:flex-start}}
 .card{position:relative}
 .boardLaneDrop{position:relative;height:100%}
@@ -97,7 +99,9 @@
 .boardLaneCell.boardDropBlocked{outline:2px solid #fb7185;outline-offset:-2px;background:#fb71851c}
 .boardLaneDrop.boardDropBlocked{background:#fb71850d;cursor:not-allowed}
 .boardLaneColumnHead.boardDropBlocked{color:#ffe4e6;background:#57202b;box-shadow:inset 0 -3px #fb7185}
-.boardDropBlockedTooltip{position:fixed;z-index:80;width:min(420px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:12px 14px;border:1px solid #fb7185;border-radius:8px;background:#26131b;color:#ffe4e6;font-size:12px;line-height:1.5;white-space:pre-line;box-shadow:0 8px 24px #0009;pointer-events:none}
+.boardDropBlockedTooltip{position:fixed;inset:auto;margin:0;z-index:2147483000;isolation:isolate;width:min(420px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:12px 14px;border:1px solid #fb7185;border-radius:8px;background:#26131b;color:#ffe4e6;opacity:1;filter:none;backdrop-filter:none;font-size:12px;line-height:1.5;white-space:pre-line;box-shadow:0 8px 24px #0009;pointer-events:none}
+.boardNativeDragImage{position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none}
+.boardDragPreview{position:fixed;z-index:70;width:min(280px,calc(100vw - 24px));padding:6px 10px;border:1px solid #7de9d4;border-radius:6px;background:#10231e;color:#dcfff6;font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 4px 14px #0008;pointer-events:none}
 .boardDropMarker{position:absolute;left:8px;right:8px;height:4px;border-radius:3px;background:#7de9d4;box-shadow:0 0 0 1px #07111a,0 0 8px #37c7ad88;pointer-events:none;z-index:8}
 .card.boardDragging{opacity:.4}
 .boardDragHint{color:#f4b83f;font-size:11px;font-weight:650}

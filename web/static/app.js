@@ -28,6 +28,7 @@ let dependencyFocusBoardId = 0;
 let dependencyFocused = false;
 let dependencySortMode = 'dependencies';
 let dependencyRenderSnapshot = null;
+let boardDragCleanup = null;
 const collapsedEpics = new Set();
 let loadGeneration = 0;
 let sessionGeneration = 0;
@@ -64,6 +65,7 @@ function currentSessionGuard() {
 }
 
 function invalidateSessionRequests() {
+  clearBoardDragFeedback();
   sessionGeneration++;
   loadGeneration++;
   sprintCadenceDraft = null;
@@ -952,11 +954,12 @@ function planningFocusHtml() {
 function taskEditHtml(ticket) {
   const ids = dependencyViewIds();
   const selected = ids && +ticket.id === dependencyFocusTicketId;
+  const selectedLabel = selected ? '<span class="dependencySelectedBadge" data-selected-dependency="' + ticket.id + '" title="Selected dependency task ' + escAttr(ticketRef(ticket)) + '" aria-label="Selected dependency task ' + escAttr(ticketRef(ticket)) + '">Selected</span>' : '';
   const focus = '<button type="button" class="dependencyAction" data-focus-related="' + ticket.id + '" aria-label="Focus tasks connected to ' + escAttr(ticket.title) + '">Focus tasks</button>';
   const restore = '<button type="button" class="dependencyAction showOtherTasks" data-show-other-tasks>Show other tasks</button>';
   const back = '<button type="button" class="dependencyAction dependenciesBack" data-dependencies-back>Back</button>';
   const dependencies = ticket.type === 'epic' ? '' : dependencyFocused && ids?.has(+ticket.id) ? (selected ? restore + back : focus + restore) : selected ? focus + back : '<button type="button" class="dependencyAction" data-dependencies="' + ticket.id + '" aria-label="Dependencies of ' + escAttr(ticket.title) + '">Dependencies</button>';
-  return '<div class="taskActions"><button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>' + dependencies + '</div>';
+  return '<div class="taskActions">' + selectedLabel + '<button type="button" class="taskEdit" data-edit-ticket="' + ticket.id + '" aria-label="Edit ' + escAttr(ticket.title) + '">Edit</button>' + dependencies + '</div>';
 }
 
 function epicToggleHtml(epic, cssClass = 'epicToggle') {
@@ -1008,6 +1011,7 @@ function withDependencySnapshot(renderContent) {
 }
 
 function renderView() {
+  clearBoardDragFeedback();
   return withDependencySnapshot(renderActiveView);
 }
 
@@ -1640,11 +1644,20 @@ async function moveBoardTicket(ticket, columnId, placement) {
   }
 }
 
+// Remove body-level drag feedback before replacing the board or ending a session.
+function clearBoardDragFeedback() {
+  boardDragCleanup?.();
+  boardDragCleanup = null;
+}
+
 // Attaches board card drag-and-drop, insertion preview and card click handlers.
 function wireDnD() {
+  clearBoardDragFeedback();
   const boardId = currentBoardId();
   const isCurrentBoard = () => view === 'board' && currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId);
   let draggedId = 0;
+  let dragPreview = null;
+  let dragImage = null;
   let marker = null;
   let tooltip = null;
   let blockedDrop = null;
@@ -1652,6 +1665,17 @@ function wireDnD() {
   const blockedNodes = new Map();
   let suppressedClickId = 0;
   let suppressUntil = 0;
+  const clearDragPreview = () => {
+    dragPreview?.remove(); dragPreview = null;
+    dragImage?.remove(); dragImage = null;
+  };
+  const positionDragPreview = event => {
+    if (!dragPreview || !(event.clientX > 0 || event.clientY > 0)) return;
+    const width = window.innerWidth || 1024;
+    const x = Number.isFinite(event.clientX) ? event.clientX : 12;
+    dragPreview.style.setProperty('left', Math.max(12, Math.min(x + 16, width - Math.min(280, width - 24) - 12)) + 'px');
+    dragPreview.style.setProperty('top', Math.max(12, event.clientY - 46) + 'px');
+  };
   const clearPreview = () => {
     marker?.remove(); marker = null;
     tooltip?.remove(); tooltip = null; blockedDrop = null; blockedReason = '';
@@ -1663,6 +1687,11 @@ function wireDnD() {
     blockedNodes.clear();
     $$('.boardDropTarget').forEach(node => node.classList.remove('boardDropTarget'));
   };
+  boardDragCleanup = () => {
+    draggedId = 0;
+    $$('.card').forEach(card => card.classList.remove('boardDragging'));
+    clearPreview(); clearDragPreview();
+  };
   const showBlockedPreview = (drop, blocked, event) => {
     const reason = boardMoveBlockedReason(+drop.dataset.col, blocked);
     if (blockedDrop !== drop || blockedReason !== reason) {
@@ -1672,13 +1701,15 @@ function wireDnD() {
       tooltip.className = 'boardDropBlockedTooltip';
       tooltip.id = 'boardDropBlockReason';
       tooltip.setAttribute('role', 'tooltip');
+      tooltip.setAttribute('popover', 'manual');
       tooltip.textContent = reason;
       [drop, drop.closest('.boardLaneCell'), $('.boardLaneColumnHead[data-col="' + drop.dataset.col + '"]')].filter(Boolean).forEach(node => {
         blockedNodes.set(node, node.getAttribute('aria-describedby') || '');
         node.classList.add('boardDropBlocked');
         node.setAttribute('aria-describedby', [blockedNodes.get(node), tooltip.id].filter(Boolean).join(' '));
       });
-      drop.append(tooltip);
+      document.body.append(tooltip);
+      if (typeof tooltip.showPopover === 'function') tooltip.showPopover();
     }
     const viewportWidth = window.innerWidth || 1024;
     const viewportHeight = window.innerHeight || 768;
@@ -1702,11 +1733,30 @@ function wireDnD() {
       draggedId = +c.dataset.id;
       e.dataTransfer.setData('text/plain', c.dataset.id);
       e.dataTransfer.effectAllowed = 'move';
+      // Native card-sized drag images sit above all page layers. Replace that
+      // image with a transparent pixel and a compact page preview below tooltips.
+      if (typeof e.dataTransfer.setDragImage === 'function') {
+        clearDragPreview();
+        dragImage = document.createElement('canvas');
+        dragImage.width = 1; dragImage.height = 1;
+        dragImage.className = 'boardNativeDragImage';
+        dragImage.setAttribute('aria-hidden', 'true');
+        document.body.append(dragImage);
+        e.dataTransfer.setDragImage(dragImage, 0, 0);
+        dragPreview = document.createElement('div');
+        dragPreview.className = 'boardDragPreview';
+        dragPreview.setAttribute('aria-hidden', 'true');
+        const ticket = state.tickets.find(item => +item.id === draggedId);
+        dragPreview.textContent = ticket ? ticketRef(ticket) + ' ' + ticket.title : 'Moving task';
+        document.body.append(dragPreview);
+        positionDragPreview(e);
+      }
       c.classList.add('boardDragging');
     };
+    c.ondrag = positionDragPreview;
     c.ondragend = () => {
       suppressedClickId = draggedId; suppressUntil = Date.now() + 400;
-      draggedId = 0; c.classList.remove('boardDragging'); clearPreview();
+      draggedId = 0; c.classList.remove('boardDragging'); clearPreview(); clearDragPreview();
     };
     c.onclick = () => { if (+c.dataset.id !== suppressedClickId || Date.now() > suppressUntil) openTicket(+c.dataset.id); };
   });
@@ -1719,6 +1769,7 @@ function wireDnD() {
         clearPreview(); return;
       }
       e.preventDefault();
+      positionDragPreview(e);
       const blocked = boardMoveBlockedTasks(ticket, +d.dataset.col);
       if (blocked.length) {
         e.dataTransfer.dropEffect = 'none';
@@ -1743,7 +1794,7 @@ function wireDnD() {
       const id = draggedId;
       const t = state.tickets.find(x => +x.id === id);
       const placement = t ? boardDropPlacement(d, e.clientY, id) : null;
-      clearPreview();
+      clearPreview(); clearDragPreview();
       if (!isCurrentBoard() || !t || +(topEpicFor(t)?.id || 0) !== +d.dataset.epic || (dependencyViewIds() && dependencySortMode !== 'normal')) return;
       suppressedClickId = id; suppressUntil = Date.now() + 400;
       const blocked = boardMoveBlockedTasks(t, +d.dataset.col);

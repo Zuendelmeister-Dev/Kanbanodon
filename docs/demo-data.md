@@ -1,12 +1,19 @@
 # Task cleanup and current demo data
 
-## One-shot PowerShell scripts
+## One-shot scripts
 
-From the repository directory, run either script directly:
+On Windows, run either PowerShell script from the repository directory:
 
 ```powershell
 .\scripts\clear-task-data.ps1
 .\scripts\seed-demo-data.ps1
+```
+
+On Linux, macOS, or a POSIX shell, use the matching shell scripts:
+
+```sh
+sh ./scripts/clear-task-data.sh
+sh ./scripts/seed-demo-data.sh
 ```
 
 **The clear script permanently deletes all tickets and sprint plans across every board in this Compose database.** It does not create examples. The seed script retains existing tickets and adds three Epics, eighteen planned tasks, and six Backlog tasks per board that has not already received samples. It also sets the current demo Sprint cadence on that board.
@@ -18,9 +25,32 @@ To replace old examples with fresh dates, run the clear script followed by the s
 .\scripts\seed-demo-data.ps1 -SkipBuild
 ```
 
+The equivalent shell commands are:
+
+```sh
+sh ./scripts/clear-task-data.sh
+sh ./scripts/seed-demo-data.sh --skip-build
+```
+
 The scripts use the volume configured in `docker-compose.yml`, including its existing data. A temporary container runs `/app/kanbanodon -prepare-demo-data` and exits after the database transaction. It has no HTTP listener and is removed afterward. The scripts do not restart the main application or change its environment, so they do not leave a cleanup flag enabled. Refresh the browser after completion.
 
-Use `-ComposeFile` for another Compose file or `-DockerPath` for a Docker executable outside the usual PATH/Docker Desktop location. The commands must target the same Compose project and volume as your application; these helpers use the repository directory as the default Compose project directory. If you previously enabled startup cleanup flags, disable those separately as described below before keeping new work. If another writer briefly locks SQLite, the script reports the database error without applying a partial change; retry after that writer finishes.
+Both script variants resolve the repository and default Compose file from the script location, so they also work when called from another directory with an absolute script path. Their optional arguments are:
+
+| Purpose | PowerShell | POSIX shell |
+| --- | --- | --- |
+| Reuse the current image | `-SkipBuild` | `--skip-build` |
+| Choose another Compose file | `-ComposeFile PATH` | `--compose-file PATH` |
+| Choose the Docker executable | `-DockerPath PATH` | `--docker-path PATH` |
+
+PowerShell chooses one valid `docker.exe` from PATH and also checks per-user and standard Docker Desktop installation directories. This avoids confusing Docker Desktop's extensionless shell wrapper with its Windows executable. An explicit `-DockerPath` always takes precedence. For a standard Docker Desktop installation:
+
+```powershell
+.\scripts\seed-demo-data.ps1 -DockerPath 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
+```
+
+The shell scripts use Docker from PATH unless `--docker-path` is supplied. They also support Docker Desktop from Git Bash. Quote paths containing spaces. Each shell script provides `--help`.
+
+The commands must target the same Compose project and volume as your application; these helpers use the repository directory as the default Compose project directory. If you previously enabled startup cleanup flags, disable those separately as described below before keeping new work. If another writer briefly locks SQLite, the script reports the database error without applying a partial change; retry after that writer finishes.
 
 Accounts, boards, ownership, access permissions, workflow columns, label definitions, and milestones remain. Export or back up any tickets you want to keep before running the clear script. No script has to be run as part of a normal build or startup.
 

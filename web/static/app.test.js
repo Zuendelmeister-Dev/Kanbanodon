@@ -42,7 +42,10 @@ function loadApp(options = {}) {
     button.dataset.view = view;
     return button;
   });
+  const body = fakeElement(); body.children = [];
+  body.append = node => { body.children.push(node); node.parentNode = body; };
   const document = {
+    body,
     visibilityState: 'visible',
     createElement: () => fakeElement(),
     querySelector(selector) {
@@ -311,7 +314,8 @@ test('blocked Board drag highlights Review red and immediately shows all unfinis
   review.drop.ondragover(over);
   assert.equal(source.transfer.dropEffect,'none');
   for (const node of [review.drop,review.cell,review.header]) assert.equal(node.classList.contains('boardDropBlocked'),true);
-  const tooltip=review.drop.marker;
+  const activeTooltip=()=>app.document.body.children.findLast(node=>node.className==='boardDropBlockedTooltip'&&!node.removed);
+  const tooltip=activeTooltip();
   assert.equal(tooltip.className,'boardDropBlockedTooltip');
   assert.equal(tooltip.getAttribute('role'),'tooltip');
   assert.match(tooltip.textContent,/Cannot move to Review/);
@@ -322,7 +326,7 @@ test('blocked Board drag highlights Review red and immediately shows all unfinis
   assert.equal((tooltip.textContent.match(/Fern check/g)||[]).length,1);
   assert.equal(review.header.getAttribute('aria-describedby'),'existing-description boardDropBlockReason');
   review.drop.ondragover(over);
-  assert.equal(review.drop.marker,tooltip,'repeated drag events reuse the visible tooltip');
+  assert.equal(activeTooltip(),tooltip,'repeated drag events reuse the visible tooltip');
   tooltip.getBoundingClientRect=()=>({width:420,height:600});
   over.clientY=400;
   review.drop.ondragover(over);
@@ -342,10 +346,62 @@ test('blocked Board drag highlights Review red and immediately shows all unfinis
   assert.equal(task.columnId,1);
   assert.match(app.elements.get('#formError').textContent,/Coffee calibration/);
   for (const node of [review.drop,review.cell,review.header]) assert.equal(node.classList.contains('boardDropBlocked'),false);
-  review.drop.ondragover(over); const lastTooltip=review.drop.marker;
+  review.drop.ondragover(over); const lastTooltip=activeTooltip();
   source.cards[0].ondragend();
   assert.equal(lastTooltip.removed,true);
   assert.equal(review.drop.getAttribute('aria-describedby'),null);
+});
+
+test('blocked drag feedback stays above the compact preview and clears after its lifetime', async t => {
+  const endings = {
+    dragend: (app, source) => source.cards[0].ondragend(),
+    drop: (app, source, review, event) => review.drop.ondrop(event),
+    rerender: app => app.renderView(),
+    'session reset': app => app.resetClientState(),
+  };
+  for (const [name, endDrag] of Object.entries(endings)) await t.test(name, async () => {
+    const app=loadApp(), state=stateWithHierarchy();
+    state.columns=['To Do','Ready','In Progress','Review','Done'].map((name,position)=>({id:position+1,name,position}));
+    const task=state.tickets.find(ticket=>ticket.id===12);
+    task.title='Task <img src=x onerror=example()>';
+    state.tickets.find(ticket=>ticket.id===13).columnId=2;
+    app.setState(state); app.selectBoard(1);
+    const source=boardDragFixture(app,[task],1,10), review=boardDragFixture(app,[],4,10);
+    const original=app.document.querySelectorAll.bind(app.document);
+    app.document.querySelectorAll=selector=>selector==='.card'?source.cards:selector==='.drop'?[source.drop,review.drop]:selector==='.boardDropTarget'?[source.drop,source.cell,source.header,review.drop,review.cell,review.header]:original(selector);
+    let nativeImage, topLayerShows=0;
+    source.transfer.setDragImage=(...args)=>{nativeImage=args;};
+    const createElement=app.document.createElement;
+    app.document.createElement=tag=>{
+      const element=createElement(tag);
+      element.showPopover=()=>{topLayerShows++;};
+      return element;
+    };
+    app.wireDnD();
+    const start=source.event(source.cards[0],180); start.clientX=350;
+    source.cards[0].ondragstart(start);
+    const pixel=app.document.body.children.find(node=>node.className==='boardNativeDragImage');
+    const preview=app.document.body.children.find(node=>node.className==='boardDragPreview');
+    assert.deepEqual(nativeImage,[pixel,0,0],'the native drag image must not contain a card that covers the tooltip');
+    assert.equal(pixel.width,1); assert.equal(pixel.height,1);
+    assert.equal(preview.textContent,'#10.1.1 '+task.title);
+    assert.equal(preview.innerHTML,'','the compact preview treats titles as plain text');
+    assert.equal(preview.parentNode,app.document.body);
+    assert.equal(preview.properties.get('left'),'366px');
+    const over=review.event(review.drop,250); over.clientX=350; over.dataTransfer=source.transfer;
+    review.drop.ondragover(over);
+    const tooltip=app.document.body.children.find(node=>node.className==='boardDropBlockedTooltip');
+    assert.equal(tooltip.parentNode,app.document.body,'tooltip must escape faded cards and column stacking contexts');
+    assert.equal(tooltip.getAttribute('popover'),'manual');
+    assert.equal(topLayerShows,1,'supported browsers place the tooltip in their top layer');
+    assert.equal(tooltip.properties.get('top'),'268px');
+    assert.equal(preview.properties.get('top'),'204px');
+    assert.equal(review.drop.marker,undefined,'a blocked drop must not show an insertion line');
+    await endDrag(app,source,review,over);
+    for (const node of [pixel,preview,tooltip]) assert.equal(node.removed,true,name+' must remove every temporary layer');
+    assert.equal(review.drop.classList.contains('boardDropBlocked'),false);
+    assert.equal(review.header.getAttribute('aria-describedby'),null);
+  });
 });
 
 test('failed Board move preserves order and editor discard Cancel sends no request', async () => {
@@ -2437,10 +2493,13 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     state.tickets.find(ticket => ticket.id === 70).title = 'Chosen <third> & task';
     app.setState(state); app.selectBoard(1);
     app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    assert.doesNotMatch(app.document.querySelector('#' + targetView).innerHTML, /dependencySelectedBadge|data-selected-dependency=/);
     const stateBefore = app.getState(); const hashBefore = app.window.location.hash;
     app.openDependencies(70);
     const root = app.document.querySelector('#' + targetView);
     assert.match(root.innerHTML, /dependencyFocusBar/);
+    assert.equal((root.innerHTML.match(/class="dependencySelectedBadge"/g) || []).length, 1, 'only the explicitly selected task receives the high-contrast label');
+    assert.match(root.innerHTML, /class="dependencySelectedBadge" data-selected-dependency="70" title="Selected dependency task #3" aria-label="Selected dependency task #3">Selected<\/span>/);
     assert.match(app.planningFocusHtml(), /Chosen &lt;third&gt; &amp; task/);
     assert.match(app.planningFocusHtml(), /#3/);
     assert.match(app.planningFocusHtml(), /data-dependencies-back/);
@@ -2450,12 +2509,35 @@ for (const targetView of ['board', 'overview', 'timeline']) {
     assert.equal(app.getView(), targetView); assert.equal(app.getState(), stateBefore);
     assert.equal(app.window.location.hash, hashBefore); assert.equal(requests, 0);
     app.toggleDependencyFocus(70);
+    assert.equal((root.innerHTML.match(/data-selected-dependency="70"/g) || []).length, 1, 'filtering the chain retains the selected task label');
     assert.equal(app.document.querySelector('#dependencyExitBtn').classList.contains('hidden'), false);
     app.document.querySelector('#dependencyExitBtn').onclick();
     assert.equal(app.dependencyViewIds(), null); assert.equal(app.dependencyFocusIds(), null);
     assert.equal(app.planningFocusHtml(), '');
+    assert.doesNotMatch(root.innerHTML, /dependencySelectedBadge|data-selected-dependency=/);
     assert.equal(app.document.querySelector('#dependencyExitBtn').classList.contains('hidden'), true);
     assert.equal(app.getView(), targetView); assert.equal(requests, 0);
+  });
+}
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' moves the Selected label to a new task without confusing peers at the same dependency stage', () => {
+    const app = loadApp({hover: {wire() {}}}); const state = dependencyOrderState();
+    app.setState(state); app.selectBoard(1);
+    app.navButtons.find(button => button.dataset.view === targetView).onclick();
+    const root = app.document.querySelector('#' + targetView);
+    app.openDependencies(80);
+    const keys = [...app.planningFocusHtml().matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]);
+    assert.deepEqual([...root.innerHTML.matchAll(/data-selected-dependency="(\d+)"/g)].map(match => +match[1]), [80]);
+    app.toggleDependencyFocus(75);
+    assert.deepEqual([...root.innerHTML.matchAll(/data-selected-dependency="(\d+)"/g)].map(match => +match[1]), [75], 'the parallel task at the same stage has its own explicit selection');
+    app.showOtherTasks();
+    assert.deepEqual([...root.innerHTML.matchAll(/data-selected-dependency="(\d+)"/g)].map(match => +match[1]), [75]);
+    assert.deepEqual([...app.planningFocusHtml().matchAll(/class="dependencyStageKey"[^>]+/g)].map(match => match[0]), keys, 'stronger selection never changes the stage palette');
+    app.openDependencies(70);
+    assert.deepEqual([...root.innerHTML.matchAll(/data-selected-dependency="(\d+)"/g)].map(match => +match[1]), [70]);
+    app.closeDependencies();
+    assert.doesNotMatch(root.innerHTML, /data-selected-dependency=/);
   });
 }
 

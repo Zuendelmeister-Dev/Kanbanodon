@@ -144,7 +144,7 @@ Checklists, recurrence, Archive and Trash status, and comments with timestamps a
 
 A board export supplements backups but does not replace a backup of the entire installation.
 
-For disposable demonstrations, use [clear-task-data.ps1](scripts/clear-task-data.ps1) to empty task data and Sprint plans, or [seed-demo-data.ps1](scripts/seed-demo-data.ps1) to fill boards with three dated example Epics, current Sprints, and matching Backlog tasks. Run cleanup followed by seeding to refresh old examples. Both commands use a one-shot maintenance container and leave ordinary startup flags unchanged. The separate Compose flags remain available, disabled by default. See [test data instructions](docs/demo-data.md) for commands and cleanup details.
+For disposable demonstrations, use [clear-task-data.ps1](scripts/clear-task-data.ps1) on Windows or [clear-task-data.sh](scripts/clear-task-data.sh) in a POSIX shell to empty task data and Sprint plans. The matching [PowerShell seed script](scripts/seed-demo-data.ps1) and [shell seed script](scripts/seed-demo-data.sh) fill boards with three dated example Epics, current Sprints, and matching Backlog tasks. Run cleanup followed by seeding to refresh old examples. Both operations use a one-shot maintenance container and leave ordinary startup flags unchanged. The separate Compose flags remain available, disabled by default. See [test data instructions](docs/demo-data.md) for commands, Docker discovery, and cleanup details.
 
 ## Architecture
 
