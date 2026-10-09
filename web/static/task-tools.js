@@ -1,10 +1,51 @@
 // Optional task tools. Core navigation and persistence stay in app.js.
-function resetTaskFilters() {
-  if (selectedPlanningSprint() && !canLeaveDrawer()) return;
+// Clear the values as well as the chrome so a new session cannot inherit hidden filters.
+function clearTaskFilterValues() {
   ['search', 'typeFilter', 'labelFilter', 'assigneeFilter', 'dependencyFilter'].forEach(id => { const field = $('#' + id); if (field) field.value = ''; });
-  if (selectedPlanningSprint()) clearPlanningSprint();
+  overviewFilters = {type: '', status: '', q: ''};
+  timelineEpicFilter = 'all';
+}
+
+function resetTaskFilters() {
+  const resetPlanningContext = !!selectedPlanningSprint() || !!dependencyViewIds();
+  if (resetPlanningContext && !canLeaveDrawer()) return;
+  clearTaskFilterValues();
+  if (resetPlanningContext) applyPlanningSprintSelection(0);
   else renderView();
   renderTaskTools();
+}
+
+// Assignment and search remain independent of Sprint selection; make them visible in the workspace.
+function activeTaskFilters() {
+  const filters = [];
+  const add = (id, label) => { const value = String($('#' + id)?.value || '').trim(); if (value) filters.push({id, label: label(value)}); };
+  add('search', value => 'Search: ' + value);
+  add('typeFilter', value => 'Type: ' + value);
+  add('labelFilter', value => 'Label: ' + value);
+  add('assigneeFilter', value => {
+    const person = userById(+value);
+    const name = person?.name || person?.username || 'User #' + value;
+    return +state.me?.id === +value ? 'My tasks: ' + name : 'Assignee: ' + name;
+  });
+  add('dependencyFilter', value => value === 'blocking' ? 'Blocking others' : value === 'blocked' ? 'Blocked tasks' : 'Dependencies: ' + value);
+  return filters;
+}
+
+function activeTaskFiltersHtml() {
+  const filters = activeTaskFilters();
+  if (!filters.length) return '';
+  return '<section class="panel activeTaskFilters" aria-label="Active task filters"><div><strong>Task filters</strong><span class="muted">Sprint selection keeps these filters.</span></div><div class="activeTaskFilterActions">' + filters.map(filter => '<button class="activeTaskFilter" type="button" data-clear-task-filter="' + filter.id + '" title="' + escAttr('Remove ' + filter.label) + '" aria-label="' + escAttr('Remove ' + filter.label) + '">' + esc(filter.label) + ' <span aria-hidden="true">×</span></button>').join('') + '<button class="activeTaskFiltersReset" type="button" data-reset-task-filters>Reset filters</button></div></section>';
+}
+
+function wireTaskFilterActions(root) {
+  const boardId = currentBoardId(), targetView = view;
+  const isCurrent = () => currentBoardId() === boardId && (!selectedBoardId || selectedBoardId === boardId) && view === targetView;
+  root.querySelectorAll('[data-clear-task-filter]').forEach(button => button.onclick = () => {
+    if (!isCurrent() || !activeTaskFilters().some(filter => filter.id === button.dataset.clearTaskFilter)) return;
+    $('#' + button.dataset.clearTaskFilter).value = '';
+    renderView();
+  });
+  root.querySelectorAll('[data-reset-task-filters]').forEach(button => button.onclick = () => { if (isCurrent()) resetTaskFilters(); });
 }
 
 function taskChecklist(extras) {

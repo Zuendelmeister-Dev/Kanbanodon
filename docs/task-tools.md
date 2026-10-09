@@ -16,7 +16,7 @@ Epics offer “Complete Epic” beside “Edit” in Board, Overview, and Timeli
 
 Use “Add step” to add checklist items and check off individual steps. Save changes with “Save”. The card shows the number of completed and total steps.
 
-“My tasks” shows tasks on the current board assigned to the signed-in account. Search matches titles and descriptions. “Filters” offers type, assignee, dependency, and label filters. “Reset filters” clears search and filters.
+“My tasks” shows tasks on the current board assigned to the signed-in account. Search matches titles and descriptions. “Filters” offers type, assignee, dependency, and label filters. Sprint selection combines with these task filters. Board, Overview, and Timeline show a “Task filters” panel listing active filters; use a filter's × button to remove it while retaining the other filters and chosen Sprint. “Reset filters” clears search, task filters, the chosen Sprint, and dependency focus to restore the normal view. Signing out clears task filter values.
 
 ## Duplicating, archiving, and trash
 

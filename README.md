@@ -39,9 +39,28 @@ See [Organizing tasks](docs/task-tools.md) for more detailed instructions. [Dino
 
 A task can contain a description, checklist, assignee, due date, labels, duration, start date, milestone, parent, and dependencies. Comments support collaboration. Mentions and assignments by other users create notifications inside the application.
 
+Board, Overview, and Timeline combine search, type, label, assignee, and dependency filters with the Sprint selection. "My tasks" shows work assigned to your account. The "Task filters" panel lists active filters; select a filter's × button to remove it. "Reset filters" clears the filters, Sprint selection, and dependency focus to restore the normal view.
+
+![Board cards grouped into an Epic lane across workflow columns](docs/screenshots/board-epic-lanes.png)
+
+The Board keeps an Epic and its tasks together while each task moves through its own workflow.
+
 Drag Board cards to reorder them within a column or insert them at a chosen position in another column. A line marks the insertion point, and the target column is highlighted. For example, drag the second To Do card before the third Done card to change both its status and position. The manual order is saved within its Epic lane. Use "Normal order" to drag when dependencies are open; "Dependency order" follows the chain instead.
 
 "Duplicate" creates a copy with a fresh work state. Archive and Trash remove tasks from active views and allow restoration. Recurring tasks create their successor when completed.
+
+<details>
+<summary>Task editor</summary>
+
+![Task editor with status, description, due date, assignment, checklist, comments, and task actions](docs/screenshots/task-editor.png)
+
+Start with a title, then add details in the editor when the task needs them. Planning fields stay in an expandable section.
+
+</details>
+
+Backlog keeps upcoming work grouped by Epic. Capture a title immediately, then use "Add to board" when the task is ready to be planned.
+
+![Product Backlog with quick capture and Epic groups containing tasks ready to add to the Board](docs/screenshots/product-backlog.png)
 
 ## Optional planning
 
@@ -57,11 +76,38 @@ Select "Dependencies" beside "Edit" to preview the complete connected chain, inc
 
 The "Sort tasks" selector in the dependency bar switches between "Dependency order" and "Normal order" in all three views. Dependency order places connected tasks by stage within their Epic and, in Board, their status column. Normal order uses Board's ticket order, Overview's chosen table column, or Timeline's hierarchy and schedule. In Overview, click a column heading to sort by it; click it again to reverse the direction. Doing this while dependencies are open also selects Normal order. Numbers, colors, and links keep their dependency meaning whichever sort is selected. Closing the dependency view restores normal sorting; these display choices never change saved task positions.
 
+<details>
+<summary>Dependency views and hover highlighting</summary>
+
+Board keeps the workflow columns visible while showing the connected chain and a clear frame around the selected task.
+
+![Board dependency arrows between workflow cards, with the selected task framed and Back highlighted](docs/screenshots/board-dependencies.png)
+
+Overview shows the same stages and colors in the ticket table.
+
+![Overview dependency chain with stage numbers and a clearly selected task](docs/screenshots/overview-dependencies.png)
+
+Timeline places connections beside the planned task bars.
+
+![Timeline dependency chain connecting planned bars and highlighting the selected task](docs/screenshots/timeline-dependencies.png)
+
+Hovering over a task keeps its incoming and outgoing connections visible while unrelated work fades.
+
+![Timeline hover highlighting showing a task and its adjacent dependencies while other tasks fade](docs/screenshots/timeline-hover-focus.png)
+
+![Overview hover highlighting keeping adjacent tasks and arrows visible while other rows fade](docs/screenshots/overview-hover-focus.png)
+
+</details>
+
 ### Sprints
 
 The "Sprints" panel is available in Board, Overview, and Timeline. Configure the first Sprint start date and a duration of 1 to 52 whole weeks in Board, then save. Sprint cards appear after a successful save. Following Sprints are calculated from the saved cadence. Changing the cadence fields marks them as unsaved and leaves the saved cards unchanged until the next successful save. Sprint names can be edited directly in Board; without a custom name, a Sprint is called "Sprint N".
 
 Use the arrows beside the six Sprint cards to browse earlier or later Sprints. The current Sprint is shown first by default, followed by the next five; before the cadence starts, the panel shows the first six. Browsing cards does not select a Sprint. Before Sprint 1, the earlier arrow is disabled and its tooltip reads "No earlier sprints".
+
+![Sprint planning panel with cadence settings, All sprints, navigation arrows, and current and upcoming Sprint cards](docs/screenshots/sprint-planning.png)
+
+The current Sprint has a teal highlight; choosing another Sprint marks that card as selected. "All sprints" clears the Sprint selection.
 
 Select a Sprint to show only its tasks in Board or Overview, while keeping their matching Epic headings. Timeline fits the Sprint's date range and initially shows only planned intervals touching that Sprint, including work crossing its boundaries. “Show all tasks” restores every row while retaining those dates; “Only tasks in this sprint” narrows the rows again. The selected card is highlighted and marked "Selected"; the selection stays active when switching between these three views. "All sprints", or selecting the same card again, clears the selection. With no Sprint selected, Board and Overview show all tasks and Timeline shows its complete date range. The current Sprint is not selected automatically.
 
@@ -75,11 +121,21 @@ Dependency inspection in Board and Overview stays within the selected Sprint. Ch
 
 Overview and Timeline are directly available in the sidebar. Overview initially shows five main table columns; "Show planning columns" displays the additional fields.
 
+![Overview ticket table showing an Epic, its tasks, statuses, assignments, and a Reopen Epic action](docs/screenshots/overview-tasks.png)
+
 Timeline uses stored durations and dates. When duration is missing, it assumes three days for ordinary tasks and one day for Epics. When the start date is missing, it derives the start from the due date and duration, or from the creation date. The interface explains these assumptions; they are not saved as task dates.
+
+Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Use "Dependencies" beside the task name to inspect its connections. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
+
+![Timeline with Epic totals, task bars, due dates, named Sprint boundaries, and a Today line](docs/screenshots/timeline-sprint-cadence.png)
+
+Sprint boundaries and dated headers show where each Sprint begins and ends. The persistent "Today" line marks the current day.
 
 History is a separate sidebar view of actual completions, newest first, with Epic, type, date, and text filters. Each completion preserves its title, Epic, due date, and actual timestamp even after edits or reopening. Recorded In Progress starts produce elapsed work bars; unknown starts produce completion markers. Red bars show late completion past the saved due day. Archived work remains visible; trash is hidden and permanent deletion removes its history. Earlier, imported, and demo completions are identified separately. History episodes are retained in database backups but are not included in planning board exports.
 
-Task bars show planned work; saved time, delays, and dashed completion estimates appear on a thin separate rail. Unfinished tasks can show a red delay up to the current date, followed by a dashed estimate. Task names remain in the left pane and within sufficiently wide bars. Epic totals use the same time grid. Use "Dependencies" beside the task name to inspect its connections. Zoom changes the time grid's density; dragging pans the timeline horizontally. The date cursor shows the calendar day under the pointer.
+![History view with completion totals, recorded completion dates, deadline markers, and actual completion events](docs/screenshots/history-completions.png)
+
+This example includes earlier completions without a recorded start, so History shows completion markers rather than assuming a work interval from planned dates.
 
 ## Accounts and permissions
 
@@ -93,6 +149,8 @@ Task bars show planned work; saved time, delays, and dashed completion estimates
 Registration can be disabled with `KANBANODON_ALLOW_SIGNUP`. Administrators can still create accounts. Avatars are assigned automatically by the server.
 
 An administrator password reset signs the affected account out on all devices. Changing your own password keeps the current session and signs out other sessions. Password recovery is handled by an administrator; email-based recovery is not available.
+
+![Administrator user management with account creation, board access, roles, and password reset controls](docs/screenshots/user-management.png)
 
 ## Installation and operation
 

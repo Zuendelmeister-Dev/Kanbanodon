@@ -37,3 +37,20 @@ test('closing unchanged drafts is silent; changed task fields and comments need 
   fields[1].value='Comment draft';fixture.answer(false);
   assert.equal(context.canLeaveDrawer(),false);
 });
+
+test('visible task filters escape search and assignee text and distinguish another assignee from My tasks', () => {
+  const {context} = helpers();
+  const values = {search: '"><img src=x onerror=alert(1)>', typeFilter: '', labelFilter: '', assigneeFilter: '7', dependencyFilter: 'blocked'};
+  context.$ = selector => ({value: values[selector.slice(1)] || ''});
+  context.state = {me: {id: 3}};
+  context.userById = () => ({id: 7, name: '<script>Owner</script>'});
+  context.esc = context.escAttr;
+  let html = context.activeTaskFiltersHtml();
+  assert.doesNotMatch(html, /<img|<script>/);
+  assert.match(html, /Assignee: &lt;script&gt;Owner&lt;\/script&gt;/);
+  assert.match(html, /Blocked tasks/);
+  assert.doesNotMatch(html, /My tasks:/);
+  context.state.me.id = 7; html = context.activeTaskFiltersHtml();
+  assert.match(html, /My tasks: &lt;script&gt;Owner/);
+  assert.equal((html.match(/data-clear-task-filter=/g) || []).length, 3);
+});

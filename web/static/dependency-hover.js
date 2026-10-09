@@ -282,9 +282,15 @@
     const verticalRails = [...new Set([midX, ...channels, start.outer.x, end.outer.x])];
     verticalRails.forEach(x => offer([{ x, y: start.outer.y }, { x, y: end.outer.y }]));
     const midY = (start.outer.y + end.outer.y) / 2;
-    const horizontalRails = [midY];
-    const bands = mergedBands(obstacles.filter(rect => rect.left < Math.max(start.outer.x, end.outer.x) + clearance &&
-      rect.right > Math.min(start.outer.x, end.outer.x) - clearance).map(rect => [rect.top, rect.bottom]));
+    const crossingObstacles = obstacles.filter(rect => rect.left < Math.max(start.outer.x, end.outer.x) + clearance &&
+      rect.right > Math.min(start.outer.x, end.outer.x) - clearance);
+    // The midpoint of a large empty region can be well above the cards (or
+    // beyond an entire lane). Also offer the closest clear edge of each card,
+    // so a blocked straight connection takes a small local turn instead of
+    // climbing through the Board header just because that route was valid.
+    const horizontalRails = [midY, ...crossingObstacles.flatMap(rect =>
+      [0, 16, 32].flatMap(offset => [rect.top - clearance - offset, rect.bottom + clearance + offset]))];
+    const bands = mergedBands(crossingObstacles.map(rect => [rect.top, rect.bottom]));
     let bottom = bounds.top;
     bands.forEach(([top, nextBottom]) => {
       if (top - bottom >= clearance * 2) horizontalRails.push((bottom + top) / 2);
@@ -418,8 +424,11 @@
       const vertical = source.top <= target.top ? ['bottom', 'top'] : ['top', 'bottom'];
       return target.left - source.right >= 24 ? [['right', 'left'], vertical] : [vertical, ['right', 'left']];
     }
-    if (source.right <= target.left) return [['right', 'left'], ['bottom', 'top'], ['top', 'bottom']];
-    if (target.right <= source.left) return [['left', 'right'], ['bottom', 'top'], ['top', 'bottom']];
+    // A card between two columns can block the facing terminals. Connecting
+    // the two tops or bottoms then avoids circling both cards. These are only
+    // alternatives: the shorter facing route still wins whenever it is clear.
+    if (source.right <= target.left) return [['right', 'left'], ['top', 'top'], ['bottom', 'bottom'], ['bottom', 'top'], ['top', 'bottom']];
+    if (target.right <= source.left) return [['left', 'right'], ['top', 'top'], ['bottom', 'bottom'], ['bottom', 'top'], ['top', 'bottom']];
     if (source.bottom <= target.top) return [['bottom', 'top'], ['left', 'left'], ['right', 'right']];
     if (target.bottom <= source.top) return [['top', 'bottom'], ['left', 'left'], ['right', 'right']];
     return (source.left + source.right) <= (target.left + target.right) ?

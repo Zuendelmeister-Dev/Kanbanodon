@@ -410,6 +410,7 @@ function hasLoadedState() {
 function resetClientState(clearBoardSelection) {
   invalidateSessionRequests();
   resetDrawer();
+  if (typeof clearTaskFilterValues === 'function') clearTaskFilterValues();
   state = emptyState();
   if (!clearBoardSelection) return;
   selectedBoardId = 0;
@@ -708,7 +709,7 @@ function matchesDependencyFilter(t, value, blockers = null) {
 
 // The global filters operate on the full state; each workspace narrows it further.
 function filtered() {
-  const q = $('#search').value.toLowerCase();
+  const q = $('#search').value.trim().toLowerCase();
   const typ = $('#typeFilter').value;
   const lab = $('#labelFilter').value;
   const assignee = $('#assigneeFilter')?.value || '';
@@ -1032,6 +1033,7 @@ function epicToggleHtml(epic, cssClass = 'epicToggle') {
 }
 
 function wirePlanningActions(root) {
+  if (typeof wireTaskFilterActions === 'function') wireTaskFilterActions(root);
   root.querySelectorAll('[data-dependency-color]').forEach(node => node.style?.setProperty('--dependency-color', node.dataset.dependencyColor));
   root.querySelectorAll('[data-edit-ticket]').forEach(button => button.onclick = event => { event.stopPropagation(); openTicket(+button.dataset.editTicket); });
   root.querySelectorAll('[data-epic-status]').forEach(button => button.onclick = event => { event.stopPropagation(); changeEpicCompletion(+button.dataset.epicStatus); });
@@ -1141,7 +1143,7 @@ function renderBoard() {
     return;
   }
   const tickets = planningWork();
-  root.innerHTML = sprintPlannerHtml(workTickets()) + (backlogTickets().length ? boardBacklogPickerHtml() : '') + planningFocusHtml() + boardSwimlanes(tickets);
+  root.innerHTML = sprintPlannerHtml(workTickets()) + activeTaskFiltersHtml() + (backlogTickets().length ? boardBacklogPickerHtml() : '') + planningFocusHtml() + boardSwimlanes(tickets);
   wireSprintPlanner();
   wireBoardBacklogPicker();
   wireDnD();
@@ -1169,7 +1171,8 @@ function sprintNavigationHtml(tickets, targetView = view) {
 // Keep the active filter visible even when browsing another six-card Sprint window.
 function sprintSelectionHtml(targetView = view) {
   const selected = selectedPlanningSprint();
-  const summary = selected ? (targetView === 'timeline' ? 'Focused on ' : 'Showing tasks in ') + sprintName(selected) : targetView === 'timeline' ? 'Full timeline' : 'All tasks';
+  const filtered = activeTaskFilters().length > 0;
+  const summary = selected ? (targetView === 'timeline' ? 'Focused on ' : 'Showing tasks in ') + sprintName(selected) : targetView === 'timeline' ? 'Full timeline' : filtered ? 'All sprint dates · task filters still apply' : 'All tasks';
   return '<div class="sprintSelection"><button class="sprintAll' + (selected ? '' : ' selected') + '" data-sprint-all type="button" aria-pressed="' + !selected + '">All sprints</button><span class="sprintSelectionSummary" aria-live="polite">' + esc(summary) + '</span></div>';
 }
 
@@ -1525,7 +1528,12 @@ function boardSwimlanes(tickets) {
   const required = dependencyViewIds();
   const lanes = allLanes.filter(lane => !lane.epic || required?.has(+lane.epic.id) || (lane.items.some(ticket => visibleColumns.some(column => +column.id === +ticket.columnId)) && !boardEpicCompleted(lane.epic)));
   const compact = boardCompactEpicsHtml(allLanes, lanes);
-  if (!lanes.length) return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + (compact ? 'Epics without visible tasks are listed below. Open an Epic to edit its plan or add work.' : workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.') + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section>' + compact + '<section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
+  if (!lanes.length) {
+    const filters = activeTaskFilters();
+    const mine = filters.some(filter => filter.id === 'assigneeFilter' && +$('#assigneeFilter').value === +state.me?.id);
+    const explanation = mine ? 'My tasks is active: only tasks assigned to you are shown. Remove My tasks above or reset the filters to see other work.' : filters.length ? 'No tasks match the active task filters shown above. Remove a filter or reset the filters to see other work.' : compact ? 'Epics without visible tasks are listed below. Open an Epic to edit its plan or add work.' : workTickets().length ? 'Clear the filters to see all tasks.' : 'Enter a title above to create your first task. No planning setup is required.';
+    return '<section class="panel emptyBoard"><h2>' + (workTickets().length ? 'No matching tasks' : 'Your board is ready') + '</h2><p class="muted">' + explanation + '</p><button id="boardEmptyAction" type="button">' + (workTickets().length ? 'Reset filters' : 'Create first task') + '</button></section>' + compact + '<section class="emptyColumns">' + state.columns.map(c => '<div class="panel"><h3>' + esc(c.name) + '</h3><span class="muted">No tasks</span></div>').join('') + '</section>';
+  }
   const colClass = 'cols' + Math.max(1, Math.min(8, visibleColumns.length || 1)) + (lanes.every(lane => !lane.epic) ? ' simpleBoard' : '');
   const counts = visibleColumns.map(c => lanes.reduce((sum, lane) => sum + boardLaneColumnItems(lane, c.id).length, 0));
   return '<section class="boardSwimlanes ' + colClass + '"><div class="boardLane boardLaneHeader"><div class="boardLaneEpicHead">Epic</div>' + visibleColumns.map((c, index) => '<div class="boardLaneColumnHead" data-col="' + c.id + '">' + esc(c.name) + ' <span>' + counts[index] + '</span></div>').join('') + '</div>' + lanes.map(lane => boardSwimlane(lane, visibleColumns)).join('') + '</section>' + compact;
@@ -1944,7 +1952,7 @@ function renderOverviewContent() {
   const open = ts.length - done.length;
   const due = ts.filter(t => t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const byType = ['epic', 'story', 'task', 'bug'].map(type => '<div class="metric"><strong>' + ts.filter(t => t.type === type).length + '</strong><span>' + type + '</span></div>').join('');
-  root.innerHTML = sprintNavigationHtml(workTickets(), 'overview') + '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + planningFocusHtml() + overviewTable(ts);
+  root.innerHTML = sprintNavigationHtml(workTickets(), 'overview') + activeTaskFiltersHtml() + '<div class="metrics"><div class="metric"><strong>' + ts.length + '</strong><span>Tickets</span></div><div class="metric"><strong>' + open + '</strong><span>open</span></div><div class="metric"><strong>' + done.length + '</strong><span>done</span></div>' + byType + '</div><section class="panel"><h2>Upcoming dates</h2>' + (due.map(t => '<button class="row rowButton" data-open-ticket="' + t.id + '"><strong>' + esc(t.dueDate) + '</strong><span>' + esc(t.title) + '</span></button>').join('') || '<p class="muted">No due dates set</p>') + '</section>' + planningFocusHtml() + overviewTable(ts);
   wireSprintNavigation(root);
   wireOverviewControls(ts);
   if (root.querySelector('.ticketTable')) {
@@ -2278,12 +2286,13 @@ function renderGanttContent(root) {
   timelineFitObservers.get(root)?.disconnect();
   timelineFitObservers.delete(root);
   // Only promoted, scheduled delivery work reaches the timeline.
-  let controls = sprintNavigationHtml(workTickets(), 'timeline') + timelineControlsHtml();
+  let controls = sprintNavigationHtml(workTickets(), 'timeline') + activeTaskFiltersHtml() + timelineControlsHtml();
   const tasks = buildGanttRows();
   const focusRange = dependencyTimelineRange(tasks) || sprintByNumber(timelineFocusSprint);
   if (!tasks.length && !focusRange) {
     root.innerHTML = controls + '<div class="event muted">No tickets with schedulable dates yet</div>';
     wireTimelineControls(root);
+    wirePlanningActions(root);
     return;
   }
   tasks.forEach((task, index) => task.row = index);

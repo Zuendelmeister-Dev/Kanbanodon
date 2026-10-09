@@ -103,6 +103,7 @@ function loadApp(options = {}) {
     renderAdmin,
     GANTT_LEFT_PAD, GANTT_RIGHT_PAD, planningWork, dependencyViewIds, openDependencies, closeDependencies, showOtherTasks, dependencyFocusIds, toggleDependencyFocus, toggleEpic, buildGanttRows, dependencyTimelineRange, wirePlanningActions, planningFocusHtml, renderTaskTools, setDependencySort, wireOverviewControls,
     filteredWork, filteredBacklog, taskChecklist, checklistProgress, checklistRowHTML, canLeaveDrawer,
+    resetTaskFilters, activeTaskFilters, activeTaskFiltersHtml, wireTaskFilterActions,
     setDraft(ticket,snapshot) { resetDrawer(); editing=cloneTicketForEditing(ticket); drawerDraftId=ticket.id; drawerSnapshot=snapshot; },
     captureDraftBaseline() { drawerSnapshot=currentDrawerSnapshot(); },
     getEditing() { return editing; }, getView() { return view; }, getSnapshot() { return drawerSnapshot; },
@@ -2417,6 +2418,121 @@ test('Reset filters clears Sprint isolation and preserves all filters when disca
   assert.equal(app.window.location.hash, '#/board/1');
   for (const id of Object.keys(values)) assert.equal(app.document.querySelector('#' + id).value, '');
   assert.ok(planningIds(app).includes(15) && planningIds(app).includes(16));
+});
+
+test('All sprints keeps My tasks explicit and an empty Board can show everyone again without reload', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1); app.renderView();
+  const before = planningIds(app);
+  app.document.querySelector('#myTasksBtn').onclick();
+  assert.equal(app.document.querySelector('#assigneeFilter').value, '3');
+  assert.equal(app.document.querySelector('#myTasksBtn').getAttribute('aria-pressed'), 'true');
+  assert.equal(app.document.querySelector('#filtersTitle').textContent, 'Filters (1)');
+  assert.deepEqual(planningIds(app), []);
+  app.selectPlanningSprint(2); app.clearPlanningSprint();
+  const html = app.elements.get('#board').innerHTML;
+  assert.match(html, /All sprint dates · task filters still apply/);
+  assert.match(html, /data-clear-task-filter="assigneeFilter"[^>]*>My tasks: Ada/);
+  assert.match(html, /My tasks is active: only tasks assigned to you are shown/);
+  assert.equal(app.document.querySelector('#assigneeFilter').value, '3', 'All sprints changes dates, not assignment intent');
+  app.document.querySelector('#boardEmptyAction').onclick();
+  assert.deepEqual(planningIds(app), before);
+  assert.equal(app.document.querySelector('#assigneeFilter').value, '');
+  assert.equal(app.document.querySelector('#myTasksBtn').getAttribute('aria-pressed'), 'false');
+  assert.equal(app.document.querySelector('#filtersTitle').textContent, 'Filters');
+  assert.doesNotMatch(app.elements.get('#board').innerHTML, /My tasks is active|activeTaskFilters"/);
+});
+
+for (const targetView of ['board', 'overview', 'timeline']) {
+  test(targetView + ' exposes task filters and removes one without clearing the Sprint or other filters', () => {
+    const app = loadApp(); const state = stateWithSprintAssignments(); state.tickets.find(ticket => ticket.id === 12).assigneeId = 3;
+    app.setState(state); app.selectBoard(1);
+    app.document.querySelector('#search').value = 'Task';
+    app.document.querySelector('#assigneeFilter').value = '3';
+    app.navButtons.find(button => button.dataset.view === targetView).onclick(); app.selectPlanningSprint(2);
+    const root = app.elements.get('#' + targetView);
+    assert.match(root.innerHTML, /aria-label="Active task filters"/);
+    assert.match(root.innerHTML, /data-clear-task-filter="search"/);
+    assert.match(root.innerHTML, /data-clear-task-filter="assigneeFilter"/);
+    const remove = fakeElement(); remove.dataset.clearTaskFilter = 'assigneeFilter';
+    const reset = fakeElement();
+    root.querySelectorAll = selector => selector === '[data-clear-task-filter]' ? [remove] : selector === '[data-reset-task-filters]' ? [reset] : [];
+    app.wireTaskFilterActions(root); remove.onclick();
+    assert.equal(app.document.querySelector('#assigneeFilter').value, '');
+    assert.equal(app.document.querySelector('#search').value, 'Task');
+    assert.equal(app.selectedPlanningSprint().number, 2);
+    assert.equal(app.document.querySelector('#myTasksBtn').getAttribute('aria-pressed'), 'false');
+    const oldView = targetView === 'board' ? 'overview' : 'board';
+    app.navButtons.find(button => button.dataset.view === oldView).onclick();
+    app.document.querySelector('#assigneeFilter').value = '3';
+    remove.onclick(); reset.onclick();
+    assert.equal(app.document.querySelector('#assigneeFilter').value, '3', 'old workspace controls cannot remove a newer view filter');
+    assert.equal(app.selectedPlanningSprint().number, 2);
+  });
+}
+
+test('Reset filters removes dependency isolation even when All sprints is already selected and honors editor Cancel', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+  const all = planningIds(app);
+  app.openDependencies(12); app.toggleDependencyFocus(12);
+  assert.equal(app.selectedPlanningSprint(), null);
+  assert.ok(app.dependencyFocusIds());
+  assert.ok(planningIds(app).length < all.length);
+  app.document.querySelector('#search').value = 'Does not exist';
+  const fields = openEditor(app, 12); fields.dTitle.value = 'Unsaved filter edit';
+  app.setConfirm(() => false); app.resetTaskFilters();
+  assert.equal(app.getEditing().id, 12);
+  assert.equal(app.document.querySelector('#search').value, 'Does not exist');
+  assert.ok(app.dependencyFocusIds());
+  app.setConfirm(() => true); app.resetTaskFilters();
+  assert.equal(app.dependencyViewIds(), null);
+  assert.equal(app.getEditing(), null);
+  assert.deepEqual(planningIds(app), all);
+  assert.equal(app.document.querySelector('#dependencyExitBtn').classList.contains('hidden'), true);
+});
+
+test('each task filter chip clears only its own filter while retaining the selected Sprint', () => {
+  const values = {search: 'Task', typeFilter: 'task', labelFilter: 'blue', assigneeFilter: '3', dependencyFilter: 'blocked'};
+  for (const id of Object.keys(values)) {
+    const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1); app.selectPlanningSprint(2);
+    for (const [key, value] of Object.entries(values)) app.document.querySelector('#' + key).value = value;
+    app.renderView();
+    const root = app.elements.get('#board'); const remove = fakeElement(); remove.dataset.clearTaskFilter = id;
+    root.querySelectorAll = selector => selector === '[data-clear-task-filter]' ? [remove] : [];
+    app.wireTaskFilterActions(root); remove.onclick();
+    for (const [key, value] of Object.entries(values)) assert.equal(app.document.querySelector('#' + key).value, key === id ? '' : value);
+    assert.equal(app.selectedPlanningSprint().number, 2);
+    assert.equal(app.window.location.hash, '#/board/1/sprint/2');
+  }
+});
+
+test('logout clears transient task filters and local Overview and Timeline filters before another login', async () => {
+  const queue = deferredResponseQueue(); const app = loadApp({fetch:queue.fetch}); const state = stateWithSprintAssignments();
+  app.setState(state); app.selectBoard(1); app.renderView();
+  app.navButtons.find(button => button.dataset.view === 'overview').onclick();
+  app.document.querySelector('#overviewSearch').value = 'Nothing matches this';
+  app.document.querySelector('#overviewSearch').oninput();
+  assert.equal(app.overviewRows(app.workTickets()).length, 0);
+  const filters = ['search', 'typeFilter', 'labelFilter', 'assigneeFilter', 'dependencyFilter'];
+  for (const id of filters) app.document.querySelector('#' + id).value = 'old session';
+  app.setTimelineEpicFilter('22');
+  const loggingOut = app.logout();
+  for (const id of filters) assert.equal(app.document.querySelector('#' + id).value, '');
+  queue.respond(0, {}); await loggingOut;
+  state.me.id = 7; app.setState(state); app.selectBoard(1); app.renderView();
+  assert.ok(planningIds(app).includes(12));
+  assert.equal(app.document.querySelector('#myTasksBtn').getAttribute('aria-pressed'), 'false');
+  assert.equal(app.document.querySelector('#filtersTitle').textContent, 'Filters');
+  assert.ok(app.overviewRows(app.workTickets()).length > 0, 'the old Overview search does not survive logout');
+  app.navButtons.find(button => button.dataset.view === 'timeline').onclick();
+  assert.ok(Array.from(app.buildGanttRows(), row => row.ticket.id).includes(12), 'the old Epic filter does not hide work in the next session');
+});
+
+test('whitespace-only search cannot silently hide all tasks', () => {
+  const app = loadApp(); app.setState(stateWithSprintAssignments()); app.selectBoard(1);
+  const all = planningIds(app); app.document.querySelector('#search').value = '   ';
+  app.renderView();
+  assert.deepEqual(planningIds(app), all);
+  assert.equal(app.activeTaskFiltersHtml(), '');
 });
 
 function dependencyOrderState() {

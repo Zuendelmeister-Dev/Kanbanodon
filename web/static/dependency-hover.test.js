@@ -266,6 +266,50 @@ test('a full branching Board circuit retains all arrows and keeps the snack-bar 
   assert.ok(length(snackBar.points) < 450);
 });
 
+test('a Done prerequisite branches across occupied columns without using the Board header or circling cards', () => {
+  // Screenshot geometry: the completed prerequisite is in Done, to the right
+  // of Review, and feeds both the In Progress counter and Ready raptor queue.
+  // The counter blocks the direct branch to Ready. A long horizontal span is
+  // real, but the old route also climbed far into the header at y=110.
+  const original = new Map([[7, rect(1970, 160, 2244, 494)], [8, rect(1080, 160, 1354, 494)],
+    [9, rect(636, 160, 910, 536)], [10, rect(190, 160, 464, 494)], [12, rect(190, 526, 464, 858)]]);
+  const edges = [{ from: 7, to: 8 }, { from: 7, to: 9 }, { from: 8, to: 10 }, { from: 9, to: 12 }, { from: 10, to: 12 }];
+  for (const mirror of [false, true]) {
+    const positions = new Map([...original].map(([id, box]) => [id, mirror ?
+      rect(2430 - box.right, box.top, 2430 - box.left, box.bottom) : box]));
+    const obstacles = [...positions.values()];
+    const bounds = rect(70, 60, 2360, 1050);
+    const routes = routed(edges, positions, { clearance: 4, selectedId: 9 }, obstacles, bounds);
+    assert.equal(routes.length, edges.length, 'every branch remains visible');
+    routes.forEach((route, index) => {
+      assertSafeRoute(route.points, obstacles);
+      const reserved = routes.slice(0, index).filter(previous => previous.from !== route.from).map(previous => previous.points);
+      route.points.slice(1).forEach((point, offset) => assert.equal(hover.sharesTrack(route.points[offset], point, reserved), false));
+    });
+    const clear = routes.find(route => route.from === 7 && route.to === 8);
+    assert.equal(length(clear.points), 616, 'the clear neighboring branch stays straight');
+    const blocked = routes.find(route => route.from === 7 && route.to === 9);
+    assert.ok(length(blocked.points) < 1350, 'the old branch was 1515 px despite a clear local path');
+    assert.ok(blocked.points.every(point => point.y >= 152 && point.y <= 160), 'the branch follows the card tops instead of the header');
+    assert.equal(blocked.color, '#60a5fa');
+    const nextBranch = routes.find(route => route.from === 8 && route.to === 10);
+    assert.ok(length(nextBranch.points) < 1000, 'a later branch uses another nearby rail rather than a 1320 px perimeter loop');
+    assert.ok(nextBranch.points.every(point => point.y >= 136 && point.y <= 160), 'occupied rails have visibly separate nearby alternatives');
+    assert.equal(nextBranch.color, '#f4b83f');
+    assert.deepEqual(routed(edges.slice().reverse(), positions, { clearance: 4, selectedId: 9 }, obstacles, bounds), routes,
+      'the shortest clear routes do not depend on incoming edge order');
+  }
+});
+
+test('a supplied header obstruction is respected when choosing shorter Board alternatives', () => {
+  const positions = new Map([[1, rect(20, 200, 120, 300)], [2, rect(420, 200, 520, 300)]]);
+  const obstacles = [...positions.values(), rect(180, 180, 360, 320), rect(0, 0, 550, 178)];
+  const route = routed([{ from: 1, to: 2 }], positions, { clearance: 4 }, obstacles, rect(0, 0, 550, 1000))[0];
+  assertSafeRoute(route.points, obstacles);
+  assert.ok(route.points.every(point => point.y >= 178), 'a real header is an obstacle even when a top route would otherwise be shorter');
+  assert.ok(length(route.points) < 470, 'the short rail below the blocker beats the midpoint of the huge empty lower region');
+});
+
 test('connections route around intervening cards without crossing text', () => {
   const source = rect(20, 30, 110, 90);
   const target = rect(320, 30, 410, 90);
